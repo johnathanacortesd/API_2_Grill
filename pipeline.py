@@ -252,23 +252,22 @@ def clean_text(text):
 
 
 def clean_cuerpo(text):
-    if not isinstance(text, str) or text.strip() == "":
-        return text
+    if not isinstance(text, str) or text.strip() in ("", "nan", "None"):
+        return ""
     text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
     text = re.sub(r"<[^>]+>", "", text)
     return text.strip()
 
 
 def clean_title_for_output(title):
-    """Limpia espacios en blanco sin cortar titulares con barras verticales."""
     if not isinstance(title, str):
         return ""
     return re.sub(r"\s+", " ", str(title)).strip()
 
 
 def corregir_texto(text):
-    if not isinstance(text, str):
-        return text
+    if not isinstance(text, str) or text.strip() in ("", "nan", "None"):
+        return ""
     text = re.sub(r"(<br>|\[\.\.\.\]|\s+)", " ", text).strip()
     m = re.search(r"[A-ZÁÉÍÓÚÑ]", text)
     if m:
@@ -543,7 +542,16 @@ def normalize_dossier_dataframe(df, region_map, internet_map, progress: Progress
     is_grafica = df["Tipo de Medio"].isin(["Prensa", "Internet", "Revistas"])
     is_internet = df["Tipo de Medio"] == "Internet"
 
-    raw_resumen_orig = get_column_robust(df, "Resumen - Aclaracion")
+    # BÚSQUEDA ROBUSTA DEL RESUMEN PARA NO PERDERLO NUNCA
+    cuerpo_series = get_column_robust(df, "CuerpoEs")
+    if cuerpo_series.dropna().empty:
+        cuerpo_series = get_column_robust(df, "Resumen - Aclaracion")
+    if cuerpo_series.dropna().empty:
+        cuerpo_series = get_column_robust(df, "Resumen")
+    if cuerpo_series.dropna().empty:
+        cuerpo_series = get_column_robust(df, "Cuerpo")
+
+    raw_resumen_orig = cuerpo_series
 
     if "Medio" in df.columns:
         raw_medios_clean = df["Medio"].astype(str).str.lower().str.strip()
@@ -604,8 +612,7 @@ def normalize_dossier_dataframe(df, region_map, internet_map, progress: Progress
 
     emit_progress(progress, 48, "Limpiando cuerpos y enlaces…")
 
-    cuerpo_col = "CuerpoEs" if "CuerpoEs" in df.columns else "Resumen - Aclaracion"
-    cuerpo_cleaned = df.get(cuerpo_col, pd.Series([""] * len(df))).astype(str).apply(clean_cuerpo)
+    cuerpo_cleaned = raw_resumen_orig.astype(str).apply(clean_cuerpo)
 
     def fmt_grafica(text):
         if not isinstance(text, str) or not text.strip():
@@ -846,7 +853,6 @@ def process_dossier(
             model=ai_config.get("model", "gpt-4.1-nano-2025-04-14"),
             progress_callback=progress
         )
-        # Añade siempre la columna Contexto analizado y las 3 columnas de IA al final
         cols_to_export.extend(["Contexto analizado", "Tono_IA", "Tema_IA", "Subtema_IA"])
 
     emit_progress(progress, 94, "✓ Estructuración finalizada. Generando archivo Excel…")
