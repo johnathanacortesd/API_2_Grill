@@ -35,25 +35,29 @@ INSTITUTIONAL_PREFIXES = [
     "asociacion", "proyecto", "urbanizacion"
 ]
 
-def clean_text_simple(text: str) -> str:
-    """Descarta vacíos, enlaces, diccionarios de hipervínculo y la palabra 'Link'."""
+def clean_text_strictly_no_links(text: str) -> str:
+    """Elimina URLs (http, https, www), diccionarios y la palabra 'Link'."""
     if not text:
         return ""
     if isinstance(text, dict):
         val = text.get("value", "")
-        if str(val).strip().lower() in ("link", "http", ""):
-            return ""
-        return re.sub(r"\s+", " ", str(val)).strip()
+        text = str(val)
 
     s = str(text).strip()
-    if s.lower() in ("nan", "none", "null", "link", "link nota", "http", "https"):
+    if s.lower() in ("nan", "none", "null", "link", "link nota", "ver nota"):
         return ""
-    if re.match(r"^https?://\S+$", s):
+
+    # Remover enlaces completos http, https y www
+    s = re.sub(r"https?://\S+", "", s)
+    s = re.sub(r"www\.\S+", "", s)
+    s = re.sub(r"\b(?:http|https)://\b", "", s)
+    s = re.sub(r"\s+", " ", s).strip()
+
+    if s.lower() in ("link", "link nota", ""):
         return ""
-    return re.sub(r"\s+", " ", s).strip()
+    return s
 
 def normalize_text_for_matching(text: str) -> str:
-    """Normaliza texto para comparación eliminando plurales y prefijos multimedia."""
     if not text:
         return ""
     t = unidecode(str(text).lower().strip())
@@ -145,9 +149,9 @@ def generate_brand_variants(brand: str, aliases: List[str]) -> List[str]:
     return compiled_regexes
 
 def extract_brand_context(resumen: str, titulo: str, brand_regexes: List[str]) -> str:
-    """Extrae las oraciones relevantes del Resumen y Título."""
-    t_clean = clean_text_simple(titulo)
-    r_clean = clean_text_simple(resumen)
+    """Extrae las oraciones del Resumen y Título sin links ni etiquetas."""
+    t_clean = clean_text_strictly_no_links(titulo)
+    r_clean = clean_text_strictly_no_links(resumen)
     
     r_norm = unidecode(r_clean.lower())
     t_norm = unidecode(t_clean.lower())
@@ -157,14 +161,14 @@ def extract_brand_context(resumen: str, titulo: str, brand_regexes: List[str]) -
     if r_clean:
         sentences = [s.strip() for s in re.split(r'(?<=[.!?\n])\s+', r_clean) if s.strip()]
         for idx, s in enumerate(sentences):
-            s_clean_sub = clean_text_simple(s)
+            s_clean_sub = clean_text_strictly_no_links(s)
             if not s_clean_sub:
                 continue
             s_norm = unidecode(s_clean_sub.lower())
             if any(re.search(rx, s_norm) for rx in brand_regexes):
                 block = s_clean_sub
                 if len(s_clean_sub.split()) < 10 and idx + 1 < len(sentences):
-                    next_s = clean_text_simple(sentences[idx + 1])
+                    next_s = clean_text_strictly_no_links(sentences[idx + 1])
                     if next_s:
                         block = f"{s_clean_sub} {next_s}"
                 if block not in matched_sentences:
@@ -175,7 +179,7 @@ def extract_brand_context(resumen: str, titulo: str, brand_regexes: List[str]) -
                 for m in re.finditer(rx, r_norm):
                     start = max(0, m.start() - 120)
                     end = min(len(r_clean), m.end() + 150)
-                    snippet = clean_text_simple(r_clean[start:end])
+                    snippet = clean_text_strictly_no_links(r_clean[start:end])
                     if snippet and snippet not in matched_sentences:
                         matched_sentences.append(f"...{snippet}..." if start > 0 else snippet)
                     if len(matched_sentences) >= 2:
@@ -188,61 +192,63 @@ def extract_brand_context(resumen: str, titulo: str, brand_regexes: List[str]) -
     if matched_sentences:
         resumen_context = " ".join(matched_sentences).strip()
         if title_matches and t_clean and t_clean.lower() not in resumen_context.lower():
-            return f"{t_clean}. {resumen_context}"[:800]
-        return resumen_context[:800]
+            res = f"{t_clean}. {resumen_context}"
+        else:
+            res = resumen_context
+        return clean_text_strictly_no_links(res)[:800]
 
     if title_matches:
         if r_clean:
-            return f"{t_clean}. {r_clean[:380]}".strip()[:800]
-        return t_clean
+            res = f"{t_clean}. {r_clean[:380]}"
+        else:
+            res = t_clean
+        return clean_text_strictly_no_links(res)[:800]
 
-    # Si la marca no está explícita, se toma Título + fragmento de Resumen
     if t_clean and r_clean:
-        return f"{t_clean}. {r_clean[:400]}".strip()[:800]
-    return t_clean or r_clean[:500]
+        res = f"{t_clean}. {r_clean[:400]}"
+    else:
+        res = t_clean or r_clean[:500]
+    return clean_text_strictly_no_links(res)[:800]
 
-def is_pure_byline_mention(title: str, context_text: str, brand_regexes: List[str]) -> bool:
+def is_pure_byline_mention(title: str, context_text: str, brand: str, aliases: List[str], brand_regexes: List[str]) -> bool:
     """
-    Determina si la noticia es ÚNICAMENTE un crédito de autor/redactor.
-    NUNCA devuelve True si la marca aparece en el titular o si es el sujeto de la noticia.
+    Aplica ÚNICAMENTE si el contexto corresponde a las frases específicas de redactor:
+    - 'Editora web y periodista egresada de...'
+    - 'Editor web y periodista egresado de...'
+    - 'Estudiante en formación...'
+    Y la noticia NO es una acción institucional del cliente.
     """
-    t_clean = clean_text_simple(title)
+    t_clean = clean_text_strictly_no_links(title)
     t_norm = unidecode(t_clean.lower())
     
-    # 1. Si el titular menciona a la marca (ej: "UAO y DIAN abren..."), NO es un simple byline
+    # 1. Si el titular ya nombra a la marca (ej: UAO y DIAN abren...), NUNCA es crédito de autor
     if any(re.search(rx, t_norm) for rx in brand_regexes):
         return False
 
     ctx_norm = unidecode(context_text.lower())
     
-    # 2. Patrón de créditos de redacción
-    role_pattern = (
-        r"(?:editor[a]?\s*(?:web)?|periodista|comunicador[a]?|redactor[a]?|reportero[a]?|"
-        r"practicante|egresad[oa]|graduad[oa]|estudiante(?:\s+en\s+formacion)?|"
-        r"periodista(?:\s+en\s+formacion)?)"
-    )
-    
-    has_byline_phrase = False
-    byline_match_span = None
-    for rx in brand_regexes:
-        m1 = re.search(rf"{role_pattern}.{{0,60}}?{rx}", ctx_norm)
-        if m1:
-            has_byline_phrase = True
-            byline_match_span = m1.span()
-            break
-        m2 = re.search(rf"(?:por|autor[a]?):\s*[\w\s]+,?.{{0,45}}?{rx}", ctx_norm)
-        if m2:
-            has_byline_phrase = True
-            byline_match_span = m2.span()
+    # 2. Verificar si contiene las frases literales requeridas
+    targets = [unidecode(brand.lower())] + [unidecode(a.lower()) for a in aliases if a.strip()]
+    has_exact_byline_pattern = False
+    for t in targets:
+        if not t:
+            continue
+        p1 = rf"\beditor[a]?\s+web\s+y\s+periodista\s+egresad[oa]\s+(?:de\s+(?:la\s+)?)?{re.escape(t)}"
+        p2 = rf"\bestudiante\s+en\s+formacion\s+(?:de\s+(?:la\s+)?)?{re.escape(t)}"
+        p3 = rf"\bperiodista\s+egresad[oa]\s+(?:de\s+(?:la\s+)?)?{re.escape(t)}"
+        if re.search(p1, ctx_norm) or re.search(p2, ctx_norm) or re.search(p3, ctx_norm):
+            has_exact_byline_pattern = True
             break
 
-    if not has_byline_phrase or not byline_match_span:
+    if not has_exact_byline_pattern:
         return False
 
-    # 3. Comprobar si la marca se menciona en el resto del texto fuera de la firma del redactor
-    text_without_byline = ctx_norm[:byline_match_span[0]] + " " + ctx_norm[byline_match_span[1]:]
-    if any(re.search(rx, text_without_byline) for rx in brand_regexes):
-        # La marca actúa en el cuerpo de la noticia (ej: directores de programa, convenios, etc.)
+    # 3. Si además contiene acciones institucionales de la marca en la noticia, NO es solo crédito de autor
+    institutional_clues = [
+        "abren", "inaugur", "convenio", "acreditac", "rector", "matricul",
+        "alianza", "dian", "asesoria gratuita", "oferta academica", "celebran y respaldan"
+    ]
+    if any(clue in ctx_norm for clue in institutional_clues):
         return False
 
     return True
@@ -317,13 +323,13 @@ def ensure_different_tema_subtema(tema: str, subtema: str, ctx: str) -> str:
     return t_clean
 
 def check_positive_institutional_override(ctx: str) -> bool:
-    """Verifica si el contexto contiene acciones explícitas de liderazgo o respaldo positivo."""
+    """Detecta de forma infalible acompañamiento, respaldo y felicitaciones."""
     c_low = unidecode(ctx.lower())
     positive_actions = [
         "celebra y respalda", "respalda el nombramiento", "respaldan el nombramiento",
         "acompanamos desde", "acompanamiento desde", "asesoria gratuita", "apoyo gratuito",
         "pusieron en marcha", "pone en marcha", "felicita a", "felicitamos a",
-        "rinde homenaje", "reconocimiento destaca el compromiso"
+        "rinde homenaje", "reconocimiento destaca el compromiso", "abren espacio"
     ]
     has_positive = any(p in c_low for p in positive_actions)
     has_negative_allegation = any(n in c_low for n in ["denuncia penal", "sancion fiscal", "investigacion por corrupcion", "plagio"])
@@ -465,8 +471,8 @@ def _call_openai_cluster(
     ctx: str,
     title_ref: str
 ) -> Tuple[str, str, str]:
-    # 1. Filtro estricto: Solo si la noticia es PURAMENTE un crédito de autor sin protagonismo institucional
-    if is_pure_byline_mention(title_ref, ctx, brand_regexes):
+    # 1. Regla de Redacción de Artículo (aplicada solo en casos legítimos de crédito sin protagonismo)
+    if is_pure_byline_mention(title_ref, ctx, brand, aliases, brand_regexes):
         return "Neutro", "Estudiantes", "Redacción de artículo"
 
     prompt = f"""Analiza esta noticia para el cliente: "{brand}" (Alias: {', '.join(aliases) if aliases else 'Ninguno'}).
@@ -475,25 +481,25 @@ Titular de referencia: "{title_ref}"
 Contexto analizado:
 \"\"\"{ctx}\"\"\"
 
-EJEMPLOS DE REFERENCIA OBLIGATORIA DE TONO:
+EJEMPLOS DE TONO OBLIGATORIO:
 - Caso 1: "Sismo en la región: Acompañamos desde la Universidad Autónoma de Occidente a las familias afectadas..."
-  -> Tono: "Positivo" (solidaridad, presencia y liderazgo institucional, aunque el suceso sea una tragedia).
-- Caso 2: "Polémica política: La Universidad Autónoma de Occidente celebra y respalda el nombramiento del ministro..."
-  -> Tono: "Positivo" (respaldo y posicionamiento gremial favorable de la entidad).
+  -> Tono: "Positivo" (solidaridad y acompañamiento institucional de la marca).
+- Caso 2: "Designación ministerial: La Universidad Autónoma de Occidente celebra y respalda el nombramiento..."
+  -> Tono: "Positivo" (respaldo y felicitación institucional de la marca).
 - Caso 3: "UAO y DIAN abren espacio de asesoría gratuita en trámites aduaneros..."
-  -> Tono: "Positivo" (convenio institucional y servicio a la comunidad).
-- Caso 4: "Denuncian quejas por cobros excesivos y mala atención en la entidad..."
-  -> Tono: "Negativo" (crítica o perjuicio directo).
-- Caso 5: "Boletín de cifras económicas donde la entidad aporta un indicador técnico..."
-  -> Tono: "Neutro" (meramente informativo).
+  -> Tono: "Positivo" (alianza y beneficio para la comunidad).
+- Caso 4: "Denuncian quejas por cobros excesivos o fallas en el servicio..."
+  -> Tono: "Negativo" (afectación directa).
+- Caso 5: "Boletín general de cifras donde la entidad aporta un dato técnico..."
+  -> Tono: "Neutro" (informativo sin juicio de valor).
 
-Instrucciones taxonómicas:
+Instrucciones:
 1. "tono": Impacto reputacional en el cliente ("{brand}"): "Positivo", "Negativo" o "Neutro".
-   REGLA DE TONO POSITIVO: Siempre que el cliente exprese o reciba ACOMPAÑAMIENTO, RESPALDO, APOYO, FELICITACIONES, CELEBRACIÓN, ALIANZA, CONVENIO O SOLIDARIDAD, el tono es estrictamente "Positivo".
-2. "tema": ÁREA O DOMINIO GENERAL (Nivel Macro, 1 a 3 palabras. Ej: "Educación Superior", "Gestión Tributaria", "Sector Salud", "Gestión Institucional"). PROHIBIDO usar "Otros".
-3. "subtema": HECHO O SUCESO ESPECÍFICO (Nivel Micro, máximo 6 palabras. Sin comas ni puntos. PROHIBIDO usar la palabra "Mención" o nombrar únicamente al cliente).
+   REGLA DE ORO: Si el cliente expresa o recibe ACOMPAÑAMIENTO, RESPALDO, APOYO, FELICITACIONES, CELEBRACIÓN o ALIANZA, el tono es estrictamente "Positivo".
+2. "tema": DOMINIO GENERAL (Nivel Macro, 1 a 3 palabras. Ej: "Educación Superior", "Gestión Tributaria", "Sector Salud"). PROHIBIDO "Otros".
+3. "subtema": HECHO ESPECÍFICO (Nivel Micro, máximo 6 palabras. Sin comas ni puntos. PROHIBIDO usar "Mención").
 
-REGLA INQUEBRANTABLE: "tema" y "subtema" DEBEN SER DIFERENTES.
+REGLA OBLIGATORIA: "tema" y "subtema" DEBEN SER DIFERENTES.
 
 Responde estrictamente en JSON:
 {{"tono": "...", "tema": "...", "subtema": "..."}}"""
@@ -502,7 +508,7 @@ Responde estrictamente en JSON:
         resp = client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": "Auditor senior de monitoreo de medios. Clasifica el tono y los hechos con alta precisión institucional."},
+                {"role": "system", "content": "Auditor senior de medios. Clasifica el tono institucional y los hechos con alta precisión."},
                 {"role": "user", "content": prompt}
             ],
             response_format={"type": "json_object"},
@@ -514,7 +520,7 @@ Responde estrictamente en JSON:
         tono_raw = str(data.get("tono", "Neutro")).strip().capitalize()
         tono = tono_raw if tono_raw in ["Positivo", "Negativo", "Neutro"] else "Neutro"
         
-        # Salvaguarda directa: Acompañamientos y respaldos nunca son negativos ni neutros
+        # Escudo de tono positivo
         if check_positive_institutional_override(ctx):
             tono = "Positivo"
             
