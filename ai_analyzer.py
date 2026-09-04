@@ -47,7 +47,6 @@ def clean_text_strictly_no_links(text: str) -> str:
     if s.lower() in ("nan", "none", "null", "link", "link nota", "ver nota"):
         return ""
 
-    # Remover enlaces completos http, https y www
     s = re.sub(r"https?://\S+", "", s)
     s = re.sub(r"www\.\S+", "", s)
     s = re.sub(r"\b(?:http|https)://\b", "", s)
@@ -210,48 +209,46 @@ def extract_brand_context(resumen: str, titulo: str, brand_regexes: List[str]) -
         res = t_clean or r_clean[:500]
     return clean_text_strictly_no_links(res)[:800]
 
-def is_pure_byline_mention(title: str, context_text: str, brand: str, aliases: List[str], brand_regexes: List[str]) -> bool:
+def check_exact_byline_rule(text: str, brand: str, aliases: List[str]) -> bool:
     """
-    Aplica ÚNICAMENTE si el contexto corresponde a las frases específicas de redactor:
-    - 'Editora web y periodista egresada de...'
-    - 'Editor web y periodista egresado de...'
-    - 'Estudiante en formación...'
-    Y la noticia NO es una acción institucional del cliente.
+    REGLA LITERAL SOLICITADA:
+    Si el texto contiene exactamente las frases de autoría indicadas:
+    - 'Editora web y periodista egresada de [marca]'
+    - 'Editor web y periodista egresado de [marca]'
+    - 'Estudiante en formación [marca]'
+    - 'Periodista egresado/a de [marca]'
+    Se retorna True para asignar directamente Neutro, Estudiantes, Redacción de artículo.
     """
-    t_clean = clean_text_strictly_no_links(title)
-    t_norm = unidecode(t_clean.lower())
-    
-    # 1. Si el titular ya nombra a la marca (ej: UAO y DIAN abren...), NUNCA es crédito de autor
-    if any(re.search(rx, t_norm) for rx in brand_regexes):
+    if not text:
         return False
-
-    ctx_norm = unidecode(context_text.lower())
+        
+    t_norm = unidecode(str(text).lower())
     
-    # 2. Verificar si contiene las frases literales requeridas
-    targets = [unidecode(brand.lower())] + [unidecode(a.lower()) for a in aliases if a.strip()]
-    has_exact_byline_pattern = False
-    for t in targets:
-        if not t:
+    # Términos de búsqueda (marca y todos los alias)
+    targets = [unidecode(brand.lower().strip())] + [unidecode(a.lower().strip()) for a in aliases if a.strip()]
+    
+    for tgt in targets:
+        if not tgt:
             continue
-        p1 = rf"\beditor[a]?\s+web\s+y\s+periodista\s+egresad[oa]\s+(?:de\s+(?:la\s+)?)?{re.escape(t)}"
-        p2 = rf"\bestudiante\s+en\s+formacion\s+(?:de\s+(?:la\s+)?)?{re.escape(t)}"
-        p3 = rf"\bperiodista\s+egresad[oa]\s+(?:de\s+(?:la\s+)?)?{re.escape(t)}"
-        if re.search(p1, ctx_norm) or re.search(p2, ctx_norm) or re.search(p3, ctx_norm):
-            has_exact_byline_pattern = True
-            break
+        tgt_esc = re.escape(tgt)
+        
+        # 1. Editora web y periodista egresada de [marca]
+        if re.search(rf"\beditora\s+web\s+y\s+periodista\s+egresada\s+(?:de\s+(?:la\s+)?)?{tgt_esc}\b", t_norm):
+            return True
+            
+        # 2. Editor web y periodista egresado de [marca]
+        if re.search(rf"\beditor\s+web\s+y\s+periodista\s+egresado\s+(?:de\s+(?:la\s+)?)?{tgt_esc}\b", t_norm):
+            return True
+            
+        # 3. Estudiante en formación [marca] (con o sin 'de' / 'de la')
+        if re.search(rf"\bestudiante\s+en\s+formacion\s+(?:de\s+(?:la\s+)?)?{tgt_esc}\b", t_norm):
+            return True
+            
+        # 4. Periodista egresado/a de [marca] / Editor(a) egresado/a de [marca]
+        if re.search(rf"\b(?:periodista|editor[a]?|redactor[a]?)\s+egresad[oa]\s+(?:de\s+(?:la\s+)?)?{tgt_esc}\b", t_norm):
+            return True
 
-    if not has_exact_byline_pattern:
-        return False
-
-    # 3. Si además contiene acciones institucionales de la marca en la noticia, NO es solo crédito de autor
-    institutional_clues = [
-        "abren", "inaugur", "convenio", "acreditac", "rector", "matricul",
-        "alianza", "dian", "asesoria gratuita", "oferta academica", "celebran y respaldan"
-    ]
-    if any(clue in ctx_norm for clue in institutional_clues):
-        return False
-
-    return True
+    return False
 
 def clean_subtema(text: str, brand: str, title_fallback: str) -> str:
     if not text:
@@ -471,8 +468,9 @@ def _call_openai_cluster(
     ctx: str,
     title_ref: str
 ) -> Tuple[str, str, str]:
-    # 1. Regla de Redacción de Artículo (aplicada solo en casos legítimos de crédito sin protagonismo)
-    if is_pure_byline_mention(title_ref, ctx, brand, aliases, brand_regexes):
+    # REGLA EXACTA DE AUTORÍA/EGRESADOS (SI ESTÁN LAS PALABRAS NO SE ANALIZA CON IA)
+    search_scope = f"{title_ref} {ctx}"
+    if check_exact_byline_rule(search_scope, brand, aliases):
         return "Neutro", "Estudiantes", "Redacción de artículo"
 
     prompt = f"""Analiza esta noticia para el cliente: "{brand}" (Alias: {', '.join(aliases) if aliases else 'Ninguno'}).
@@ -520,7 +518,6 @@ Responde estrictamente en JSON:
         tono_raw = str(data.get("tono", "Neutro")).strip().capitalize()
         tono = tono_raw if tono_raw in ["Positivo", "Negativo", "Neutro"] else "Neutro"
         
-        # Escudo de tono positivo
         if check_positive_institutional_override(ctx):
             tono = "Positivo"
             
@@ -608,6 +605,14 @@ def enrich_rows_with_ai(
             row["Tono_IA"] = "Duplicada"
             row["Tema_IA"] = "-"
             row["Subtema_IA"] = "-"
+            continue
+
+        # CHEQUEO DIRECTO POR FILA: Si la fila tiene las palabras exactas, se asigna sin condiciones
+        row_full_text = f"{row.get(km.get('titulo', 'Título'), '')} {row.get('Contexto analizado', '')} {row.get('Resumen - Aclaracion', '')}"
+        if check_exact_byline_rule(row_full_text, brand, aliases):
+            row["Tono_IA"] = "Neutro"
+            row["Tema_IA"] = "Estudiantes"
+            row["Subtema_IA"] = "Redacción de artículo"
             continue
             
         cid = cluster_map.get(i)
