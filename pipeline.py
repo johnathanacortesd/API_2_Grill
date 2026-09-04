@@ -35,8 +35,8 @@ TIPO_MEDIO_MAP = {
     "revista": "Revistas", "revistas": "Revistas",
 }
 
-# Columnas optimizadas: Se eliminaron las 11 columnas manuales obsoletas
-OUTPUT_COLUMNS = [
+# Columnas base (sin las 11 manuales obsoletas)
+BASE_OUTPUT_COLUMNS = [
     "ID Noticia", "Fecha", "Hora", "Medio", "Tipo de Medio",
     "Sección - Programa", "Región", "Título", "Autor - Conductor",
     "Nro. Pagina", "Dimensión", "Duración - Nro. Caracteres",
@@ -73,7 +73,7 @@ KEY_MAP = {
 
 THOUSANDS_COLS = {"Nro. Pagina", "Dimensión", "Duración - Nro. Caracteres", "Tier", "Audiencia"}
 CURRENCY_COLS = {"CPE", "revalorización"}
-NUMERIC_COLS = {"ID Noticia"} | THOUSANDS_COLS | CURRENCY_COLS
+NUMERIC_COLS = {"ID Noticia", "ID duplicada"} | THOUSANDS_COLS | CURRENCY_COLS
 
 REL_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 HYPERLINK_TAIL_BYTES = 4 * 1024 * 1024
@@ -652,7 +652,7 @@ def expand_menciones(df) -> List[dict]:
 # Exportar a Excel (XlsxWriter, streaming)
 # ======================================
 def generate_output_excel(rows, km, progress: ProgressCb = None, columns_to_use: List[str] = None):
-    cols = columns_to_use or OUTPUT_COLUMNS
+    cols = columns_to_use or BASE_OUTPUT_COLUMNS
     buf = io.BytesIO()
     wb = xlsxwriter.Workbook(
         buf,
@@ -668,6 +668,8 @@ def generate_output_excel(rows, km, progress: ProgressCb = None, columns_to_use:
     fmt_date = wb.add_format({"num_format": "DD/MM/YYYY"})
     fmt_currency = wb.add_format({"num_format": "$#,##0"})
     fmt_thousands = wb.add_format({"num_format": "#,##0"})
+    # Formato entero plano sin puntos de miles ni decimales para IDs
+    fmt_plain_id = wb.add_format({"num_format": "0"})
 
     for i, col_name in enumerate(cols):
         if col_name in ["Título", "Resumen - Aclaracion", "resumen corto", "Contexto analizado"]:
@@ -685,14 +687,14 @@ def generate_output_excel(rows, km, progress: ProgressCb = None, columns_to_use:
     emit_progress(progress, 0, f"Generando archivo de resultado… 0/{n} filas")
 
     try:
-        _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_date, fmt_currency, fmt_thousands, cols)
+        _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_date, fmt_currency, fmt_thousands, fmt_plain_id, cols)
         emit_progress(progress, 100, "Guardando archivo Excel…")
     finally:
         wb.close()
     return buf.getvalue()
 
 
-def _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_date, fmt_currency, fmt_thousands, cols):
+def _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_date, fmt_currency, fmt_thousands, fmt_plain_id, cols):
     for i, row in enumerate(rows):
         tk = km.get("titulo")
         if tk and tk in row:
@@ -714,6 +716,17 @@ def _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_date, fmt_cu
                     cv = val
                 else:
                     cv = str(val)
+            # ID Noticia e ID duplicada se procesan como enteros puros sin separadores
+            elif h in ("ID Noticia", "ID duplicada"):
+                if val is not None and str(val).strip() not in ("", "nan", "None", "-"):
+                    clean_id = re.sub(r"[^\d.]", "", str(val)).strip()
+                    if clean_id:
+                        try:
+                            cv = int(float(clean_s if (clean_s := clean_id) else 0))
+                        except ValueError:
+                            cv = str(val)
+                else:
+                    cv = None
             elif h in NUMERIC_COLS:
                 cv = parse_numeric(val)
             elif isinstance(val, dict) and "url" in val:
@@ -733,6 +746,8 @@ def _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_date, fmt_cu
                     ws.write_url(excel_row, cidx, str(url), fmt_link, string=display)
                 except Exception:
                     ws.write(excel_row, cidx, display, fmt_link)
+            elif h in ("ID Noticia", "ID duplicada") and isinstance(cv, int):
+                ws.write_number(excel_row, cidx, cv, fmt_plain_id)
             elif h == "Fecha" and isinstance(cv, datetime.datetime):
                 ws.write_datetime(excel_row, cidx, cv, fmt_date)
             elif h == "Fecha" and isinstance(cv, datetime.date):
@@ -794,8 +809,8 @@ def process_dossier(
     emit_progress(progress, 62, "Detectando duplicados…")
     rows = detectar_duplicados_avanzado(rows_expanded, KEY_MAP)
 
-    # Enriquecimiento IA (si está habilitado)
-    cols_to_export = list(OUTPUT_COLUMNS)
+    # Orden de columnas: Ubicar Contexto analizado, Tono_IA, Tema_IA, Subtema_IA
+    # DESPUÉS de 'revalorización' y ANTES de 'resumen corto'
     if ai_config and ai_config.get("enabled"):
         emit_progress(progress, 70, "Iniciando análisis reputacional con IA…")
         rows = enrich_rows_with_ai(
@@ -807,7 +822,11 @@ def process_dossier(
             model=ai_config.get("model", "gpt-4.1-nano-2025-04-14"),
             progress_callback=progress
         )
-        cols_to_export.extend(["Contexto analizado", "Tono_IA", "Tema_IA", "Subtema_IA"])
+        rev_idx = BASE_OUTPUT_COLUMNS.index("revalorización")
+        ai_cols = ["Contexto analizado", "Tono_IA", "Tema_IA", "Subtema_IA"]
+        cols_to_export = BASE_OUTPUT_COLUMNS[:rev_idx + 1] + ai_cols + BASE_OUTPUT_COLUMNS[rev_idx + 1:]
+    else:
+        cols_to_export = list(BASE_OUTPUT_COLUMNS)
 
     emit_progress(progress, 94, "✓ Estructuración finalizada. Generando archivo Excel…")
 
