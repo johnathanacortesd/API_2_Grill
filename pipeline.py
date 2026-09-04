@@ -35,14 +35,13 @@ TIPO_MEDIO_MAP = {
     "revista": "Revistas", "revistas": "Revistas",
 }
 
+# Columnas optimizadas: Se eliminaron las 11 columnas manuales obsoletas
 OUTPUT_COLUMNS = [
     "ID Noticia", "Fecha", "Hora", "Medio", "Tipo de Medio",
     "Sección - Programa", "Región", "Título", "Autor - Conductor",
     "Nro. Pagina", "Dimensión", "Duración - Nro. Caracteres",
-    "CPE", "Tier", "Audiencia", "Tono", "Tema", "Subtema",
-    "Producto", "Tipo de información", "Nombre vocero",
-    "Mención en Titulo", "Mención en Foto", "Tipo mencion",
-    "Tipo mencion 2", "Aparece Logo", "revalorización", "resumen corto",
+    "CPE", "Tier", "Audiencia",
+    "revalorización", "resumen corto",
     "Link Nota", "Resumen - Aclaracion", "Link (Streaming - Imagen)", "Menciones - Empresa",
     "ID duplicada",
 ]
@@ -63,17 +62,6 @@ KEY_MAP = {
     "cpe": "CPE",
     "tier": "Tier",
     "audiencia": "Audiencia",
-    "tono": "Tono",
-    "tema": "Tema",
-    "subtema": "Subtema",
-    "producto": "Producto",
-    "tipo_de_informacion": "Tipo de información",
-    "nombre_vocero": "Nombre vocero",
-    "mencion_en_titulo": "Mención en Titulo",
-    "mencion_en_foto": "Mención en Foto",
-    "tipo_mencion": "Tipo mencion",
-    "tipo_mencion_2": "Tipo mencion 2",
-    "aparece_logo": "Aparece Logo",
     "revalorizacion": "revalorización",
     "resumen_corto": "resumen corto",
     "link_nota": "Link Nota",
@@ -333,21 +321,6 @@ def parse_numeric(val):
         return None
 
 
-def mapped_tono(val):
-    if pd.isna(val) or val is None:
-        return ""
-    s = str(val).strip().lower()
-    if "positiv" in s:
-        return "Positivo"
-    elif "neutr" in s:
-        return "Neutro"
-    elif "negativ" in s:
-        return "Negativo"
-    if s in ("", "nan", "none"):
-        return ""
-    return str(val).strip()
-
-
 # ======================================
 # Algoritmo de Duplicados
 # ======================================
@@ -542,7 +515,7 @@ def normalize_dossier_dataframe(df, region_map, internet_map, progress: Progress
     is_grafica = df["Tipo de Medio"].isin(["Prensa", "Internet", "Revistas"])
     is_internet = df["Tipo de Medio"] == "Internet"
 
-    # BÚSQUEDA ROBUSTA DEL RESUMEN PARA NO PERDERLO NUNCA
+    # BÚSQUEDA ROBUSTA DEL RESUMEN
     cuerpo_series = get_column_robust(df, "CuerpoEs")
     if cuerpo_series.dropna().empty:
         cuerpo_series = get_column_robust(df, "Resumen - Aclaracion")
@@ -593,20 +566,6 @@ def normalize_dossier_dataframe(df, region_map, internet_map, progress: Progress
 
     df["Tier"] = df.get("Tier", pd.Series(dtype=str))
     df["Audiencia"] = df.get("Audiencia", pd.Series(dtype=str))
-
-    df["Tono"] = get_column_robust(df, "Tono").apply(mapped_tono)
-
-    df["Tema"] = get_column_robust(df, "Tematica").fillna("").astype(str).apply(clean_text)
-    df["Subtema"] = get_column_robust(df, "Subtema").fillna("").astype(str).apply(clean_text)
-
-    df["Producto"] = get_column_robust(df, "Producto").fillna("").astype(str).apply(clean_text)
-    df["Tipo de información"] = get_column_robust(df, "Tipo de información").fillna("").astype(str).apply(clean_text)
-    df["Nombre vocero"] = get_column_robust(df, "Nombre vocero").fillna("").astype(str).apply(clean_text)
-    df["Mención en Titulo"] = get_column_robust(df, "Mención en Titulo").fillna("").astype(str).apply(clean_text)
-    df["Mención en Foto"] = get_column_robust(df, "Mención en Foto").fillna("").astype(str).apply(clean_text)
-    df["Tipo mencion"] = get_column_robust(df, "Tipo mencion").fillna("").astype(str).apply(clean_text)
-    df["Tipo mencion 2"] = get_column_robust(df, "Tipo mencion 2").fillna("").astype(str).apply(clean_text)
-    df["Aparece Logo"] = get_column_robust(df, "Aparece Logo").fillna("").astype(str).apply(clean_text)
 
     df["resumen corto"] = raw_resumen_orig.fillna("").astype(str).str.strip()
 
@@ -834,11 +793,6 @@ def process_dossier(
 
     emit_progress(progress, 62, "Detectando duplicados…")
     rows = detectar_duplicados_avanzado(rows_expanded, KEY_MAP)
-    for row in rows:
-        if row["is_duplicate"]:
-            row["Tono"] = "Duplicada"
-            row["Tema"] = "-"
-            row["Subtema"] = "-"
 
     # Enriquecimiento IA (si está habilitado)
     cols_to_export = list(OUTPUT_COLUMNS)
@@ -870,9 +824,21 @@ def process_dossier(
     duration = time.time() - t0
     emit_progress(progress, 100, "Limpieza y análisis completados")
 
+    # Nombre del archivo con la primera marca buscada para orden
+    if ai_config and ai_config.get("brand"):
+        brand_raw = ai_config.get("brand", "")
+        clean_tag = re.sub(r"[^\w\s-]", "", unidecode(brand_raw)).strip()
+        brand_tag = re.sub(r"[-\s]+", "_", clean_tag)
+        filename_prefix = f"Dossier_{brand_tag}" if brand_tag else "Dossier_Limpio"
+    else:
+        filename_prefix = "Dossier_Limpio"
+
+    timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M')
+    final_filename = f"{filename_prefix}_{timestamp}.xlsx"
+
     return {
         "output_data": output_data,
-        "output_filename": f"Dossier_Limpio_{datetime.datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+        "output_filename": final_filename,
         "total_rows": total_rows,
         "unique_rows": unique_rows,
         "duplicates": total_rows - unique_rows,
