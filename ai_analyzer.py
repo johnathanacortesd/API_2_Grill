@@ -6,7 +6,7 @@ import re
 import json
 import logging
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import List, Dict, Tuple, Optional, Callable
+from typing import List, Dict, Tuple, Optional, Callable, Set
 from collections import Counter
 import pandas as pd
 from openai import OpenAI
@@ -22,17 +22,22 @@ FORBIDDEN_TRAILING_WORDS = {
 }
 
 STOPWORDS_ES = {
-    "de", "la", "el", "los", "las", "en", "para", "por", "con", "a", "al", "del",
-    "y", "o", "un", "una", "unos", "unas", "sobre", "tras", "este", "esta", "estos",
-    "estas", "fue", "fueron", "era", "eran", "como", "mas", "pero", "sus", "que"
+    "de", "del", "la", "el", "los", "las", "en", "para", "por", "con", "a", "al",
+    "y", "o", "u", "e", "un", "una", "unos", "unas", "sobre", "tras", "este", "esta",
+    "estos", "estas", "fue", "fueron", "era", "eran", "como", "mas", "pero", "sus",
+    "que", "se", "ha", "han", "hay", "les", "nos", "son"
 }
 
+def clean_text_simple(text: str) -> str:
+    if not text:
+        return ""
+    return re.sub(r"\s+", " ", str(text)).strip()
+
 def normalize_text_for_matching(text: str) -> str:
-    """Normaliza texto para comparación eliminando plurales y prefijos comunes."""
+    """Normaliza texto para comparación eliminando plurales y prefijos multimedia."""
     if not text:
         return ""
     t = unidecode(str(text).lower().strip())
-    # Quitar prefijos multimedia como "imagenes |", "video |", "en fotos |"
     t = re.sub(r"^(?:imagenes|en imagenes|fotos|en fotos|video|en video|en vivo)\s*\|\s*", "", t)
     words = re.findall(r"\b[a-z0-9]+\b", t)
     
@@ -50,53 +55,84 @@ def normalize_text_for_matching(text: str) -> str:
         
     return " ".join(stemmed)
 
-def extract_brand_context(text: str, title: str, brand: str, aliases: List[str]) -> Tuple[str, bool]:
+def get_content_words_set(text_norm: str) -> Set[str]:
+    """Retorna conjunto de palabras clave con peso semántico."""
+    return {w for w in text_norm.split() if len(w) > 2 and w not in STOPWORDS_ES}
+
+def _get_target_regexes(brand: str, aliases: List[str]) -> List[str]:
+    """Genera expresiones regulares robustas para la marca y sus alias (sin tildes, con siglas)."""
+    raw_targets = [brand] + [a for a in aliases if a.strip()]
+    regexes = []
+    for t in raw_targets:
+        clean_t = unidecode(t.lower().strip())
+        if not clean_t:
+            continue
+        # Manejo de siglas: UAO permite también U.A.O.
+        if len(clean_t) <= 5 and clean_t.isalpha():
+            pattern = r"\b" + r"\.?\s*".join(list(clean_t)) + r"\.?\b"
+            regexes.append(pattern)
+        else:
+            regexes.append(rf"\b{re.escape(clean_t)}\b")
+    return regexes
+
+def extract_brand_context(text: str, title: str, brand: str, aliases: List[str]) -> str:
     """
-    Extrae el texto de análisis: Título + Resumen.
-    Retorna: (contexto_analizado, es_mencion_directa)
+    Extrae el texto que contiene la marca o alias sin agregar la palabra 'Título:'.
+    Busca de forma estricta tanto en Título como en Resumen - Aclaración.
     """
-    title_clean = re.sub(r"\s+", " ", str(title or "")).strip()
-    text_clean = re.sub(r"\s+", " ", str(text or "")).strip()
+    t_clean = clean_text_simple(title)
+    r_clean = clean_text_simple(text)
+    target_regexes = _get_target_regexes(brand, aliases)
     
-    targets = [brand.lower()] + [a.lower().strip() for a in aliases if a.strip()]
-    full_text = f"{title_clean}. {text_clean}".strip()
+    # 1. Verificar si el Título contiene la marca/alias
+    t_norm = unidecode(t_clean.lower())
+    title_matches = any(re.search(rx, t_norm) for rx in target_regexes)
     
-    sentences = re.split(r'(?<=[.!?])\s+', full_text)
-    matched_blocks = []
+    # 2. Separar Resumen en oraciones y buscar menciones
+    sentences = [s.strip() for s in re.split(r'(?<=[.!?\n])\s+', r_clean) if s.strip()]
+    matched_sentences = []
     
-    for idx, sentence in enumerate(sentences):
-        s_lower = sentence.lower()
-        if any(re.search(rf"\b{re.escape(t)}\b", s_lower) for t in targets):
-            prev_s = sentences[idx - 1] if idx > 0 else ""
-            next_s = sentences[idx + 1] if idx + 1 < len(sentences) else ""
-            block = f"{prev_s} {sentence} {next_s}".strip()
-            if block and block not in matched_blocks:
-                matched_blocks.append(block)
+    for idx, s in enumerate(sentences):
+        s_norm = unidecode(s.lower())
+        if any(re.search(rx, s_norm) for rx in target_regexes):
+            block = s
+            # Si la oración es muy corta (menos de 7 palabras), agregar la contigua para contexto
+            if len(s.split()) < 7 and idx + 1 < len(sentences):
+                block = f"{s} {sentences[idx + 1]}"
+            if block not in matched_sentences:
+                matched_sentences.append(block)
                 
-    if matched_blocks:
-        extracted = f"Título: {title_clean} | Contexto extraído: " + " [...] ".join(matched_blocks)
-        return extracted[:750], True
+    # 3. Consolidar el texto del contexto
+    parts = []
+    if title_matches:
+        parts.append(t_clean)
+    if matched_sentences:
+        parts.extend(matched_sentences)
         
-    # Si no hay mención directa, SIEMPRE analizar Título + Resumen
-    fallback = f"Título: {title_clean}. Resumen: {text_clean[:450]}"
-    return fallback.strip(), False
+    if parts:
+        return " ".join(parts)[:750].strip()
+        
+    # Si NO se encontró mención directa en ningún lado, devolver Título + inicio de Resumen sin prefijos
+    if t_clean and r_clean:
+        return f"{t_clean}. {r_clean[:400]}".strip()
+    return t_clean or r_clean[:500]
 
 def is_byline_or_student_author(context_text: str, brand: str, aliases: List[str]) -> bool:
-    """Detecta si la mención es de autoría/egresado/estudiante que redactó la noticia."""
-    targets = [brand.lower()] + [a.lower().strip() for a in aliases if a.strip()]
-    for t in targets:
-        # Ej: "egresada de la Universidad Autónoma de Occidente", "estudiante de la UAO"
-        p1 = rf"(?:egresad[oa]|estudiante|graduad[oa]|practicante|redactor[a]?|periodista)\s+(?:de|en|del)?\s+(?:la\s+)?{re.escape(t)}"
-        if re.search(p1, context_text, re.IGNORECASE):
+    """Detecta si la mención es de autoría o redacción por un estudiante/egresado."""
+    ctx_norm = unidecode(context_text.lower())
+    target_regexes = _get_target_regexes(brand, aliases)
+    
+    for rx in target_regexes:
+        p1 = rf"(?:egresad[oa]|estudiante|graduad[oa]|practicante|redactor[a]?|periodista)\s+(?:de|en|del)?\s+(?:la\s+)?{rx}"
+        if re.search(p1, ctx_norm):
             return True
-        # Ej: "Por: Laura Gómez, egresada..."
-        p2 = rf"(?:por|autor[a]?):\s*[\w\s]+,?\s*(?:egresad[oa]|estudiante|periodista).*{re.escape(t)}"
-        if re.search(p2, context_text, re.IGNORECASE):
+        p2 = rf"(?:por|autor[a]?):\s*[\w\s]+,?\s*(?:egresad[oa]|estudiante|periodista).*{rx}"
+        if re.search(p2, ctx_norm):
             return True
     return False
 
 def clean_subtema(text: str, brand: str, title_fallback: str) -> str:
-    """Limpia el subtema y prohíbe terminantemente frases tipo 'Mención de...'."""
+    """Garantiza especificidad y prohíbe 'Mención de...'."""
     if not text:
         return _fallback_from_title(title_fallback)
         
@@ -112,7 +148,6 @@ def clean_subtema(text: str, brand: str, title_fallback: str) -> str:
     res = " ".join(words).strip()
     res_lower = res.lower()
     
-    # Lista de frases prohibidas
     forbidden_starts = [
         "mencion de", "mencion a", "mencion en", "mencion del", "presencia de",
         "declaraciones de", "noticia sobre", "alusion a", "referencia a"
@@ -122,7 +157,6 @@ def clean_subtema(text: str, brand: str, title_fallback: str) -> str:
             res = res[len(fs):].strip()
             break
             
-    # Si después de limpiar quedó solo el nombre de la marca o una palabra vacía
     brand_words = set(re.findall(r"\b[a-z0-9]+\b", unidecode(brand.lower())))
     res_words = set(re.findall(r"\b[a-z0-9]+\b", unidecode(res.lower())))
     
@@ -132,7 +166,6 @@ def clean_subtema(text: str, brand: str, title_fallback: str) -> str:
     return res.capitalize()
 
 def _fallback_from_title(title: str) -> str:
-    """Extrae un subtema de emergencia a partir del título cuando la IA falla."""
     if not title:
         return "Hecho Informativo"
     t = re.sub(r"^(?:imagenes|video|en fotos)\s*\|\s*", "", title, flags=re.IGNORECASE).strip()
@@ -142,13 +175,20 @@ def _fallback_from_title(title: str) -> str:
         clean_words.pop()
     return " ".join(clean_words).capitalize() if clean_words else "Hecho Informativo"
 
-def cluster_similar_rows(rows: List[dict], km: dict) -> Dict[int, int]:
-    """Agrupa filas que hablen del mismo hecho por título y resumen."""
+def cluster_similar_rows(rows: List[dict], km: dict, brand: str, aliases: List[str]) -> Dict[int, int]:
+    """
+    Agrupa noticias que traten del mismo hecho.
+    Detecta de forma inteligente notas con redacciones ligeramente diferentes (ej: UAO y DIAN).
+    """
     n = len(rows)
     cluster_map = {}
-    clusters_rep = {}
+    clusters_rep = {}  # cid: {"title_norm": str, "content_words": set, "body_norm": str}
     current_cluster = 0
     
+    target_stems = set()
+    for t in [brand] + aliases:
+        target_stems.update(normalize_text_for_matching(t).split())
+        
     for i in range(n):
         if rows[i].get("is_duplicate"):
             continue
@@ -157,34 +197,53 @@ def cluster_similar_rows(rows: List[dict], km: dict) -> Dict[int, int]:
         r_raw = str(rows[i].get(km.get("resumen", "Resumen - Aclaracion"), ""))
         
         t_norm = normalize_text_for_matching(t_raw)
+        c_words = get_content_words_set(t_norm)
         r_norm = normalize_text_for_matching(r_raw[:350])
         
         assigned = False
         for cid, rep in clusters_rep.items():
             rep_t = rep["title_norm"]
+            rep_words = rep["content_words"]
             rep_r = rep["body_norm"]
             
+            # 1. Coincidencia por conjunto de palabras clave (Content Word Overlap)
+            overlap = c_words & rep_words
+            has_brand_in_overlap = any(b in overlap for b in target_stems)
+            
+            # Si comparten 4 o más palabras clave, O comparten 3 incluyendo la marca/alias: ES LA MISMA NOTICIA
+            if len(overlap) >= 4 or (len(overlap) >= 3 and has_brand_in_overlap):
+                cluster_map[i] = cid
+                assigned = True
+                break
+                
+            # 2. Coincidencia difusa de título
             if t_norm and rep_t:
-                if t_norm == rep_t or fuzz.token_set_ratio(t_norm, rep_t) >= 84:
+                sim_title = fuzz.token_set_ratio(t_norm, rep_t)
+                if sim_title >= 72:
                     cluster_map[i] = cid
                     assigned = True
                     break
             
+            # 3. Coincidencia por resumen (cables de noticias)
             if r_norm and rep_r and len(r_norm) > 40 and len(rep_r) > 40:
-                if fuzz.token_set_ratio(r_norm, rep_r) >= 86:
+                if fuzz.token_set_ratio(r_norm, rep_r) >= 82:
                     cluster_map[i] = cid
                     assigned = True
                     break
                     
         if not assigned:
             cluster_map[i] = current_cluster
-            clusters_rep[current_cluster] = {"title_norm": t_norm, "body_norm": r_norm}
+            clusters_rep[current_cluster] = {
+                "title_norm": t_norm,
+                "content_words": c_words,
+                "body_norm": r_norm
+            }
             current_cluster += 1
             
     return cluster_map
 
 def canonicalize_subtopics(cluster_results: Dict[int, Tuple[str, str, str]]) -> Dict[int, Tuple[str, str, str]]:
-    """Unifica variaciones mínimas entre subtemas al más frecuente."""
+    """Unifica variaciones de subtemas al más frecuente."""
     subtemas_list = [sub for _, _, sub in cluster_results.values() if sub]
     counts = Counter(subtemas_list)
     unique_subs = list(counts.keys())
@@ -196,7 +255,7 @@ def canonicalize_subtopics(cluster_results: Dict[int, Tuple[str, str, str]]) -> 
         for j in range(i + 1, len(unique_subs)):
             s2 = unique_subs[j]
             norm2 = normalize_text_for_matching(s2)
-            if norm1 == norm2 or fuzz.token_sort_ratio(norm1, norm2) >= 85:
+            if norm1 == norm2 or fuzz.token_set_ratio(norm1, norm2) >= 75 or fuzz.token_sort_ratio(norm1, norm2) >= 75:
                 chosen = s1 if counts[s1] >= counts[s2] else s2
                 mapping[s1] = chosen
                 mapping[s2] = chosen
@@ -216,8 +275,7 @@ def _call_openai_cluster(
     ctx: str,
     title_ref: str
 ) -> Tuple[str, str, str]:
-    """Clasificación con reglas estrictas."""
-    # REGLA OBLIGATORIA: Autoría de egresado o estudiante
+    """Llamada a la API con reglas reputacionales estrictas."""
     if is_byline_or_student_author(ctx, brand, aliases):
         return "Neutro", "Estudiantes", "Redacción de artículo"
 
@@ -226,27 +284,26 @@ def _call_openai_cluster(
 Contexto analizado:
 \"\"\"{ctx}\"\"\"
 
-Instrucciones estrictas:
+Instrucciones:
 1. "tono": Evalúa el impacto directo en la reputación del cliente ("{brand}"):
-   - "Positivo": Se exalta su gestión, logros, vocería, convenios o premios.
-   - "Negativo": Se cuestiona, critica, denuncia o perjudica directamente su imagen.
-   - "Neutro": Es una mención objetiva o informativa (si la noticia trata de un hecho trágico o problema general pero el cliente no es causante ni culpable, el tono es "Neutro").
-   Valores permitidos: "Positivo", "Negativo", "Neutro".
+   - "Positivo": Exalta logros, convenios, servicios a la comunidad, vocería o reconocimientos.
+   - "Negativo": Crítica, denuncia, sanción o perjuicio directo.
+   - "Neutro": Noticia informativa, técnica u objetiva.
+   Valores válidos: "Positivo", "Negativo", "Neutro".
 
-2. "subtema": Especifica el HECHO, ACCIÓN O SUCESO CONCRETO de la noticia:
+2. "subtema": Especifica el HECHO O SUCESO CONCRETO de la noticia:
    - Máximo 6 palabras.
-   - Debe ser completo y coherente.
-   - PROHIBIDO usar puntos, comas o signos de puntuación.
+   - Sin signos de puntuación, comas ni puntos.
    - PROHIBIDO terminar en preposiciones (de, en, para, por, con), artículos o verbos.
-   - PROHIBIDO ROTUNDAMENTE usar la palabra "Mención" o poner únicamente el nombre del cliente (JAMÁS devuelvas cosas como "Mención de {brand}", "Presencia de la universidad", "Noticia de {brand}"). Describe el hecho noticioso (ej: "Posesión presidencial en Cali", "Labores de rescate en Cali", "Acreditación de ingeniería", "Pronunciamiento sobre transporte").
+   - PROHIBIDO usar la palabra "Mención" o nombrar únicamente al cliente (JAMÁS devuelvas "Mención de {brand}" ni "Mención de la universidad").
 
-Devuelve únicamente un JSON: {{"tono": "...", "subtema": "..."}}"""
+Responde únicamente un JSON: {{"tono": "...", "subtema": "..."}}"""
 
     try:
         resp = client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": "Eres un auditor senior de medios. Responde estrictamente en JSON válido sin usar frases vacías ni la palabra Mención."},
+                {"role": "system", "content": "Auditor senior de monitoreo de medios. Responde estrictamente en JSON válido."},
                 {"role": "user", "content": prompt}
             ],
             response_format={"type": "json_object"},
@@ -273,14 +330,14 @@ def enrich_rows_with_ai(
 ) -> List[dict]:
     client = OpenAI(api_key=api_key)
     
-    # 1. Extraer y poblar siempre la columna 'Contexto analizado'
+    # 1. Extraer y poblar la columna 'Contexto analizado' limpia
     if progress_callback:
-        progress_callback(71, "Extrayendo Título y Resumen para auditoría…")
+        progress_callback(71, "Extrayendo contexto de la marca y alias para auditoría…")
     for row in rows:
         if row.get("is_duplicate"):
             row["Contexto analizado"] = "-"
         else:
-            ctx, _ = extract_brand_context(
+            ctx = extract_brand_context(
                 str(row.get(km.get("resumen", "Resumen - Aclaracion"), "")),
                 str(row.get(km.get("titulo", "Título"), "")),
                 brand,
@@ -288,10 +345,10 @@ def enrich_rows_with_ai(
             )
             row["Contexto analizado"] = ctx
 
-    # 2. Agrupamiento semántico
+    # 2. Agrupamiento semántico con detección de entidades
     if progress_callback:
-        progress_callback(74, "Agrupando noticias similares y cables de agencia…")
-    cluster_map = cluster_similar_rows(rows, km)
+        progress_callback(74, "Agrupando noticias similares y hechos compartidos…")
+    cluster_map = cluster_similar_rows(rows, km, brand, aliases)
     
     unique_clusters = sorted(set(cluster_map.values()))
     total_clusters = len(unique_clusters)
@@ -303,9 +360,9 @@ def enrich_rows_with_ai(
             
     cluster_results: Dict[int, Tuple[str, str, str]] = {}
     
-    # 3. Clasificación paralela
+    # 3. Clasificación concurrente
     if progress_callback:
-        progress_callback(77, f"Analizando {total_clusters} eventos únicos con {model}…")
+        progress_callback(77, f"Analizando {total_clusters} hechos únicos con {model}…")
         
     completed = 0
     with ThreadPoolExecutor(max_workers=14) as executor:
@@ -328,7 +385,7 @@ def enrich_rows_with_ai(
     # 4. Unificar subtemas casi idénticos
     cluster_results = canonicalize_subtopics(cluster_results)
 
-    # 5. Generación de Macro-temas específicos (PROHIBIDO 'Otros')
+    # 5. Generación de Macro-temas específicos (sin 'Otros')
     if progress_callback:
         progress_callback(92, "Consolidando Temas macro específicos…")
         
@@ -340,12 +397,12 @@ def enrich_rows_with_ai(
 {json.dumps(all_subtemas, ensure_ascii=False)}
 
 Tu tarea es categorizar cada subtema bajo un "Tema" macro formal y representativo (1 a 4 palabras).
-Reglas indispensables:
-1. PROHIBIDO ROTUNDAMENTE usar "Otros", "General", "Varios", "Miscelánea", "Sin agrupar" o "Sin clasificar".
-2. Si un subtema no se agrupa con los demás, asígnale un Tema propio de su sector (ejemplos: "Gestión Pública", "Emergencias y Rescate", "Educación Superior", "Seguridad Ciudadana", "Infraestructura").
+Reglas:
+1. PROHIBIDO usar "Otros", "General", "Varios", "Miscelánea" o "Sin clasificar".
+2. Si un subtema no se agrupa con los demás, asígnale un Tema propio de su sector (ejemplos: "Gestión Tributaria", "Educación Superior", "Gestión de Emergencias", "Infraestructura").
 
 Devuelve exclusivamente un JSON objeto key-value. Ejemplo:
-{{"Labores de rescate en Cali": "Gestión de Emergencias", "Posesión presidencial en Cali": "Política Nacional"}}"""
+{{"Asesoría en trámites fiscales y aduaneros": "Gestión Tributaria"}}"""
 
         try:
             resp = client.chat.completions.create(
@@ -364,7 +421,7 @@ Devuelve exclusivamente un JSON objeto key-value. Ejemplo:
             for st in all_subtemas:
                 temas_map[st] = st
 
-    # 6. Mapear a todas las filas respetando el orden original
+    # 6. Mapear a todas las filas en el orden original
     for i, row in enumerate(rows):
         if row.get("is_duplicate"):
             row["Tono_IA"] = "Duplicada"
@@ -375,11 +432,7 @@ Devuelve exclusivamente un JSON objeto key-value. Ejemplo:
         cid = cluster_map.get(i)
         if cid is not None and cid in cluster_results:
             tono, tema_pre, subtema = cluster_results[cid]
-            if tema_pre:  # Caso especial predeterminado (ej: Estudiantes)
-                tema_final = tema_pre
-            else:
-                tema_final = temas_map.get(subtema, subtema)
-                
+            tema_final = tema_pre if tema_pre else temas_map.get(subtema, subtema)
             if str(tema_final).lower() in ["otros", "otro", "general", "varios", "sin clasificar"]:
                 tema_final = subtema
                 
