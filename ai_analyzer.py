@@ -36,9 +36,22 @@ INSTITUTIONAL_PREFIXES = [
 ]
 
 def clean_text_simple(text: str) -> str:
-    if not text or str(text).strip().lower() in ("nan", "none"):
+    """Limpia el texto y descarta cadenas vacías, enlaces o la palabra 'Link'."""
+    if not text:
         return ""
-    return re.sub(r"\s+", " ", str(text)).strip()
+    # Si viene como diccionario de hipervínculo {"value": "Link", "url": "..."}
+    if isinstance(text, dict):
+        val = text.get("value", "")
+        if str(val).strip().lower() in ("link", "http", ""):
+            return ""
+        return re.sub(r"\s+", " ", str(val)).strip()
+
+    s = str(text).strip()
+    if s.lower() in ("nan", "none", "null", "link", "link nota", "http", "https"):
+        return ""
+    if re.match(r"^https?://\S+$", s):
+        return ""
+    return re.sub(r"\s+", " ", s).strip()
 
 def normalize_text_for_matching(text: str) -> str:
     """Normaliza texto para comparación eliminando plurales y prefijos multimedia."""
@@ -133,6 +146,10 @@ def generate_brand_variants(brand: str, aliases: List[str]) -> List[str]:
     return compiled_regexes
 
 def extract_brand_context(resumen: str, titulo: str, brand_regexes: List[str]) -> str:
+    """
+    Extrae rigurosamente las oraciones del Resumen - Aclaración donde se menciona la marca.
+    Nunca incluye la palabra 'Link' ni devuelve únicamente el título si hay resumen disponible.
+    """
     t_clean = clean_text_simple(titulo)
     r_clean = clean_text_simple(resumen)
     
@@ -144,11 +161,16 @@ def extract_brand_context(resumen: str, titulo: str, brand_regexes: List[str]) -
     if r_clean:
         sentences = [s.strip() for s in re.split(r'(?<=[.!?\n])\s+', r_clean) if s.strip()]
         for idx, s in enumerate(sentences):
-            s_norm = unidecode(s.lower())
+            s_clean_sub = clean_text_simple(s)
+            if not s_clean_sub:
+                continue
+            s_norm = unidecode(s_clean_sub.lower())
             if any(re.search(rx, s_norm) for rx in brand_regexes):
-                block = s
-                if len(s.split()) < 10 and idx + 1 < len(sentences):
-                    block = f"{s} {sentences[idx + 1]}"
+                block = s_clean_sub
+                if len(s_clean_sub.split()) < 10 and idx + 1 < len(sentences):
+                    next_s = clean_text_simple(sentences[idx + 1])
+                    if next_s:
+                        block = f"{s_clean_sub} {next_s}"
                 if block not in matched_sentences:
                     matched_sentences.append(block)
 
@@ -157,7 +179,7 @@ def extract_brand_context(resumen: str, titulo: str, brand_regexes: List[str]) -
                 for m in re.finditer(rx, r_norm):
                     start = max(0, m.start() - 120)
                     end = min(len(r_clean), m.end() + 150)
-                    snippet = r_clean[start:end].strip()
+                    snippet = clean_text_simple(r_clean[start:end])
                     if snippet and snippet not in matched_sentences:
                         matched_sentences.append(f"...{snippet}..." if start > 0 else snippet)
                     if len(matched_sentences) >= 2:
@@ -178,19 +200,19 @@ def extract_brand_context(resumen: str, titulo: str, brand_regexes: List[str]) -
             return f"{t_clean}. {r_clean[:380]}".strip()[:800]
         return t_clean
 
+    # Si la marca no aparece explícitamente, extraer fragmento de resumen + título
     if t_clean and r_clean:
         return f"{t_clean}. {r_clean[:400]}".strip()[:800]
     return t_clean or r_clean[:500]
 
 def is_byline_or_student_author(context_text: str, brand_regexes: List[str]) -> bool:
     """
-    Detecta de forma amplia menciones de autoría, edición o redacción:
-    Ej: 'Editora web y periodista egresada de...', 'Editor web y periodista egresado de...',
+    Detecta menciones de autoría, redacción o estudiantes:
+    Ej: 'Editora web y periodista egresada...', 'Editor web y periodista egresado...',
         'Estudiante en formación...', 'Periodista en formación...', 'Practicante...'
     """
     ctx_norm = unidecode(context_text.lower())
     
-    # Patrones exhaustivos de perfiles profesionales/estudiantes en notas periodísticas
     role_pattern = (
         r"(?:editor[a]?\s*(?:web)?|periodista|comunicador[a]?|redactor[a]?|reportero[a]?|"
         r"practicante|egresad[oa]|graduad[oa]|estudiante(?:\s+en\s+formacion)?|"
@@ -198,12 +220,9 @@ def is_byline_or_student_author(context_text: str, brand_regexes: List[str]) -> 
     )
     
     for rx in brand_regexes:
-        # Caso 1: [Rol/Egresado/Estudiante] ... [Marca]
         p1 = rf"{role_pattern}.{{0,60}}?{rx}"
         if re.search(p1, ctx_norm):
             return True
-            
-        # Caso 2: Por / Autor: Nombre, [rol] [marca]
         p2 = rf"(?:por|autor[a]?):\s*[\w\s]+,?.{{0,45}}?{rx}"
         if re.search(p2, ctx_norm):
             return True
@@ -320,13 +339,13 @@ def cluster_similar_rows(rows: List[dict], km: dict, brand_regexes: List[str]) -
             rep_anchor = rep["anchor"]
             rep_r = rep["body_norm"]
             
-            # 1. Mismo encabezado de evento antes de ':' o '-'
+            # 1. Mismo ancla de evento antes de ':' o '-'
             if anchor and rep_anchor and anchor == rep_anchor:
                 cluster_map[i] = cid
                 assigned = True
                 break
                 
-            # 2. Mismas 3 primeras palabras clave (ej: 'feria educativa inspirate')
+            # 2. Mismas 3 primeras palabras clave
             if len(lead_words) >= 3 and len(rep_lead) >= 3 and lead_words == rep_lead:
                 cluster_map[i] = cid
                 assigned = True
@@ -423,7 +442,6 @@ def _call_openai_cluster(
     ctx: str,
     title_ref: str
 ) -> Tuple[str, str, str]:
-    # REGLA ESTRICTA DE AUTORÍA / EGRESADO / ESTUDIANTE
     if is_byline_or_student_author(ctx, brand_regexes):
         return "Neutro", "Estudiantes", "Redacción de artículo"
 
@@ -433,17 +451,22 @@ Titular de referencia: "{title_ref}"
 Contexto analizado:
 \"\"\"{ctx}\"\"\"
 
-Instrucciones taxonómicas:
+Instrucciones taxonómicas y reputacionales:
 1. "tono": Impacto reputacional en el cliente ("{brand}"): "Positivo", "Negativo" o "Neutro".
+   REGLAS CRÍTICAS DE TONO:
+   - "Positivo": Siempre que el cliente reciba o exprese ACOMPAÑAMIENTO, RESPALDO, APOYO, FELICITACIONES, CELEBRACIÓN, HOMENAJE, RECONOCIMIENTO, ALIANZA o SOLIDARIDAD INSTITUCIONAL (ejemplos: "Acompañamos desde la Universidad...", "La entidad celebra y respalda el nombramiento..."). Esto es estrictamente POSITIVO (NO negativo, NO neutro), pues evidencia liderazgo, vocería constructiva y posicionamiento favorable.
+   - "Negativo": Denuncias, quejas directas, sanciones, negligencia o perjuicio comprobado para la imagen del cliente.
+   - "Neutro": Noticia informativa, datos técnicos u objetivos, o si relata un hecho trágico general y el cliente no tiene culpa alguna.
+
 2. "tema": ÁREA O DOMINIO GENERAL (Nivel Macro, 1 a 3 palabras).
    - Ejemplos: "Educación Superior", "Sector Salud", "Gestión Tributaria", "Gestión Institucional", "Infraestructura".
    - PROHIBIDO usar "Otros" o "General".
+
 3. "subtema": HECHO O SUCESO ESPECÍFICO (Nivel Micro, máximo 6 palabras).
-   - IMPORTANTE: Si el titular anuncia o cubre una FERIA, FORO, CONGRESO O EVENTO (ej: "Feria Educativa Inspírate"), el subtema DEBE centrarse en dicho evento principal y su oferta, NO en detalles secundarios aislados del texto.
    - Sin signos de puntuación, comas ni puntos.
    - PROHIBIDO usar la palabra "Mención" o nombrar únicamente al cliente.
 
-REGLA OBLIGATORIA: "tema" y "subtema" DEBEN SER DIFERENTES.
+REGLA INQUEBRANTABLE: "tema" y "subtema" DEBEN SER DIFERENTES.
 
 Responde estrictamente en JSON:
 {{"tono": "...", "tema": "...", "subtema": "..."}}"""
@@ -452,7 +475,7 @@ Responde estrictamente en JSON:
         resp = client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": "Auditor senior de monitoreo de medios. Identifica siempre el evento central del titular."},
+                {"role": "system", "content": "Auditor senior de monitoreo de medios. Clasifica el tono y los hechos con alta precisión institucional."},
                 {"role": "user", "content": prompt}
             ],
             response_format={"type": "json_object"},
