@@ -4,6 +4,7 @@
 import html
 import io
 import logging
+import re
 import time
 import streamlit as st
 import pandas as pd
