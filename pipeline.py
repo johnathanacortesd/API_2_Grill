@@ -1,5 +1,5 @@
 # ======================================
-# Pipeline de limpieza con IA integrada
+# Pipeline de limpieza y análisis (pipeline.py)
 # ======================================
 import datetime
 import gc
@@ -666,6 +666,32 @@ def normalize_dossier_dataframe(df, region_map, internet_map, progress: Progress
     return df
 
 
+def read_and_normalize_dossier(sheet, region_map, internet_map):
+    it = sheet.iter_rows()
+    header_row = next(it, None)
+    if header_row is None:
+        return pd.DataFrame()
+    raw_headers = [c.value for c in header_row]
+    rows = []
+    for ridx, row in enumerate(it, start=2):
+        if all(c.value is None for c in row):
+            continue
+        row_data = {}
+        for i, h in enumerate(raw_headers):
+            if not h or i >= len(row):
+                continue
+            cell = row[i]
+            val = cell.value
+            url = cell.hyperlink.target if (getattr(cell, "hyperlink", None) and cell.hyperlink.target) else None
+            if url:
+                row_data[h] = {"value": val or "Link", "url": url}
+            else:
+                row_data[h] = val
+        rows.append(row_data)
+    df = pd.DataFrame(rows)
+    return normalize_dossier_dataframe(df, region_map, internet_map)
+
+
 def expand_menciones(df) -> List[dict]:
     records = df.to_dict("records")
     rows_expanded = []
@@ -709,7 +735,7 @@ def generate_output_excel(rows, km, progress: ProgressCb = None, columns_to_use:
     fmt_thousands = wb.add_format({"num_format": "#,##0"})
 
     for i, col_name in enumerate(cols):
-        if col_name in ["Título", "Resumen - Aclaracion", "resumen corto"]:
+        if col_name in ["Título", "Resumen - Aclaracion", "resumen corto", "Contexto analizado"]:
             ws.set_column(i, i, 50)
         elif col_name in ["Link Nota", "Link (Streaming - Imagen)"]:
             ws.set_column(i, i, 15)
@@ -800,6 +826,9 @@ def _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_date, fmt_cu
             )
 
 
+# ======================================
+# Proceso Principal
+# ======================================
 def process_dossier(
     file_obj,
     region_map,
@@ -835,7 +864,7 @@ def process_dossier(
             row["Tema"] = "-"
             row["Subtema"] = "-"
 
-    # Enriquecimiento IA (si está activo)
+    # Enriquecimiento IA (si está habilitado)
     cols_to_export = list(OUTPUT_COLUMNS)
     if ai_config and ai_config.get("enabled"):
         emit_progress(progress, 70, "Iniciando análisis reputacional con IA…")
@@ -848,7 +877,7 @@ def process_dossier(
             model=ai_config.get("model", "gpt-4.1-nano-2025-04-14"),
             progress_callback=progress
         )
-        cols_to_export.extend(["Tono_IA", "Tema_IA", "Subtema_IA"])
+        cols_to_export.extend(["Contexto analizado", "Tono_IA", "Tema_IA", "Subtema_IA"])
 
     emit_progress(progress, 94, "✓ Estructuración finalizada. Generando archivo Excel…")
 
