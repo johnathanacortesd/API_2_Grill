@@ -248,8 +248,7 @@ def get_column_robust(df, name):
 def clean_text(text):
     if not isinstance(text, str):
         return text
-    text = re.sub(r"\s+", " ", text)
-    return text.strip()
+    return re.sub(r"\s+", " ", text).strip()
 
 
 def clean_cuerpo(text):
@@ -260,15 +259,11 @@ def clean_cuerpo(text):
     return text.strip()
 
 
-def normalize_title_for_comparison(title):
+def clean_title_for_output(title):
+    """Limpia espacios en blanco sin cortar titulares con barras verticales."""
     if not isinstance(title, str):
         return ""
-    tmp = re.split(r"\s*[:|-]\s*", title, 1)
-    return re.sub(r"\W+", " ", tmp[0]).lower().strip()
-
-
-def clean_title_for_output(title):
-    return re.sub(r"\s*\|\s*[\w\s]+$", "", str(title)).strip()
+    return re.sub(r"\s+", " ", str(title)).strip()
 
 
 def corregir_texto(text):
@@ -666,32 +661,6 @@ def normalize_dossier_dataframe(df, region_map, internet_map, progress: Progress
     return df
 
 
-def read_and_normalize_dossier(sheet, region_map, internet_map):
-    it = sheet.iter_rows()
-    header_row = next(it, None)
-    if header_row is None:
-        return pd.DataFrame()
-    raw_headers = [c.value for c in header_row]
-    rows = []
-    for ridx, row in enumerate(it, start=2):
-        if all(c.value is None for c in row):
-            continue
-        row_data = {}
-        for i, h in enumerate(raw_headers):
-            if not h or i >= len(row):
-                continue
-            cell = row[i]
-            val = cell.value
-            url = cell.hyperlink.target if (getattr(cell, "hyperlink", None) and cell.hyperlink.target) else None
-            if url:
-                row_data[h] = {"value": val or "Link", "url": url}
-            else:
-                row_data[h] = val
-        rows.append(row_data)
-    df = pd.DataFrame(rows)
-    return normalize_dossier_dataframe(df, region_map, internet_map)
-
-
 def expand_menciones(df) -> List[dict]:
     records = df.to_dict("records")
     rows_expanded = []
@@ -736,11 +705,11 @@ def generate_output_excel(rows, km, progress: ProgressCb = None, columns_to_use:
 
     for i, col_name in enumerate(cols):
         if col_name in ["Título", "Resumen - Aclaracion", "resumen corto", "Contexto analizado"]:
-            ws.set_column(i, i, 50)
+            ws.set_column(i, i, 55)
         elif col_name in ["Link Nota", "Link (Streaming - Imagen)"]:
             ws.set_column(i, i, 15)
         elif col_name in ["Subtema_IA", "Tema_IA"]:
-            ws.set_column(i, i, 25)
+            ws.set_column(i, i, 28)
         else:
             ws.set_column(i, i, 20)
         ws.write(0, i, col_name, fmt_header)
@@ -877,6 +846,7 @@ def process_dossier(
             model=ai_config.get("model", "gpt-4.1-nano-2025-04-14"),
             progress_callback=progress
         )
+        # Añade siempre la columna Contexto analizado y las 3 columnas de IA al final
         cols_to_export.extend(["Contexto analizado", "Tono_IA", "Tema_IA", "Subtema_IA"])
 
     emit_progress(progress, 94, "✓ Estructuración finalizada. Generando archivo Excel…")
