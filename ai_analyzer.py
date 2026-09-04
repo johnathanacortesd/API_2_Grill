@@ -66,15 +66,12 @@ def get_content_words_set(text_norm: str) -> Set[str]:
     return {w for w in text_norm.split() if len(w) > 2 and w not in STOPWORDS_ES}
 
 def get_lead_content_words(text_norm: str, n_words: int = 3) -> Tuple[str, ...]:
-    """Extrae las primeras N palabras clave del titular."""
     words = [w for w in text_norm.split() if len(w) > 2 and w not in STOPWORDS_ES]
     return tuple(words[:n_words])
 
 def extract_event_anchor(title_raw: str) -> str:
-    """Extrae el nombre del evento o titular antes de dos puntos o guión."""
     if not title_raw:
         return ""
-    # Si tiene estructura "Evento: Detalle" o "Evento - Detalle"
     parts = re.split(r"\s*[:|-]\s*", title_raw, 1)
     if len(parts) > 1 and len(parts[0].strip()) >= 10:
         return normalize_text_for_matching(parts[0])
@@ -186,14 +183,31 @@ def extract_brand_context(resumen: str, titulo: str, brand_regexes: List[str]) -
     return t_clean or r_clean[:500]
 
 def is_byline_or_student_author(context_text: str, brand_regexes: List[str]) -> bool:
+    """
+    Detecta de forma amplia menciones de autoría, edición o redacción:
+    Ej: 'Editora web y periodista egresada de...', 'Editor web y periodista egresado de...',
+        'Estudiante en formación...', 'Periodista en formación...', 'Practicante...'
+    """
     ctx_norm = unidecode(context_text.lower())
+    
+    # Patrones exhaustivos de perfiles profesionales/estudiantes en notas periodísticas
+    role_pattern = (
+        r"(?:editor[a]?\s*(?:web)?|periodista|comunicador[a]?|redactor[a]?|reportero[a]?|"
+        r"practicante|egresad[oa]|graduad[oa]|estudiante(?:\s+en\s+formacion)?|"
+        r"periodista(?:\s+en\s+formacion)?)"
+    )
+    
     for rx in brand_regexes:
-        p1 = rf"(?:egresad[oa]|estudiante|graduad[oa]|practicante|redactor[a]?|periodista)\s+(?:de|en|del)?\s+(?:la\s+)?{rx}"
+        # Caso 1: [Rol/Egresado/Estudiante] ... [Marca]
+        p1 = rf"{role_pattern}.{{0,60}}?{rx}"
         if re.search(p1, ctx_norm):
             return True
-        p2 = rf"(?:por|autor[a]?):\s*[\w\s]+,?\s*(?:egresad[oa]|estudiante|periodista).*{rx}"
+            
+        # Caso 2: Por / Autor: Nombre, [rol] [marca]
+        p2 = rf"(?:por|autor[a]?):\s*[\w\s]+,?.{{0,45}}?{rx}"
         if re.search(p2, ctx_norm):
             return True
+            
     return False
 
 def clean_subtema(text: str, brand: str, title_fallback: str) -> str:
@@ -276,16 +290,12 @@ def _fallback_from_title(title: str) -> str:
     return " ".join(clean_words).capitalize() if clean_words else "Hecho Informativo"
 
 def cluster_similar_rows(rows: List[dict], km: dict, brand_regexes: List[str]) -> Dict[int, int]:
-    """
-    Agrupa noticias que traten del mismo hecho.
-    Incorpora la lógica de ordenamiento del analista humano y detección de eventos comunes.
-    """
+    """Agrupa noticias que traten del mismo hecho."""
     n = len(rows)
     cluster_map = {}
     clusters_rep = {}
     current_cluster = 0
     
-    # 1. ORDENAR ÍNDICES POR TÍTULO (Como hace el analista humano)
     active_indices = [i for i in range(n) if not rows[i].get("is_duplicate")]
     sorted_indices = sorted(
         active_indices,
@@ -310,19 +320,19 @@ def cluster_similar_rows(rows: List[dict], km: dict, brand_regexes: List[str]) -
             rep_anchor = rep["anchor"]
             rep_r = rep["body_norm"]
             
-            # REGLA 1 (Caso Inspírate): Coincidencia exacta del Ancla del Evento antes de dos puntos o guión
+            # 1. Mismo encabezado de evento antes de ':' o '-'
             if anchor and rep_anchor and anchor == rep_anchor:
                 cluster_map[i] = cid
                 assigned = True
                 break
                 
-            # REGLA 2 (Caso Inspírate): Mismas 3 primeras palabras clave (ej: 'feria educativa inspirate')
+            # 2. Mismas 3 primeras palabras clave (ej: 'feria educativa inspirate')
             if len(lead_words) >= 3 and len(rep_lead) >= 3 and lead_words == rep_lead:
                 cluster_map[i] = cid
                 assigned = True
                 break
 
-            # REGLA 3: Mismas 2 primeras palabras clave si son largas (ej: 'premios portafolio', 'cumbre cafetera')
+            # 3. Mismas 2 palabras clave si son extensas
             if len(lead_words) >= 2 and len(rep_lead) >= 2 and lead_words[:2] == rep_lead[:2]:
                 combined_lead_len = len(" ".join(lead_words[:2]))
                 if combined_lead_len >= 13:
@@ -330,7 +340,7 @@ def cluster_similar_rows(rows: List[dict], km: dict, brand_regexes: List[str]) -
                     assigned = True
                     break
 
-            # REGLA 4: Contención o prefijo (reducido a 18 caracteres)
+            # 4. Contención de título o prefijo largo
             if t_norm and rep_t:
                 if t_norm in rep_t or rep_t in t_norm:
                     cluster_map[i] = cid
@@ -346,21 +356,21 @@ def cluster_similar_rows(rows: List[dict], km: dict, brand_regexes: List[str]) -
                     assigned = True
                     break
             
-            # REGLA 5: Conjunto de palabras clave compartidas
+            # 5. Palabras clave compartidas
             overlap = c_words & rep_words
             if len(overlap) >= 4 or (len(overlap) >= 3 and any(re.search(rx, " ".join(overlap)) for rx in brand_regexes)):
                 cluster_map[i] = cid
                 assigned = True
                 break
                 
-            # REGLA 6: Similitud difusa
+            # 6. Similitud difusa
             if t_norm and rep_t:
                 if fuzz.token_set_ratio(t_norm, rep_t) >= 70:
                     cluster_map[i] = cid
                     assigned = True
                     break
             
-            # REGLA 7: Mismo cable de agencia en el resumen
+            # 7. Mismo cable en resumen
             if r_norm and rep_r and len(r_norm) > 40 and len(rep_r) > 40:
                 if fuzz.token_set_ratio(r_norm, rep_r) >= 82:
                     cluster_map[i] = cid
@@ -381,7 +391,6 @@ def cluster_similar_rows(rows: List[dict], km: dict, brand_regexes: List[str]) -
     return cluster_map
 
 def canonicalize_subtopics(cluster_results: Dict[int, Tuple[str, str, str]]) -> Dict[int, Tuple[str, str, str]]:
-    """Unifica variaciones mínimas entre subtemas al más frecuente."""
     subtemas_list = [sub for _, _, sub in cluster_results.values() if sub]
     counts = Counter(subtemas_list)
     unique_subs = list(counts.keys())
@@ -414,7 +423,7 @@ def _call_openai_cluster(
     ctx: str,
     title_ref: str
 ) -> Tuple[str, str, str]:
-    """Clasificación enfocada en el hecho noticioso principal."""
+    # REGLA ESTRICTA DE AUTORÍA / EGRESADO / ESTUDIANTE
     if is_byline_or_student_author(ctx, brand_regexes):
         return "Neutro", "Estudiantes", "Redacción de artículo"
 
@@ -430,7 +439,7 @@ Instrucciones taxonómicas:
    - Ejemplos: "Educación Superior", "Sector Salud", "Gestión Tributaria", "Gestión Institucional", "Infraestructura".
    - PROHIBIDO usar "Otros" o "General".
 3. "subtema": HECHO O SUCESO ESPECÍFICO (Nivel Micro, máximo 6 palabras).
-   - IMPORTANTE: Si el titular anuncia o cubre una FERIA, FORO, CONGRESO O EVENTO (ejemplo: "Feria Educativa Inspírate"), el subtema DEBE centrarse en dicho evento principal y su oferta (ej: "Participación en Feria Educativa Inspírate" o "Oferta académica en Feria Inspírate"), NO en detalles secundarios aislados del texto.
+   - IMPORTANTE: Si el titular anuncia o cubre una FERIA, FORO, CONGRESO O EVENTO (ej: "Feria Educativa Inspírate"), el subtema DEBE centrarse en dicho evento principal y su oferta, NO en detalles secundarios aislados del texto.
    - Sin signos de puntuación, comas ni puntos.
    - PROHIBIDO usar la palabra "Mención" o nombrar únicamente al cliente.
 
@@ -478,10 +487,8 @@ def enrich_rows_with_ai(
 ) -> List[dict]:
     client = OpenAI(api_key=api_key)
     
-    # 1. Generar variantes de la marca
     brand_regexes = generate_brand_variants(brand, aliases)
     
-    # 2. Extraer contexto analizado
     if progress_callback:
         progress_callback(71, "Extrayendo contexto de la marca y sus variantes para auditoría…")
     for row in rows:
@@ -498,7 +505,6 @@ def enrich_rows_with_ai(
             )
             row["Contexto analizado"] = ctx
 
-    # 3. Agrupamiento semántico (con ordenamiento previo por título y anclas de eventos)
     if progress_callback:
         progress_callback(74, "Agrupando eventos y noticias similares (ordenamiento por titular)…")
     cluster_map = cluster_similar_rows(rows, km, brand_regexes)
@@ -513,7 +519,6 @@ def enrich_rows_with_ai(
             
     cluster_results: Dict[int, Tuple[str, str, str]] = {}
     
-    # 4. Clasificación paralela (1 llamada por cluster)
     if progress_callback:
         progress_callback(77, f"Analizando {total_clusters} hechos únicos con {model}…")
         
@@ -535,10 +540,8 @@ def enrich_rows_with_ai(
                 pct = 77 + int((completed / total_clusters) * 16)
                 progress_callback(pct, f"Analizando con IA… {completed}/{total_clusters} procesados")
 
-    # 5. Unificar subtemas canónicos
     cluster_results = canonicalize_subtopics(cluster_results)
 
-    # 6. Mapear a todas las filas en el orden original
     for i, row in enumerate(rows):
         if row.get("is_duplicate"):
             row["Tono_IA"] = "Duplicada"
