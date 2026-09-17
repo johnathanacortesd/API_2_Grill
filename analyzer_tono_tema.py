@@ -177,6 +177,7 @@ def _contexto_exacto_marca(texto: str, titulo: str, brand: str,
     return str(titulo or '').strip()[:6000]
 BASE_URL_DEFECTO = "https://api.openai.com/v1"
 MODELO_DEFECTO = "gpt-4.1-nano-2025-04-14"
+JEV_URL_DEFECTO = "https://api.typesafe.ai/v1/systemone"
 TAM_LOTE_DEFECTO = 10
 WORKERS_DEFECTO = 4
 UMBRAL_TITULO_DEFECTO = 92
@@ -664,6 +665,53 @@ def _json_loose(txt):
     return None
 
 
+def _tono_con_jev(cfg: dict, grupo: dict) -> Optional[str]:
+    """Clasifica solo el tono dirigido a la marca, alias o vocero con Jev."""
+    api_key = (cfg.get('typesafe_api_key') or '').strip()
+    if not api_key:
+        return None
+    contexto = sq(grupo.get('contexto') or grupo.get('texto') or '')[:9000]
+    payload = {
+        'model': cfg.get('typesafe_model') or 'jev-latest',
+        'state': {
+            'marca_objetivo': cfg.get('brand') or 'la entidad objetivo',
+            'alias': list(cfg.get('aliases') or []),
+            'voceros': list(cfg.get('voceros') or []),
+            'titular': sq(grupo.get('titulo') or '')[:500],
+            'contexto_literal': contexto,
+        },
+        'questions': {
+            'tono': {
+                'type': 'choice',
+                'instructions': (
+                    'Clasifica exclusivamente el tono expresado sobre la marca, '
+                    'sus alias o sus voceros. No clasifiques el tono general de la '
+                    'noticia ni un problema que afecte a terceros.'
+                ),
+                'criteria': {
+                    'Positivo': 'La marca o vocero realiza, recibe o expresa una acción favorable, beneficio, apoyo, alianza, reconocimiento o logro.',
+                    'Negativo': 'Existe crítica, denuncia, reclamo, sanción, acusación, falla o señalamiento dirigido explícitamente a la marca o vocero.',
+                    'Neutro': 'La marca o vocero aparece de forma informativa, incidental o sin valoración dirigida.',
+                },
+            }
+        },
+    }
+    try:
+        response = requests.post(
+            cfg.get('typesafe_url') or JEV_URL_DEFECTO,
+            headers={'Authorization': 'Bearer %s' % api_key, 'Content-Type': 'application/json'},
+            json=payload,
+            timeout=int(cfg.get('typesafe_timeout', 60)),
+        )
+        if response.status_code != 200:
+            raise RuntimeError('HTTP %s: %s' % (response.status_code, response.text[:250]))
+        value = str(response.json().get('answers', {}).get('tono', {}).get('choice') or '').strip().capitalize()
+        return value if value in TONOS else None
+    except Exception as exc:
+        _ULTIMO_RESUMEN.setdefault('errores_jev', []).append(str(exc)[:200])
+        return None
+
+
 def llamar_llm(cfg: dict, mensajes: List[dict], json_mode: bool = True,
                max_tokens: int = 4000, temperatura: float = 0.0, intentos: int = 3) -> str:
     url = (cfg.get('base_url') or BASE_URL_DEFECTO).rstrip('/') + '/chat/completions'
@@ -843,6 +891,17 @@ def etiquetar_grupos(cfg: dict, grupos: List[dict], progress: Optional[Callable]
             fallidos.append(g['grupo'])
         if not e.get('tono'):
             e['tono'] = 'Neutro'
+
+    # Jev decide el tono aspectual sobre la entidad; el LLM existente conserva
+    # la generación de subtema y el resto del flujo.
+    if cfg.get('typesafe_api_key'):
+        for g in grupos:
+            tono_jev = _tono_con_jev(cfg, g)
+            if tono_jev:
+                etiquetas[g['grupo']]['tono'] = tono_jev
+        _ULTIMO_RESUMEN['motor_tono'] = 'jev'
+    else:
+        _ULTIMO_RESUMEN['motor_tono'] = 'modelo_configurado'
 
     _ULTIMO_RESUMEN['grupos'] = len(grupos)
     _ULTIMO_RESUMEN['errores_api'] = con_error[:5]
@@ -1142,6 +1201,10 @@ def enrich_rows_with_ai(
         'voceros': list(extra.get('voceros') or []),
         'criterio': extra.get('criterio') or list(CRITERIOS_TONO)[0],
         'api_key': api_key,
+        'typesafe_api_key': extra.get('typesafe_api_key') or '',
+        'typesafe_model': extra.get('typesafe_model') or 'jev-latest',
+        'typesafe_url': extra.get('typesafe_url') or JEV_URL_DEFECTO,
+        'typesafe_timeout': int(extra.get('typesafe_timeout', 60)),
         'model': model or MODELO_DEFECTO,
         'base_url': extra.get('base_url') or BASE_URL_DEFECTO,
         'timeout': int(extra.get('timeout', 120)),
