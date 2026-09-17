@@ -90,58 +90,91 @@ def _texto_hasta_terminal(texto: str, n: int) -> str:
 
 def _contexto_marca(texto: str, titulo: str, brand: str, aliases: Sequence[str],
                     voceros: Optional[Sequence[str]] = None) -> str:
-    """Contexto de la marca para la columna 'Contexto analizado'.
+    """Extrae contexto literal y amplio, sin resumir ni inventar texto.
 
-    Usa el algoritmo por párrafo (no por oración): busca el PRIMER párrafo que
-    menciona la marca, alias o vocero, lo recorta desde el punto final que lo
-    cierra, y si el trozo es corto (<10 palabras) lo extiende hasta un segundo
-    punto final. Cae a titulo+borde del texto si no hay mención clara.
+    Conserva cada párrafo de ``CuerpoEs`` que menciona explícitamente la marca,
+    alias o vocero. Una sola oración suele omitir el verbo que explica la
+    participación (por ejemplo, ``con la colaboración de``) o el objeto del
+    estudio, por eso no se devuelve solo el fragmento posterior a la mención.
     """
-    def _limpiar(s) -> str:
+    def limpiar(s) -> str:
         if not s:
             return ""
-        s = str(s)
-        s = re.sub(r'https?://\S+', '', s)
-        s = re.sub(r'www\.\S+', '', s)
-        s = re.sub(r'^link\s*', '', s, flags=re.I)
-        # conserva los saltos de linea (separan parrafos); normaliza el resto
+        s = ctrl(s)
+        s = re.sub(r'https?://\S+|www\.\S+', '', s)
+        s = re.sub(r'^[ \t]*link[ \t]*', '', s, flags=re.I)
         s = re.sub(r'[ \t]+', ' ', s)
         return s.strip()
 
-    t_clean = _limpiar(titulo)
-    r_clean = _limpiar(texto)
-    rx = _regex_coincidencia(brand, aliases, voceros)
+    cuerpo = limpiar(texto)
+    titulo_limpio = limpiar(titulo)
+    rx = _regex_coincidencia(brand, aliases, voceros or [])
+    if not rx:
+        return titulo_limpio[:6000]
 
-    # separa por párrafos (salto de linea) y dentro de cada uno por oraciones
-    parrafos = [p.strip() for p in re.split(r'\n+', r_clean) if p.strip()]
-    for p in parrafos:
-        if not _mención_normalizada_en(nz(p), rx):
-            continue
-        # localiza la mención en el texto CRUDO para recortar con offset válido
-        pos = _mención_bruta(p, brand, aliases, voceros)
-        if pos is None:
-            continue
-        start = max(0, pos - 200)
-        segmento = p[start:]
-        trozo = _texto_hasta_terminal(segmento, 2)
-        # si el tramo queda corto, amplia hasta el punto que sigue a la marca
-        if len(trozo.split()) < 10 and pos < len(p):
-            trozo = _texto_hasta_terminal(p[pos:], 2) or trozo
-        if trozo and len(trozo.split()) >= 6:
-            return sq(trozo[:700])
+    parrafos = [p.strip() for p in re.split(r'\n+', cuerpo) if p.strip()]
+    relevantes = [p for p in parrafos if _mención_normalizada_en(nz(p), rx)]
+    if relevantes:
+        salida = '\n\n'.join(relevantes)
+        if len(salida) <= 6000:
+            return salida
+        # Si el export pegó todo el artículo en un solo párrafo, conservar las
+        # oraciones con evidencia y sus vecinas inmediatas, literalmente.
+        trozos = []
+        for p in relevantes:
+            oraciones = [x.strip() for x in re.split(r'(?<=[.!?…])\s+', p) if x.strip()]
+            hits = [i for i, o in enumerate(oraciones) if _mención_normalizada_en(nz(o), rx)]
+            indices = sorted({j for i in hits for j in (i - 1, i, i + 1)
+                              if 0 <= j < len(oraciones)})
+            trozos.extend(oraciones[j] for j in indices)
+        return '\n'.join(dict.fromkeys(trozos))[:6000]
 
-    # cae a titulo (si menciona) + borde del cuerpo (primer parrafo no vacio)
-    t_norm = nz(t_clean)
-    if rx and any(re.search(r, t_norm) for r in rx):
-        primer_parrafo = parrafos[0] if parrafos else ''
-        return (t_clean + '. ' + _texto_hasta_terminal(primer_parrafo, 1)).strip()[:700] \
-            if primer_parrafo else t_clean[:700]
+    if _mención_normalizada_en(nz(titulo_limpio), rx):
+        return (titulo_limpio + ('\n\n' + parrafos[0] if parrafos else '')).strip()[:6000]
+    return titulo_limpio[:6000]
 
-    # sin mención: un recorte del titular + primera oración del cuerpo
-    primer_parrafo = parrafos[0] if parrafos else ''
-    base = (t_clean + ' ' + _texto_hasta_terminal(primer_parrafo, 1)) if primer_parrafo else t_clean
-    return sq(base)[:700]
+def _contexto_exacto_marca(texto: str, titulo: str, brand: str,
+                           aliases: Sequence[str], voceros: Sequence[str] = ()) -> str:
+    """Extrae evidencia textual exacta de CuerpoEs, sin resumir ni inventar.
 
+    Prioriza todos los párrafos que contienen la marca, alias o vocero. Si el
+    archivo no conserva saltos de párrafo, devuelve las oraciones que contienen
+    la mención y sus vecinas inmediatas. El resultado conserva literalmente la
+    ortografía, tildes y puntuación del texto fuente.
+    """
+    fuente = str(texto or '')
+    nombres = [str(x).strip() for x in [brand, *(aliases or []), *(voceros or [])]
+               if str(x or '').strip() and len(nz(x)) >= 3]
+    if not fuente or not nombres:
+        return str(titulo or '').strip()[:6000]
+
+    patrones = [re.compile(r'(?<![a-z0-9])' + re.escape(nz(x)) + r'(?![a-z0-9])')
+                for x in nombres]
+
+    def menciona(fragmento: str) -> bool:
+        normal = nz(fragmento)
+        return any(p.search(normal) for p in patrones)
+
+    # CuerpoEs suele separar párrafos con saltos de línea o HTML <br>.
+    parrafos = [p for p in re.split(r'(?:\r?\n|<br\s*/?>)+', fuente,
+                                    flags=re.I) if p.strip()]
+    encontrados = [p.strip() for p in parrafos if menciona(p)]
+    if encontrados:
+        return '\n\n'.join(encontrados)[:6000]
+
+    # Respaldo para cuerpos guardados como un bloque único.
+    partes = [p for p in re.split(r'(?<=[.!?…])\s+', fuente) if p.strip()]
+    ids = [i for i, p in enumerate(partes) if menciona(p)]
+    if ids:
+        seleccion = []
+        for i in ids:
+            for j in (i - 1, i, i + 1):
+                if 0 <= j < len(partes) and partes[j] not in seleccion:
+                    seleccion.append(partes[j])
+        return ' '.join(seleccion)[:6000]
+
+    # No se atribuye tono a la marca si solo aparece en el titular o no aparece.
+    return str(titulo or '').strip()[:6000]
 BASE_URL_DEFECTO = "https://api.openai.com/v1"
 MODELO_DEFECTO = "gpt-4.1-nano-2025-04-14"
 TAM_LOTE_DEFECTO = 10
@@ -357,9 +390,13 @@ def construir_grupos(
         reps = Counter(base[k]['titulo'] for k in miembros)
         rep = reps.most_common(1)[0][0] or base[miembros[0]]['texto'][:120]
         cuerpo = max((base[k]['texto'] for k in miembros), key=len)
+        contextos = [str(rows[base[k]['idx']].get('Contexto analizado') or '')
+                     for k in miembros]
+        contexto = '\n\n'.join(dict.fromkeys(x.strip() for x in contextos if x.strip() and x.strip() != '-'))
         alt = [t for t in sorted(set(base[k]['titulo'] for k in miembros)) if t and t != rep][:3]
         grupos.append({'grupo': gid, 'n': len(idxs), 'idxs': idxs, 'titulo': rep,
-                       'titulos_alt': alt, 'texto': cuerpo[:900]})
+                       'titulos_alt': alt, 'texto': cuerpo[:9000],
+                       'contexto': contexto[:9000]})
         for i in idxs:
             mapa[i] = gid
     return grupos, mapa
@@ -547,7 +584,8 @@ def prompt_lote(grupos_lote: Sequence[dict], candidatos: Sequence[str]) -> str:
         if g.get('titulos_alt'):
             b.append('OTROS TITULARES DEL MISMO GRUPO: %s'
                      % ' // '.join(sq(t)[:120] for t in g['titulos_alt']))
-        b.append('TEXTO COMPLETO DE REFERENCIA: %s' % sq(g['texto'])[:3500])
+        b.append('CONTEXTO LITERAL DE LA MARCA (fuente principal para el tono): %s'
+                 % sq(g.get('contexto') or g.get('texto', ''))[:6000])
         bloques.append('\n'.join(b))
     msg = '\n\n'.join(bloques)
     msg += '\n\nRecuerda: el sub_tema de cada grupo debe tener entre 3 y 5 palabras, y solo JSON.'
@@ -1077,13 +1115,16 @@ def enrich_rows_with_ai(
         if row.get('is_duplicate'):
             row['Contexto analizado'] = '-'
         else:
-            row['Contexto analizado'] = _contexto_marca(
+            row['Contexto analizado'] = _contexto_exacto_marca(
                 _texto_fila(row, km), _titulo_fila(row, km), brand, aliases,
                 voceros=cfg.get('voceros') or [])
 
     # --- agrupacion ---
     progreso(73, 'Agrupando notas equivalentes…')
     grupos, mapa = construir_grupos(rows, km, umbral_titulo, umbral_cuerpo)
+    for g in grupos:
+        contexto = [str(rows[i].get('Contexto analizado') or '') for i in g.get('idxs', [])]
+        g['contexto_marca'] = '\n\n'.join(dict.fromkeys(x for x in contexto if x and x != '-'))[:12000]
     progreso(75, '%d grupos (notas equivalentes comparten etiqueta)' % len(grupos))
 
     # --- etiquetado ---
@@ -1213,7 +1254,7 @@ def aplicar_guarda_tono(grupos: Sequence[dict], etiquetas: Dict[int, dict],
         e = etiquetas.get(g['grupo'])
         if not e or e.get('tono') != 'Negativo':
             continue
-        texto = '%s %s' % (g['titulo'], g.get('texto', ''))
+        texto = '%s %s' % (g['titulo'], g.get('contexto') or g.get('texto', ''))
         if _tema_negativo(texto) and not _critica_dirigida(texto, brand, aliases):
             e['tono'] = 'Neutro'
             corregidos.append(g['grupo'])
@@ -1246,15 +1287,21 @@ def aplicar_guarda_positiva(grupos: Sequence[dict], etiquetas: Dict[int, dict],
         e = etiquetas.get(g.get('grupo'))
         if not e or e.get('tono') != 'Neutro':
             continue
-        texto = '%s. %s' % (g.get('titulo', ''), g.get('texto', ''))
+        texto = '%s. %s' % (g.get('titulo', ''), g.get('contexto') or g.get('texto', ''))
         for oracion in re.split(r'(?<=[.!?;:])\s+|\n+', ctrl(texto)):
             n = nz(oracion)
             if (not n or peticion.search(oracion) or critica.search(oracion) or
                     (re.search(r'(informe|estudio|alerta|cifra|panorama|diagnóstico|diagnostico)', oracion, re.I)
-                     and not re.search(r'(obra|inversi|beca|premio|convenio|bloque|aula)', oracion, re.I))):
+                     and not re.search(r'(obra|inversi|beca|premio|convenio|bloque|aula|colabor|particip|elabor|realiz|investig|intervenci|opini[oó]n|ponencia)', oracion, re.I))):
                 continue
-            if not any(a in n for a in actores):
-                continue
+            if (re.search(r'(colaboraci[oó]n|colabor[oó]|participa|particip[oó]|coautor|coautora|'
+                          r'elaborad[oa] por|realizad[oa] por|investigaci[oó]n de|estudio de|'
+                          r'informe de|columna de opini[oó]n|intervenci[oó]n|vocero|vocera|'
+                          r'fuente experta|ponencia|present[oó] una)', oracion, re.I)
+                    and any(a in n for a in actores)):
+                e['tono'] = 'Positivo'
+                corregidos.append(g.get('grupo'))
+                break
             if re.search(r'\b(recib(?:ió|e|ieron)|atend(?:erá|ió|e))\b', oracion, re.I) and re.search(
                     r'(premio|acreditaci|reconocimiento|pacientes|benefici)', oracion, re.I):
                 e['tono'] = 'Positivo'
