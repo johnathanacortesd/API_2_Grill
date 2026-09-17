@@ -498,7 +498,7 @@ def tema_de(sub_tema: str, titulo: str, tax: dict):
             for k in r['claves']:
                 if _es_geografia(k):
                     continue
-                if re.search(patron(k), txt) and _tema_distinto_de_subtema(t, sub_tema):
+                if re.search(patron(k), txt) and _tema_distinto_de_subtema(r['tema'], sub_tema):
                     return r['tema'], k
     return None, None
 
