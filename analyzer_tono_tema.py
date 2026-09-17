@@ -1149,7 +1149,8 @@ def enrich_rows_with_ai(
                                             'nota': tax.get('nota', '')}
 
     corregidos = aplicar_guarda_tono(grupos, etiquetas, brand, aliases)
-    positivos = aplicar_guarda_positiva(grupos, etiquetas, brand, aliases)
+    positivos = aplicar_guarda_positiva(grupos, etiquetas, brand, aliases,
+                                        voceros=cfg.get('voceros') or [])
     if positivos:
         _ULTIMO_RESUMEN['tono_corregido_positivo'] = positivos
         _ULTIMO_RESUMEN['tono_subido_por_guarda'] = positivos
@@ -1259,7 +1260,8 @@ def aplicar_guarda_tono(grupos: Sequence[dict], etiquetas: Dict[int, dict],
             e['tono'] = 'Neutro'
             corregidos.append(g['grupo'])
 def aplicar_guarda_positiva(grupos: Sequence[dict], etiquetas: Dict[int, dict],
-                            brand: str, aliases: Sequence[str]) -> List[int]:
+                            brand: str, aliases: Sequence[str],
+                            voceros: Sequence[str] = ()) -> List[int]:
     """Sube Neutro a Positivo solo cuando la marca es autora del hecho favorable.
 
     Evita el sesgo opuesto del modelo pequeño: una marca mencionada en una nota
@@ -1267,7 +1269,8 @@ def aplicar_guarda_positiva(grupos: Sequence[dict], etiquetas: Dict[int, dict],
     para que una marca al final de una frase no se convierta en sujeto de la
     siguiente.
     """
-    actores = [nz(x) for x in [brand] + list(aliases or []) if x and len(nz(x)) >= 4]
+    actores = [nz(x) for x in [brand] + list(aliases or []) + list(voceros or [])
+               if x and len(nz(x)) >= 4]
     if not actores:
         return []
     verbos = (r'entreg(?:a|ó|aron|an)|inaugur(?:a|ó|aron|an)|constru(?:ye|yó|yeron|yen)|'
@@ -1294,6 +1297,14 @@ def aplicar_guarda_positiva(grupos: Sequence[dict], etiquetas: Dict[int, dict],
                     (re.search(r'(informe|estudio|alerta|cifra|panorama|diagnóstico|diagnostico)', oracion, re.I)
                      and not re.search(r'(obra|inversi|beca|premio|convenio|bloque|aula|colabor|particip|elabor|realiz|investig|intervenci|opini[oó]n|ponencia)', oracion, re.I))):
                 continue
+            voceros_norm = [nz(v) for v in (voceros or []) if v]
+            es_columna_vocero = bool(voceros_norm and any(v in n for v in voceros_norm)
+                                     and (re.search(r'^\s*(por|de)\s+', oracion, re.I)
+                                          or re.search(r'(columna|opini[oó]n|an[aá]lisis|intervenci[oó]n|art[ií]culo)', oracion, re.I)))
+            if es_columna_vocero:
+                e['tono'] = 'Positivo'
+                corregidos.append(g.get('grupo'))
+                break
             if (re.search(r'(colaboraci[oó]n|colabor[oó]|participa|particip[oó]|coautor|coautora|'
                           r'elaborad[oa] por|realizad[oa] por|investigaci[oó]n de|estudio de|'
                           r'informe de|columna de opini[oó]n|intervenci[oó]n|vocero|vocera|'
