@@ -420,7 +420,7 @@ def main():
             f1 = st.file_uploader("Dossier", type=["xlsx"], label_visibility="collapsed", key="f1")
 
             st.markdown('<div class="sec-label">2. Configuración de Análisis IA (Tono, Tema, Subtema)</div>', unsafe_allow_html=True)
-            enable_ai = st.checkbox("Activar análisis reputacional con IA (gpt-4.1-nano-2025-04-14)", value=True)
+            enable_ai = st.checkbox("Activar análisis reputacional con IA + Jev para el tono", value=True)
             
             c_brand, c_alias = st.columns(2)
             with c_brand:
@@ -533,8 +533,12 @@ def main():
                     st.error("Por favor indica la Marca o Cliente Principal para realizar el análisis enfocado.")
                 else:
                     api_key = st.secrets.get("OPENAI_API_KEY")
+                    typesafe_api_key = st.secrets.get("TYPESAFE_API_KEY")
                     if enable_ai and not api_key:
-                        st.error("❌ Falta configurar OPENAI_API_KEY en los Secrets de Streamlit.")
+                        st.error("❌ Falta configurar OPENAI_API_KEY en los Secrets de Streamlit: se usa para subtema y tema.")
+                        st.stop()
+                    if enable_ai and not typesafe_api_key:
+                        st.error("❌ Falta configurar TYPESAFE_API_KEY en los Secrets de Streamlit: se usa para el tono con Jev.")
                         st.stop()
                     
                     aliases_parsed = [
@@ -595,6 +599,8 @@ def main():
                             "umbral_titulo": int(umbral_titulo_input),
                             "umbral_cuerpo": int(umbral_cuerpo_input),
                             "api_key": api_key if enable_ai else None,
+                            "typesafe_api_key": typesafe_api_key if enable_ai else None,
+                            "typesafe_model": "jev-latest",
                             "model": "gpt-4.1-nano-2025-04-14",
                             "historial_dir": st.secrets.get("HISTORIAL_DIR"),
                             "tone_pkl_bytes": tone_bytes,
