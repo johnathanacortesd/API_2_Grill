@@ -1153,12 +1153,27 @@ def asignar_temas(cfg: dict, grupos: List[dict], etiquetas: Dict[int, dict], tax
                                         g.get('texto') or '')})
     if pendientes and progress:
         progress(min(93, 93), 'Clasificando tema de %d grupos nuevos…' % len(pendientes))
-    elegidos = elegir_cubos(cfg, pendientes, tax, permitir_nuevos=True)
-    no_validos = [p for p in pendientes
-                  if not _tema_es_relevante(elegidos.get(p['grupo'], ''),
+    # Un subtema canónico exacto debe tener un único Tema. La API se consulta
+    # una sola vez por subtema y el resultado se propaga a sus grupos.
+    representantes = {}
+    grupos_por_subtema = {}
+    for p in pendientes:
+        clave = nz(p['sub_tema'])
+        grupos_por_subtema.setdefault(clave, []).append(p['grupo'])
+        representantes.setdefault(clave, p)
+    pendientes_api = list(representantes.values())
+
+    elegidos_rep = elegir_cubos(cfg, pendientes_api, tax, permitir_nuevos=True)
+    no_validos = [p for p in pendientes_api
+                  if not _tema_es_relevante(elegidos_rep.get(p['grupo'], ''),
                                             p['sub_tema'], p.get('contexto', ''))]
     if no_validos:
-        elegidos.update(elegir_cubos(cfg, no_validos, tax, permitir_nuevos=True))
+        elegidos_rep.update(elegir_cubos(cfg, no_validos, tax, permitir_nuevos=True))
+    elegidos = {}
+    for clave, ids in grupos_por_subtema.items():
+        tema_rep = elegidos_rep.get(representantes[clave]['grupo'])
+        for gid in ids:
+            elegidos[gid] = tema_rep
     nuevos = []
     for p in pendientes:
         t = elegidos.get(p['grupo'])
