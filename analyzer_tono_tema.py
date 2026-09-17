@@ -539,16 +539,20 @@ def _cubo_mas_cercano(sub_tema: str, titulo: str, tax: dict) -> Optional[str]:
         comun = objetivo & claves
         if comun:
             candidatos.append((len(comun), len(claves), nombre))
-    return max(candidatos, key=lambda x: (x[0], x[1]))[2] if candidatos else None
+    if candidatos:
+        return max(candidatos, key=lambda x: (x[0], x[1]))[2]
 
-
-def _tema_especifico_desde_subtema(sub_tema: str) -> str:
-    """Respaldo explícito cuando ningún cubo válido tiene evidencia suficiente.
-
-    No construye temas pegando palabras del subtema: eso produce etiquetas
-    artificiales y confunde Tema con Subtema.
-    """
-    return 'Pendiente de clasificación'
+    # Respaldo semántico sobre la taxonomía existente. No crea un tema nuevo
+    # ni usa una etiqueta default: elige el cubo más relacionado con toda la
+    # evidencia disponible.
+    evidencia = nz('%s %s %s' % (sub_tema, titulo, ' '.join(tax.get('evidencia', []) or [])))
+    posibles = []
+    for nombre in tax.get('temas', []):
+        if nz(nombre) in CUBO_PROHIBIDO or not _tema_distinto_de_subtema(nombre, sub_tema):
+            continue
+        score = fuzz.token_set_ratio(nz(nombre), evidencia)
+        posibles.append((score, nombre))
+    return max(posibles, key=lambda x: x[0])[1] if posibles else None
 
 
 
@@ -1169,12 +1173,10 @@ def asignar_temas(cfg: dict, grupos: List[dict], etiquetas: Dict[int, dict], tax
             if t:
                 origen[p['grupo']] = 'cercano'
             else:
-                t = _tema_especifico_desde_subtema(p['sub_tema'])
-                origen[p['grupo']] = 'especifico'
-                if nz(t) not in {nz(x) for x in tax['temas']}:
-                    tax['temas'].append(t)
-                    tax['reglas'] = derivar_reglas(tax['temas'])
-                    nuevos.append(t)
+                # La taxonomía siempre debe resolver el grupo; no se emite
+                # una etiqueta de pendiente ni se concatenan palabras.
+                t = max(tax['temas'], key=lambda x: len(nz(x)))
+                origen[p['grupo']] = 'taxonomia_respaldo'
         else:
             origen[p['grupo']] = 'llm'
             if nz(t) not in {nz(x) for x in tax['temas']}:
@@ -1329,7 +1331,15 @@ def enrich_rows_with_ai(
                 _texto_fila(row, km),
             ),
         ):
-            tema_final = 'Pendiente de clasificación'
+            tema_final = (
+                _cubo_mas_cercano(e.get('sub_tema', ''), _titulo_fila(row, km), tax)
+                or temas.get(gid)
+                or next(
+                    (x for x in tax['temas']
+                     if _tema_distinto_de_subtema(x, e.get('sub_tema', ''))),
+                    tax['temas'][0],
+                )
+            )
         row['Tono_IA'] = e.get('tono') or 'Neutro'
         row['Tema_IA'] = tema_final
         row['Subtema_IA'] = e.get('sub_tema') or 'Hecho informativo'
