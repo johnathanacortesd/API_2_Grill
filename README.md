@@ -22,7 +22,7 @@
 
 La plataforma se encuentra desplegada y disponible para pruebas en vivo:
 
-* **URL de Producción:** [https://grill-api.streamlit.app/](https://grill-api.streamlit.app/)
+* **URL de Producción:** [https://api-2-grill.streamlit.app/](https://api-2-grill.streamlit.app/)
 
 ### 🔒 Autenticación
 
