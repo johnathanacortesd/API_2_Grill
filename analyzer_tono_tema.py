@@ -476,6 +476,18 @@ def patron(kw: str) -> str:
     return r'(?<![a-z])' + re.escape(nz(kw)) + r'(?![a-z])'
 
 
+GEOGRAFIA_GENERICA = {
+    'colombia', 'colombiano', 'colombiana', 'pais', 'nacional', 'region', 'regional',
+    'barranquilla', 'cartagena', 'bogota', 'medellin', 'cali', 'sincelejo', 'monteria',
+    'valledupar', 'santa marta', 'riohacha', 'soledad', 'atlantico', 'bolivar',
+    'sucre', 'cordoba', 'magdalena', 'cesar', 'guajira', 'antioquia', 'bogotá',
+}
+
+
+def _es_geografia(token: str) -> bool:
+    return nz(token) in {nz(x) for x in GEOGRAFIA_GENERICA}
+
+
 def tema_de(sub_tema: str, titulo: str, tax: dict):
     """Dos pasadas: manda el sub-tema (sintesis limpia); el titulo solo si parece titular corto."""
     for txt in (nz(sub_tema), nz(titulo) if len(str(titulo or '')) <= 160 else ''):
@@ -483,6 +495,8 @@ def tema_de(sub_tema: str, titulo: str, tax: dict):
             continue
         for r in tax['reglas']:
             for k in r['claves']:
+                if _es_geografia(k):
+                    continue
                 if re.search(patron(k), txt):
                     return r['tema'], k
     return None, None
@@ -539,9 +553,9 @@ def _tema_especifico_desde_subtema(sub_tema: str) -> str:
                          'ejecucion', 'ejecución', 'atencion', 'atención', 'acciones',
                          'desarrollo', 'apoyo', 'participacion', 'participación'}
     originales = [t.strip('.,;:') for t in str(sub_tema or '').split()]
-    tokens = [t for t in originales if nz(t) not in excluir and len(nz(t)) > 3]
+    tokens = [t for t in originales if nz(t) not in excluir and not _es_geografia(t) and len(nz(t)) > 3]
     if not tokens:
-        tokens = [t for t in originales if nz(t) not in CONECT]
+        tokens = [t for t in originales if nz(t) not in CONECT and not _es_geografia(t)]
     tokens = tokens[:3]
     return ' '.join(tokens).capitalize() if tokens else 'Tema específico'
 
@@ -958,8 +972,10 @@ def derivar_reglas(cubos: Sequence[str]) -> List[dict]:
         toks = [t for t in nz(nombre).split() if t]
         claves = [nz(nombre)]
         for t in toks:
-            if len(t) >= 4 and t not in CONECT and t not in FILLER and t not in MARCO and t not in claves:
-                claves.append(t)
+            if (_es_geografia(t) or len(t) < 4 or t in CONECT or t in FILLER or
+                    t in MARCO or t in claves):
+                continue
+            claves.append(t)
         if len(claves) > 1:
             reglas.append({'tema': nombre, 'claves': claves})
     reglas.sort(key=lambda r: -len(nz(r['tema']).split()))
