@@ -20,7 +20,7 @@ from openpyxl import load_workbook
 from openpyxl.utils.cell import column_index_from_string, coordinate_from_string, range_boundaries
 from unidecode import unidecode
 
-from ai_analyzer import enrich_rows_with_ai
+from analyzer_tono_tema import enrich_rows_with_ai, ultimo_resumen
 from pkl_classifier import (
     apply_pkl_classifiers,
     fill_classification_context,
@@ -40,15 +40,40 @@ TIPO_MEDIO_MAP = {
     "revista": "Revistas", "revistas": "Revistas",
 }
 
+# Columnas base (sin las 11 manuales obsoletas).
+# No exportar `revalorización` ni `resumen corto`; este último sí puede leerse
+# como fallback de entrada si el dossier fuente lo trae.
 BASE_OUTPUT_COLUMNS = [
     "ID Noticia", "Fecha", "Hora", "Medio", "Tipo de Medio",
     "Sección - Programa", "Región", "Título", "Autor - Conductor",
     "Nro. Pagina", "Dimensión", "Duración - Nro. Caracteres",
     "CPE", "Tier", "Audiencia",
-    "revalorización", "resumen corto",
     "Link Nota", "Resumen - Aclaracion", "Link (Streaming - Imagen)", "Menciones - Empresa",
     "ID duplicada",
 ]
+# Tono/Tema/Subtema se insertan después de Audiencia; Contexto analizado va al final.
+AI_COLUMNS_AFTER_AUDIENCIA = ["Tono_IA", "Tema_IA", "Subtema_IA"]
+CONTEXTO_ANALIZADO_COL = "Contexto analizado"
+
+
+def output_columns_for_export(include_ai: bool = False) -> List[str]:
+    """Columnas del xlsx de salida.
+
+    Con IA/PKL: inserta Tono_IA, Tema_IA, Subtema_IA después de Audiencia y deja
+    Contexto analizado como última columna. Sin IA: solo BASE_OUTPUT_COLUMNS.
+    """
+    cols = list(BASE_OUTPUT_COLUMNS)
+    if not include_ai:
+        return cols
+    audiencia_idx = cols.index("Audiencia")
+    for offset, col in enumerate(AI_COLUMNS_AFTER_AUDIENCIA):
+        if col not in cols:
+            cols.insert(audiencia_idx + 1 + offset, col)
+    if CONTEXTO_ANALIZADO_COL in cols:
+        cols = [c for c in cols if c != CONTEXTO_ANALIZADO_COL]
+    cols.append(CONTEXTO_ANALIZADO_COL)
+    return cols
+
 
 KEY_MAP = {
     "idnoticia": "ID Noticia",
@@ -76,18 +101,21 @@ KEY_MAP = {
 }
 
 THOUSANDS_COLS = {"Nro. Pagina", "Dimensión", "Duración - Nro. Caracteres", "Tier", "Audiencia"}
-CURRENCY_COLS = {"CPE", "revalorización"}
+CURRENCY_COLS = {"CPE"}
 NUMERIC_COLS = {"ID Noticia", "ID duplicada"} | THOUSANDS_COLS | CURRENCY_COLS
+# Display "Link" as black, non-underlined text while keeping the hyperlink.
 PLAIN_HYPERLINK_COLUMNS = frozenset({"Link Nota", "Link (Streaming - Imagen)"})
 
 REL_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 HYPERLINK_TAIL_BYTES = 4 * 1024 * 1024
+
 
 def emit_progress(progress: ProgressCb, pct: int, msg: str) -> None:
     pct = max(0, min(100, int(pct)))
     logger.info("%s%% %s", pct, msg)
     if progress:
         progress(pct, msg)
+
 
 def file_to_bytes(file_obj) -> bytes:
     if isinstance(file_obj, (bytes, bytearray)):
@@ -108,8 +136,10 @@ def file_to_bytes(file_obj) -> bytes:
     with open(file_obj, "rb") as fh:
         return fh.read()
 
+
 def _local_tag(tag: str) -> str:
     return tag.rsplit("}", 1)[-1]
+
 
 def _workbook_rel_path(target: str) -> str:
     t = (target or "").lstrip("/")
@@ -118,6 +148,7 @@ def _workbook_rel_path(target: str) -> str:
     if t.startswith("worksheets/") or t.startswith("theme/") or t == "styles.xml":
         return "xl/" + t
     return t
+
 
 def extract_hyperlinks_from_xlsx(xlsx_bytes: bytes, sheet_title: str) -> Dict[Tuple[int, int], str]:
     result: Dict[Tuple[int, int], str] = {}
@@ -193,6 +224,7 @@ def extract_hyperlinks_from_xlsx(xlsx_bytes: bytes, sheet_title: str) -> Dict[Tu
         logger.exception("Fallo al extraer hipervínculos; se continúa con los valores de celda.")
     return result
 
+
 def _read_xml_tail(sheet_fh, tail_bytes: int) -> bytes:
     try:
         sheet_fh.seek(0, os.SEEK_END)
@@ -202,6 +234,7 @@ def _read_xml_tail(sheet_fh, tail_bytes: int) -> bytes:
         return sheet_fh.read()
     except (OSError, AttributeError):
         return sheet_fh.read()
+
 
 def _assign_hyperlink_ref(result: dict, ref: str, target: str) -> None:
     if ":" in ref:
@@ -213,10 +246,15 @@ def _assign_hyperlink_ref(result: dict, ref: str, target: str) -> None:
     col_letter, row = coordinate_from_string(ref)
     result[(row, column_index_from_string(col_letter))] = target
 
+
+# ======================================
+# Utilidades de Limpieza de Texto
+# ======================================
 def norm_key(text):
     if text is None:
         return ""
     return re.sub(r"[^a-z0-9]+", "", unidecode(str(text).strip().lower()))
+
 
 def get_column_robust(df, name):
     name_norm = norm_key(name)
@@ -225,10 +263,12 @@ def get_column_robust(df, name):
             return df[col]
     return pd.Series([np.nan] * len(df))
 
+
 def clean_text(text):
     if not isinstance(text, str):
         return text
     return re.sub(r"\s+", " ", text).strip()
+
 
 def clean_cuerpo(text):
     if not isinstance(text, str) or text.strip() in ("", "nan", "None"):
@@ -237,10 +277,19 @@ def clean_cuerpo(text):
     text = re.sub(r"<[^>]+>", "", text)
     return text.strip()
 
+
 def clean_title_for_output(title):
     if not isinstance(title, str):
         return ""
     return re.sub(r"\s+", " ", str(title)).strip()
+
+
+def terminar_en_punto(text):
+    """Deja el texto con un solo punto final (nunca elipsis '...')."""
+    if not isinstance(text, str) or not text.strip():
+        return text
+    return text.rstrip(".") + "."
+
 
 def corregir_texto(text):
     if not isinstance(text, str) or text.strip() in ("", "nan", "None"):
@@ -249,15 +298,17 @@ def corregir_texto(text):
     m = re.search(r"[A-ZÁÉÍÓÚÑ]", text)
     if m:
         text = text[m.start():]
-    if text and not text.endswith("..."):
-        text = text.rstrip(".") + "..."
+    if text:
+        text = terminar_en_punto(text)
     return text
+
 
 def normalizar_tipo_medio(tipo_raw):
     if not isinstance(tipo_raw, str):
         return str(tipo_raw)
     t = unidecode(tipo_raw.strip().lower())
     return TIPO_MEDIO_MAP.get(t, str(tipo_raw).strip().title() or "Otro")
+
 
 def parse_numeric(val):
     if val is None:
@@ -307,6 +358,10 @@ def parse_numeric(val):
     except ValueError:
         return None
 
+
+# ======================================
+# Algoritmo de Duplicados
+# ======================================
 def _normalizar_url(url: str) -> str:
     if not url:
         return ""
@@ -315,6 +370,7 @@ def _normalizar_url(url: str) -> str:
     url = re.sub(r"^www\.", "", url)
     url = url.rstrip("/")
     return url
+
 
 def _extract_url(val) -> str:
     if val is None:
@@ -327,6 +383,7 @@ def _extract_url(val) -> str:
     if s.lower() in ("", "nan", "none", "link"):
         return ""
     return s
+
 
 def _normalizar_hora(val) -> str:
     if val is None:
@@ -350,6 +407,7 @@ def _normalizar_hora(val) -> str:
         if 0 <= h < 24 and 0 <= mi < 60 and 0 <= se < 60:
             return f"{h:02d}:{mi:02d}:{se:02d}"
     return s
+
 
 def detectar_duplicados_avanzado(rows, km):
     processed = rows
@@ -393,6 +451,10 @@ def detectar_duplicados_avanzado(rows, km):
 
     return processed
 
+
+# ======================================
+# Lectura y Estructuración de Datos
+# ======================================
 def load_dossier_dataframe(file_bytes: bytes, progress: ProgressCb = None) -> pd.DataFrame:
     emit_progress(progress, 8, "Abriendo archivo Excel…")
     try:
@@ -400,6 +462,7 @@ def load_dossier_dataframe(file_bytes: bytes, progress: ProgressCb = None) -> pd
     except Exception:
         logger.exception("Calamine no pudo leer el xlsx; se usa openpyxl.")
         return _load_dossier_openpyxl(file_bytes, progress)
+
 
 def _rows_to_dataframe(raw_headers, data_rows, hyperlinks, progress: ProgressCb = None) -> pd.DataFrame:
     rows = []
@@ -431,6 +494,7 @@ def _rows_to_dataframe(raw_headers, data_rows, hyperlinks, progress: ProgressCb 
     emit_progress(progress, 40, f"Leídas {len(rows)} filas. Normalizando columnas…")
     return pd.DataFrame(rows)
 
+
 def _load_dossier_calamine(file_bytes: bytes, progress: ProgressCb = None) -> pd.DataFrame:
     from python_calamine import CalamineWorkbook
 
@@ -446,6 +510,7 @@ def _load_dossier_calamine(file_bytes: bytes, progress: ProgressCb = None) -> pd
         return pd.DataFrame()
     raw_headers = list(data[0])
     return _rows_to_dataframe(raw_headers, data[1:], hyperlinks, progress)
+
 
 def _load_dossier_openpyxl(file_bytes: bytes, progress: ProgressCb = None) -> pd.DataFrame:
     emit_progress(progress, 8, "Abriendo archivo Excel (openpyxl)…")
@@ -468,6 +533,7 @@ def _load_dossier_openpyxl(file_bytes: bytes, progress: ProgressCb = None) -> pd
         wb.close()
         bio.close()
 
+
 def normalize_dossier_dataframe(df, region_map, internet_map, progress: ProgressCb = None):
     if df is None or df.empty:
         return pd.DataFrame()
@@ -487,6 +553,7 @@ def normalize_dossier_dataframe(df, region_map, internet_map, progress: Progress
     is_grafica = df["Tipo de Medio"].isin(["Prensa", "Internet", "Revistas"])
     is_internet = df["Tipo de Medio"] == "Internet"
 
+    # BÚSQUEDA ROBUSTA DEL RESUMEN
     cuerpo_series = get_column_robust(df, "CuerpoEs")
     if cuerpo_series.dropna().empty:
         cuerpo_series = get_column_robust(df, "Resumen - Aclaracion")
@@ -494,6 +561,8 @@ def normalize_dossier_dataframe(df, region_map, internet_map, progress: Progress
         cuerpo_series = get_column_robust(df, "Resumen")
     if cuerpo_series.dropna().empty:
         cuerpo_series = get_column_robust(df, "Cuerpo")
+    if cuerpo_series.dropna().empty:
+        cuerpo_series = get_column_robust(df, "resumen corto")
 
     raw_resumen_orig = cuerpo_series
 
@@ -533,12 +602,9 @@ def normalize_dossier_dataframe(df, region_map, internet_map, progress: Progress
     valor_nota_input = get_column_robust(df, "Valor de Nota")
 
     df["CPE"] = np.where(is_av, cpe_input, np.where(is_grafica, valor_nota_input, np.nan))
-    df["revalorización"] = np.where(is_grafica, cpe_input, np.nan)
 
     df["Tier"] = df.get("Tier", pd.Series(dtype=str))
     df["Audiencia"] = df.get("Audiencia", pd.Series(dtype=str))
-
-    df["resumen corto"] = raw_resumen_orig.fillna("").astype(str).str.strip()
 
     emit_progress(progress, 48, "Limpiando cuerpos y enlaces…")
 
@@ -548,7 +614,8 @@ def normalize_dossier_dataframe(df, region_map, internet_map, progress: Progress
         if not isinstance(text, str) or not text.strip():
             return text
         parrafos = [p.strip() for p in text.split("\n") if p.strip()]
-        return "\n\n".join(parrafos) if len(parrafos) > 1 else text
+        joined = "\n\n".join(parrafos) if len(parrafos) > 1 else text
+        return terminar_en_punto(joined)
 
     df["Resumen - Aclaracion"] = cuerpo_cleaned
     grafica_mask = is_grafica.fillna(False)
@@ -597,6 +664,7 @@ def normalize_dossier_dataframe(df, region_map, internet_map, progress: Progress
     emit_progress(progress, 52, "Columnas normalizadas.")
     return df
 
+
 def expand_menciones(df) -> List[dict]:
     records = df.to_dict("records")
     rows_expanded = []
@@ -617,6 +685,10 @@ def expand_menciones(df) -> List[dict]:
             rows_expanded.append(row_dict)
     return rows_expanded
 
+
+# ======================================
+# Exportar a Excel (XlsxWriter, streaming)
+# ======================================
 def generate_output_excel(rows, km, progress: ProgressCb = None, columns_to_use: List[str] = None):
     cols = columns_to_use or BASE_OUTPUT_COLUMNS
     buf = io.BytesIO()
@@ -635,15 +707,16 @@ def generate_output_excel(rows, km, progress: ProgressCb = None, columns_to_use:
     fmt_date = wb.add_format({"num_format": "DD/MM/YYYY"})
     fmt_currency = wb.add_format({"num_format": "$#,##0"})
     fmt_thousands = wb.add_format({"num_format": "#,##0"})
+    # Formato entero plano sin puntos de miles ni decimales para IDs
     fmt_plain_id = wb.add_format({"num_format": "0"})
 
     for i, col_name in enumerate(cols):
-        if col_name in ["Título", "Resumen - Aclaracion", "resumen corto", "Contexto analizado"]:
+        if col_name in ["Título", "Resumen - Aclaracion", "Contexto analizado"]:
             ws.set_column(i, i, 55)
         elif col_name in ["Link Nota", "Link (Streaming - Imagen)"]:
             ws.set_column(i, i, 15)
         elif col_name in ["Subtema_IA", "Tema_IA"]:
-            ws.set_column(i, i, 30)
+            ws.set_column(i, i, 28)
         else:
             ws.set_column(i, i, 20)
         ws.write(0, i, col_name, fmt_header)
@@ -661,6 +734,7 @@ def generate_output_excel(rows, km, progress: ProgressCb = None, columns_to_use:
     finally:
         wb.close()
     return buf.getvalue()
+
 
 def _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_plain_hlink, fmt_date, fmt_currency, fmt_thousands, fmt_plain_id, cols):
     for i, row in enumerate(rows):
@@ -684,6 +758,7 @@ def _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_plain_hlink,
                     cv = val
                 else:
                     cv = str(val)
+            # ID Noticia e ID duplicada se procesan como enteros puros sin separadores
             elif h in ("ID Noticia", "ID duplicada"):
                 if val is not None and str(val).strip() not in ("", "nan", "None", "-"):
                     clean_id = re.sub(r"[^\d.]", "", str(val)).strip()
@@ -743,6 +818,20 @@ def _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_plain_hlink,
                 f"Generando archivo de resultado… {i + 1}/{n} filas",
             )
 
+
+# ======================================
+# Modelos PKL opcionales
+# ======================================
+def _contar_tonos(rows) -> dict:
+    from collections import Counter
+    c = Counter()
+    for r in rows or []:
+        if r.get("is_duplicate"):
+            continue
+        c[r.get("Tono_IA") or "?"] += 1
+    return dict(c)
+
+
 def _load_optional_pkl_models(ai_config: Optional[dict]):
     if not ai_config:
         return None, None
@@ -756,6 +845,10 @@ def _load_optional_pkl_models(ai_config: Optional[dict]):
         theme_model, _ = load_sklearn_estimator(theme_bytes, "tema")
     return tone_model, theme_model
 
+
+# ======================================
+# Proceso Principal
+# ======================================
 def process_dossier(
     file_obj,
     region_map,
@@ -789,20 +882,23 @@ def process_dossier(
     has_ai = bool(ai_config and ai_config.get("enabled"))
     tone_model, theme_model = _load_optional_pkl_models(ai_config)
     has_pkl = tone_model is not None or theme_model is not None
+    analisis = {}
 
     if has_ai:
-        emit_progress(progress, 70, "Iniciando análisis reputacional con IA…")
+        emit_progress(progress, 70, "Iniciando análisis de Tono, Tema y Sub-tema…")
         rows = enrich_rows_with_ai(
             rows=rows,
             km=KEY_MAP,
             brand=ai_config["brand"],
             aliases=ai_config.get("aliases", []),
             api_key=ai_config["api_key"],
-            model=ai_config.get("model", "gpt-4.1-mini"),
+            model=ai_config.get("model", "gpt-4.1-nano-2025-04-14"),
             progress_callback=progress,
             tone_model=tone_model,
             theme_model=theme_model,
+            extra=ai_config,
         )
+        analisis = ultimo_resumen()
     elif has_pkl:
         emit_progress(progress, 70, "Preparando textos para clasificadores PKL…")
         rows = fill_classification_context(
@@ -822,12 +918,13 @@ def process_dossier(
             aliases=(ai_config or {}).get("aliases", []),
         )
 
-    if has_ai or has_pkl:
-        rev_idx = BASE_OUTPUT_COLUMNS.index("revalorización")
-        ai_cols = ["Contexto analizado", "Tono_IA", "Tema_IA", "Subtema_IA"]
-        cols_to_export = BASE_OUTPUT_COLUMNS[:rev_idx + 1] + ai_cols + BASE_OUTPUT_COLUMNS[rev_idx + 1:]
-    else:
-        cols_to_export = list(BASE_OUTPUT_COLUMNS)
+    # Orden editorial estable: primero por Título A–Z para revisar y agrupar
+    # noticias iguales/similares en Excel. La clave ignora mayúsculas y tildes,
+    # pero conserva el texto original en la salida.
+    rows.sort(key=lambda r: (norm_key(r.get(KEY_MAP.get("titulo", "Título"), "")),
+                             str(r.get(KEY_MAP.get("idnoticia", "ID Noticia"), ""))))
+
+    cols_to_export = output_columns_for_export(include_ai=has_ai or has_pkl)
 
     emit_progress(progress, 94, "✓ Estructuración finalizada. Generando archivo Excel…")
 
@@ -839,11 +936,13 @@ def process_dossier(
         emit_progress(progress, overall, msg)
 
     output_data = generate_output_excel(rows, KEY_MAP, progress=export_progress, columns_to_use=cols_to_export)
+    _conteo_tonos = _contar_tonos(rows)
     del rows, rows_expanded
     gc.collect()
     duration = time.time() - t0
     emit_progress(progress, 100, "Limpieza y análisis completados")
 
+    # Nombre del archivo con la primera marca buscada para orden
     if ai_config and ai_config.get("brand"):
         brand_raw = ai_config.get("brand", "")
         clean_tag = re.sub(r"[^\w\s-]", "", unidecode(brand_raw)).strip()
@@ -855,7 +954,7 @@ def process_dossier(
     timestamp = datetime.datetime.now().strftime('%Y%m%d_%H%M')
     final_filename = f"{filename_prefix}_{timestamp}.xlsx"
 
-    return {
+    result = {
         "output_data": output_data,
         "output_filename": final_filename,
         "total_rows": total_rows,
@@ -863,4 +962,25 @@ def process_dossier(
         "duplicates": total_rows - unique_rows,
         "process_duration": f"{duration:.2f}s",
         "medios_sin_mapear": medios_sin_region,
+        "analisis": analisis,
+        "_filas": _conteo_tonos,
     }
+
+    # Auditoria de uso por correo (SMTP). Nunca interrumpe la corrida.
+    if ai_config:
+        try:
+            from auditoria_mail import enviar_auditoria_desde_resultado
+            enviar_auditoria_desde_resultado(result, ai_config)
+        except Exception:
+            logger.exception("Fallo al enviar la auditoria por correo (no interrumpe).")
+
+    # Guardado del historial por cliente (best-effort, nunca interrumpe).
+    if ai_config and ai_config.get("brand"):
+        try:
+            from historial_cliente import guardar_resultado
+            guardar_resultado(ai_config["brand"], result["output_data"], result,
+                              extra=ai_config)
+        except Exception:
+            logger.exception("Fallo al guardar el historial del cliente (no interrumpe).")
+
+    return result

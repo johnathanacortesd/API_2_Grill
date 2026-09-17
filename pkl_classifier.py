@@ -30,14 +30,18 @@ TONE_STRING_TO_LABEL = {
     "pos": "Positivo",
 }
 
+
 class PklClassifierError(Exception):
     """Error de usuario al cargar o aplicar un modelo PKL."""
+
 
 def _spanish_axis(axis: str) -> str:
     mapping = {"tono": "tono", "tema": "tema", "tone": "tono", "theme": "tema"}
     return mapping.get((axis or "").strip().lower(), axis or "modelo")
 
+
 def load_sklearn_estimator(data: bytes, axis: str = "modelo"):
+    """Carga un estimador sklearn serializado con joblib y valida `predict`."""
     axis_es = _spanish_axis(axis)
     if not data:
         raise PklClassifierError(f"El archivo PKL de {axis_es} está vacío.")
@@ -63,6 +67,7 @@ def load_sklearn_estimator(data: bytes, axis: str = "modelo"):
         logger.info("PKL de %s cargado sin classes_ visible; se continúa con predict.", axis_es)
     return estimator, classes
 
+
 def _unwrap_estimator(loaded: Any):
     if loaded is None:
         return None
@@ -74,6 +79,7 @@ def _unwrap_estimator(loaded: Any):
             if inner is not None and hasattr(inner, "predict"):
                 return inner
     return loaded
+
 
 def _extract_classes(estimator: Any) -> Optional[np.ndarray]:
     classes = getattr(estimator, "classes_", None)
@@ -93,7 +99,9 @@ def _extract_classes(estimator: Any) -> Optional[np.ndarray]:
             pass
     return None
 
+
 def map_tone_label(raw: Any) -> str:
+    """Mapea etiquetas numéricas típicas [-1, 0, 1] a Negativo/Neutro/Positivo."""
     if raw is None or (isinstance(raw, float) and np.isnan(raw)):
         return "Neutro"
 
@@ -117,6 +125,7 @@ def map_tone_label(raw: Any) -> str:
         return capitalized
     return text
 
+
 def _try_int_label(raw: Any) -> Optional[int]:
     if isinstance(raw, (int, np.integer)):
         return int(raw)
@@ -129,12 +138,16 @@ def _try_int_label(raw: Any) -> Optional[int]:
         return int(text)
     return None
 
+
 def format_theme_label(raw: Any) -> str:
+    """Conserva la etiqueta del modelo de tema sin hardcodear clases de cliente."""
     if raw is None or (isinstance(raw, float) and np.isnan(raw)):
         return ""
     return str(raw).strip()
 
+
 def text_for_classification(row: dict, km: Optional[dict] = None) -> str:
+    """Usa el mismo texto que el flujo IA: contexto, o título + resumen."""
     km = km or {}
     ctx = row.get("Contexto analizado")
     if ctx and str(ctx).strip() not in ("", "-", "nan", "None"):
@@ -149,6 +162,7 @@ def text_for_classification(row: dict, km: Optional[dict] = None) -> str:
     )
     return _title_resumen_text(titulo, resumen)
 
+
 def _title_resumen_text(titulo: Any, resumen: Any) -> str:
     from ai_analyzer import clean_text_strictly_no_links
 
@@ -158,12 +172,14 @@ def _title_resumen_text(titulo: Any, resumen: Any) -> str:
         return f"{t_clean}. {r_clean}"[:800]
     return (t_clean or r_clean)[:800]
 
+
 def fill_classification_context(
     rows: List[dict],
     km: dict,
     brand: str = "",
     aliases: Optional[Sequence[str]] = None,
 ) -> List[dict]:
+    """Rellena 'Contexto analizado' si aún no existe (ruta PKL sin IA)."""
     aliases = list(aliases or [])
     brand_regexes = generate_brand_variants(brand, aliases) if brand else []
     titulo_key = km.get("titulo", "Título")
@@ -189,6 +205,7 @@ def fill_classification_context(
             row["Contexto analizado"] = _title_resumen_text(titulo_val, resumen_val)
     return rows
 
+
 def apply_pkl_classifiers(
     rows: List[dict],
     km: dict,
@@ -199,6 +216,11 @@ def apply_pkl_classifiers(
     aliases: Optional[Sequence[str]] = None,
     unify_similar: bool = True,
 ) -> List[dict]:
+    """Sobrescribe Tono_IA y/o Tema_IA. Nunca toca Subtema_IA. Omite duplicadas.
+
+    Por defecto unifica noticias similares (mismo clúster que el flujo IA) para
+    que compartan tono/tema y no se rompa el agrupamiento.
+    """
     if not tone_model and not theme_model:
         return rows
 
@@ -221,7 +243,15 @@ def apply_pkl_classifiers(
 
     if unify_similar:
         regexes = generate_brand_variants(brand, list(aliases or [])) if brand else []
-        cluster_map = cluster_similar_rows(rows, km, regexes)
+        cluster_map = cluster_similar_rows(
+            rows,
+            km,
+            regexes,
+            brand=brand,
+            aliases=list(aliases or []),
+            progress_callback=progress_callback,
+            progress_pct=88,
+        )
     else:
         cluster_map = {i: i for i in active}
 
@@ -256,6 +286,7 @@ def apply_pkl_classifiers(
 
     return rows
 
+
 def _safe_predict(model, texts: Sequence[str], axis: str) -> List[Any]:
     axis_es = _spanish_axis(axis)
     try:
@@ -275,11 +306,13 @@ def _safe_predict(model, texts: Sequence[str], axis: str) -> List[Any]:
         )
     return preds.tolist()
 
+
 def classification_plan(
     ai_enabled: bool,
     tone_model=None,
     theme_model=None,
 ) -> Dict[str, bool]:
+    """Describe qué eje usa IA existente vs PKL. El subtema nunca usa PKL."""
     has_tone = tone_model is not None
     has_theme = theme_model is not None
     return {
