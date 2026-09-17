@@ -532,7 +532,7 @@ def _cubo_mas_cercano(sub_tema: str, titulo: str, tax: dict) -> Optional[str]:
                 if t not in CONECT and t not in FILLER and t not in MARCO and len(t) > 3}
     candidatos = []
     for nombre in tax.get('temas', []):
-        if nz(nombre) in CUBO_PROHIBIDO:
+        if nz(nombre) in CUBO_PROHIBIDO or not _tema_distinto_de_subtema(nombre, sub_tema):
             continue
         claves = {raiz(t) for t in words(nombre)
                   if t not in CONECT and t not in FILLER and t not in MARCO and len(t) > 3}
@@ -1046,7 +1046,9 @@ def _muestreo_grupos(grupos: Sequence[dict], etiquetas: Dict[int, dict], por_blo
     lineas = []
     for g in grupos:
         st_ = (etiquetas.get(g['grupo']) or {}).get('sub_tema') or ''
-        lineas.append('- %s | %s' % (st_[:60], sq(g['titulo'])[:110]))
+        lineas.append('- Subtema: %s | Titular: %s | Evidencia: %s' %
+                      (st_[:100], sq(g['titulo'])[:110],
+                       sq(g.get('contexto_marca') or g.get('contexto') or g.get('texto', ''))[:350]))
     if len(lineas) > por_bloque * max_bloques:
         paso = max(1, len(lineas) // (por_bloque * max_bloques))
         lineas = lineas[::paso]
@@ -1070,11 +1072,13 @@ def proponer_taxonomia(cfg: dict, grupos: List[dict], etiquetas: Dict[int, dict]
                  'Eres analista de medios en Colombia. Agrupas hechos en cubos tematicos. Respondes en JSON.'},
                 {'role': 'user', 'content':
                  'Estos son hechos de un dossier de prensa:\n\n' + '\n'.join(bloque) +
-                 '\n\nPropón entre 10 y 14 CUBOS TEMATICOS que los agrupen, pensando en un cliente '
-                 'colombiano (puede ser universidad, entidad publica, empresa privada o marca).\n'
-                 'Reglas: nombres de 2 a 5 palabras; especificos de ESTOS hechos, no genericos; sin '
-                 'solaparse entre si; sin contar el nombre de la marca; nada de "Otros", "Varios", '
-                 '"General" ni "Informacion".\n'
+                 '\n\nPropón entre 10 y 14 CUBOS TEMATICOS que agrupen los SUBTEMAS anteriores.\n'
+                 'El SUBTEMA es la fuente principal para definir cada cubo. Usa Titular y Evidencia '
+                 'solo para comprobar que los subtemas pertenecen al mismo asunto y no mezclar hechos '
+                 'distintos. No copies ningún subtema como nombre de cubo.\n'
+                 'Reglas: nombres de 2 a 5 palabras; macrotemas específicos de ESTOS subtemas; '
+                 'relacionados con la evidencia; sin solaparse entre sí; sin contar el nombre de la marca; '
+                 'nada de "Otros", "Varios", "General" ni "Informacion".\n'
                  'Responde solo JSON: {"cubos":["Cubo uno","Cubo dos"]}'}]
         try:
             data = _json_loose(llamar_llm(cfg, msgs)) or {}
@@ -1117,17 +1121,31 @@ def proponer_taxonomia(cfg: dict, grupos: List[dict], etiquetas: Dict[int, dict]
     return tax
 
 
-def _tema_es_relevante(tema: str, sub_tema: str, contexto: str = '') -> bool:
-    """Valida que un tema propuesto comparta evidencia con el hecho.
+def _tema_distinto_de_subtema(tema: str, sub_tema: str) -> bool:
+    """Impide que el cubo macro copie o sea casi igual al subtema."""
+    from rapidfuzz import fuzz
+    t = nz(tema)
+    s = nz(sub_tema)
+    if not t or not s:
+        return False
+    if t == s or t in s or s in t:
+        return False
+    return fuzz.token_set_ratio(t, s) < 82
 
-    El subtema tiene prioridad; el contexto solo confirma la relación. Evita
-    aceptar un cubo temáticamente ajeno propuesto por el modelo.
+
+def _tema_es_relevante(tema: str, sub_tema: str, contexto: str = '') -> bool:
+    """Valida relación con subtema/evidencia sin copiar el subtema.
+
+    El subtema es la señal principal. CuerpoEs, Título y Contexto analizado
+    confirman que el cubo describe el mismo hecho o una familia válida.
     """
+    if not _tema_distinto_de_subtema(tema, sub_tema):
+        return False
     tema_tokens = {raiz(t) for t in words(tema) if t not in CONECT and len(t) > 3}
     sub_tokens = {raiz(t) for t in words(sub_tema) if t not in CONECT and len(t) > 3}
-    if tema_tokens & sub_tokens:
-        return True
     contexto_tokens = {raiz(t) for t in words(contexto) if t not in CONECT and len(t) > 3}
+    if len(tema_tokens & sub_tokens) >= 1:
+        return True
     return len(tema_tokens & contexto_tokens) >= 2
 
 
@@ -1143,7 +1161,11 @@ def asignar_temas(cfg: dict, grupos: List[dict], etiquetas: Dict[int, dict], tax
         else:
             pendientes.append({'grupo': g['grupo'], 'sub_tema': e.get('sub_tema', ''),
                                'titulo': g['titulo'],
-                               'contexto': g.get('contexto') or g.get('contexto_marca') or ''})
+                               # Evidencia combinada para validar relación del Tema:
+                               # CuerpoEs/texto, Título y Contexto analizado.
+                               'contexto': '%s\n%s\n%s' %
+                                           (g.get('contexto') or '', g.get('titulo') or '',
+                                            g.get('texto') or '')})
     if pendientes and progress:
         progress(min(93, 93), 'Clasificando tema de %d grupos nuevos…' % len(pendientes))
     elegidos = elegir_cubos(cfg, pendientes, tax, permitir_nuevos=True)
@@ -1245,9 +1267,9 @@ def enrich_rows_with_ai(
     # --- etiquetado ---
     etiquetas = etiquetar_grupos(cfg, grupos, progreso, tam_lote=tam_lote, workers=workers,
                                  votos=votos)
-    cambios = canonizar_subtemas(etiquetas)
-    if cambios and progress_callback:
-        progreso(93, 'Sub-temas unificados: %d' % cambios)
+    # El subtema se conserva exactamente como lo generó el etiquetador.
+    # La canonización y agrupación para el Tema se hacen sobre evidencia,
+    # sin modificar la etiqueta Subtema_IA exportada.
 
     # --- lista de Temas: fija del cliente o generada desde el propio archivo ---
     if tax is None:
@@ -1291,12 +1313,13 @@ def enrich_rows_with_ai(
             pkl_cache[g['grupo']] = (p_tone, p_theme)
             if p_tone:
                 e['tono'] = p_tone
-            if p_theme:
+            if p_theme and _tema_es_relevante(p_theme, e.get('sub_tema', ''),
+                                               '%s %s %s' % (g.get('titulo', ''), ctx,
+                                                             g.get('texto', ''))):
                 temas[g['grupo']] = p_theme
                 origen[g['grupo']] = 'pkl'
-                from ai_analyzer import ensure_subtema_distinct_from_tema
-                e['sub_tema'] = ensure_subtema_distinct_from_tema(
-                    p_theme, e['sub_tema'], brand, g['titulo'], ctx)
+                # El PKL puede aportar el Tema, pero nunca reemplaza el Subtema
+                # generado por el etiquetador.
 
     # --- volcado a las filas ---
     for i, row in enumerate(rows):
