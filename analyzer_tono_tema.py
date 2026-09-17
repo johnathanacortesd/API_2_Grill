@@ -523,11 +523,8 @@ def cubo_valido(nombre, tax, permitir_nuevos=True):
 
 
 def _cubo_mas_cercano(sub_tema: str, titulo: str, tax: dict) -> Optional[str]:
-    """Devuelve un cubo solo si comparte evidencia léxica suficiente.
-
-    Nunca devuelve arbitrariamente el primer tema de la taxonomía: eso convertía
-    nutrición escolar en cuidado ambiental cuando el modelo no encontraba cubo.
-    """
+    """Devuelve un cubo relacionado sin fabricar etiquetas."""
+    from rapidfuzz import fuzz
     objetivo = {raiz(t) for t in words(sub_tema)
                 if t not in CONECT and t not in FILLER and t not in MARCO and len(t) > 3}
     candidatos = []
