@@ -13,8 +13,9 @@ POR QUE ESTE MOTOR DA MEJOR RESULTADO QUE UN PROMPT SUELTO
   2. Primero el SUB-TEMA (sintesis del hecho) y despues el TONO, con rubrica ordenada P1/P2/P3.
   3. VALIDADOR duro (3-7 palabras, sin verbo conjugado al inicio, sin terminar en preposicion,
      sin rotulos vacios) + ciclo de reparacion contra el propio modelo.
-  4. El TEMA sale de una LISTA CERRADA de cubos del cliente por reglas lexicas; el modelo solo
-     elige dentro de la lista o propone un cubo nuevo especifico. Nunca "Otros".
+  4. El TEMA se arma BOTTOM-UP en ESTE LOTE: se canonizan subtemas del mismo hecho y se agrupan
+     subtemas afines bajo un nombre mas general. No hay lista cerrada ni memoria entre corridas.
+     Un subtema canonico tiene exactamente un tema. Nunca "Otros".
   5. Los sub-temas ya usados viajan en cada lote como CANDIDATOS: un mismo hecho reutiliza el
      mismo texto en vez de generar variantes.
 
@@ -341,6 +342,15 @@ def construir_grupos(
                 # comparten pocas palabras comunes de la ciudad/entidad.
                 if jac >= 0.42 or (jac >= 0.32 and t3[i, j] >= 0.88):
                     uni(i, j)
+
+            # Titulares cortos casi iguales: 2 palabras distintivas + token_set alto.
+            for i in range(len(base)):
+                for j in range(i + 1, len(base)):
+                    if find(i) == find(j):
+                        continue
+                    inter = base[i]['ctit'] & base[j]['ctit']
+                    if len(inter) >= 2 and t3[i, j] >= 0.90:
+                        uni(i, j)
 
     inv = defaultdict(set)
     for j, b in enumerate(base):
@@ -900,7 +910,59 @@ def etiquetar_grupos(cfg: dict, grupos: List[dict], progress: Optional[Callable]
     return etiquetas
 
 
-def canonizar_subtemas(etiquetas: Dict[int, dict], umbral: float = 0.90) -> int:
+def _contenido_discriminante(s: str) -> set:
+    """Tokens de contenido (sin nexos, relleno ni geografía genérica)."""
+    return {raiz(w) for w in words(s)
+            if w not in CONECT and w not in FILLER and w not in MARCO
+            and len(w) >= 3 and not _es_geografia(w)}
+
+
+def _subtemas_mismo_hecho(a: str, b: str, umbral: float = 0.82) -> bool:
+    """True si dos subtemas describen el mismo hecho (no solo el mismo asunto)."""
+    from rapidfuzz import fuzz
+    na, nb = nz(a), nz(b)
+    if not na or not nb:
+        return False
+    if na == nb:
+        return True
+    ca, cb = _contenido_discriminante(a), _contenido_discriminante(b)
+    if not ca or not cb:
+        return fuzz.token_sort_ratio(na, nb) >= umbral * 100
+    inter = ca & cb
+    union = ca | cb
+    jac = len(inter) / max(1, len(union))
+    diferencia = ca ^ cb
+    contenida = ca <= cb or cb <= ca
+    misma_bolsa = len(diferencia) <= 2 and len(inter) >= 2
+    if fuzz.token_sort_ratio(na, nb) >= umbral * 100:
+        return True
+    if contenida and misma_bolsa:
+        return True
+    if jac >= 0.55 and len(inter) >= 2:
+        return True
+    if fuzz.token_set_ratio(na, nb) >= 88 and len(inter) >= 2:
+        return True
+    return False
+
+
+def _subtemas_misma_familia(a: str, b: str) -> bool:
+    """Hechos distintos pero del mismo asunto (comparten tema, no subtema)."""
+    if _subtemas_mismo_hecho(a, b):
+        return True
+    from rapidfuzz import fuzz
+    ca, cb = _contenido_discriminante(a), _contenido_discriminante(b)
+    if not ca or not cb:
+        return False
+    inter = ca & cb
+    jac = len(inter) / max(1, len(ca | cb))
+    if len(inter) >= 2 or jac >= 0.40:
+        return True
+    if len(inter) >= 1 and fuzz.token_set_ratio(nz(a), nz(b)) >= 78:
+        return True
+    return False
+
+
+def canonizar_subtemas(etiquetas: Dict[int, dict], umbral: float = 0.82) -> int:
     """Unifica variantes inequívocas y conserva un texto canónico.
 
     No basta con que dos cadenas se parezcan: ``Obras en Sincelejo`` y
@@ -909,25 +971,15 @@ def canonizar_subtemas(etiquetas: Dict[int, dict], umbral: float = 0.90) -> int:
     ciudad/entidad distinta. El representante es el más frecuente y, en empate,
     el más corto.
     """
-    from rapidfuzz import fuzz
-
-    def contenido(s):
-        return {raiz(w) for w in words(s) if w not in CONECT and len(w) > 3}
-
     conteo = Counter(nz(e.get('sub_tema')) for e in etiquetas.values() if e.get('sub_tema'))
     if len(conteo) <= 1:
         return 0
     representantes = []
     asignacion = {}
-    for texto, frecuencia in conteo.most_common():
-        ct = contenido(texto)
+    for texto, _frecuencia in conteo.most_common():
         destino = None
         for rep in representantes:
-            cr = contenido(rep)
-            diferencia = ct ^ cr
-            contenida = ct <= cr or cr <= ct
-            misma_bolsa = len(diferencia) <= 2 and len(ct & cr) >= 2
-            if fuzz.token_sort_ratio(texto, rep) >= umbral * 100 or (contenida and misma_bolsa):
+            if _subtemas_mismo_hecho(texto, rep, umbral=umbral):
                 destino = rep
                 break
         if destino is None:
@@ -943,6 +995,68 @@ def canonizar_subtemas(etiquetas: Dict[int, dict], umbral: float = 0.90) -> int:
         if destino != clave:
             e['sub_tema'] = originales.get(destino, destino).strip()
             cambios += 1
+    return cambios
+
+
+def unificar_subtemas_noticias_similares(grupos: Sequence[dict], etiquetas: Dict[int, dict],
+                                         umbral: int = 80) -> int:
+    """Si dos grupos siguen separados pero son el mismo hecho, comparten subtema."""
+    from rapidfuzz import fuzz
+    n = len(grupos)
+    if n < 2:
+        return 0
+    par = list(range(n))
+
+    def find(x):
+        while par[x] != x:
+            par[x] = par[par[x]]
+            x = par[x]
+        return x
+
+    def uni(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            par[max(ra, rb)] = min(ra, rb)
+
+    for i in range(n):
+        ei = etiquetas.get(grupos[i]['grupo'], {})
+        for j in range(i + 1, n):
+            ej = etiquetas.get(grupos[j]['grupo'], {})
+            if _subtemas_mismo_hecho(ei.get('sub_tema', ''), ej.get('sub_tema', '')):
+                uni(i, j)
+                continue
+            ti, tj = nz(grupos[i].get('titulo')), nz(grupos[j].get('titulo'))
+            if not ti or not tj:
+                continue
+            if fuzz.token_set_ratio(ti, tj) < umbral:
+                continue
+            wi = set(w for w in words(ti) if w not in GENERIC_TITULO)
+            wj = set(w for w in words(tj) if w not in GENERIC_TITULO)
+            if len(wi & wj) >= 2:
+                uni(i, j)
+
+    cambios = 0
+    buckets = defaultdict(list)
+    for i in range(n):
+        buckets[find(i)].append(i)
+    for miembros in buckets.values():
+        if len(miembros) < 2:
+            continue
+        validos = [(etiquetas.get(grupos[k]['grupo'], {}).get('sub_tema') or '')
+                   for k in miembros]
+        validos = [s for s in validos if s]
+        if not validos:
+            continue
+        c = Counter(nz(s) for s in validos)
+        maxrep = max(c.values())
+        cand = [s for s in validos if c[nz(s)] == maxrep]
+        canon = min(cand, key=lambda s: (len(s.split()), len(s)))
+        for k in miembros:
+            gid = grupos[k]['grupo']
+            e = etiquetas.get(gid)
+            if e and e.get('sub_tema') and nz(e['sub_tema']) != nz(canon):
+                e['sub_tema'] = canon
+                cambios += 1
     return cambios
 
 
@@ -1113,15 +1227,29 @@ def proponer_taxonomia(cfg: dict, grupos: List[dict], etiquetas: Dict[int, dict]
 
 
 def _tema_distinto_de_subtema(tema: str, sub_tema: str) -> bool:
-    """Impide que el cubo macro copie o sea casi igual al subtema."""
+    """Tema más general que el subtema: no igual, no casi igual, no copia el hecho.
+
+    Un subconjunto propio de tokens (p. ej. «Alimentación escolar» frente a
+    «Inicio de clases con alimentación escolar») SÍ es más general y se acepta.
+    """
     from rapidfuzz import fuzz
     t = nz(tema)
     s = nz(sub_tema)
     if not t or not s:
         return False
-    if t == s or t in s or s in t:
+    if t == s:
         return False
-    return fuzz.token_set_ratio(t, s) < 82
+    tw = [w for w in t.split() if w not in CONECT]
+    sw = [w for w in s.split() if w not in CONECT]
+    if not tw or set(tw) == set(sw):
+        return False
+    if s in t:
+        return False
+    if abs(len(tw) - len(sw)) <= 1 and fuzz.token_sort_ratio(t, s) >= 88:
+        return False
+    if len(tw) >= len(sw) and fuzz.token_set_ratio(t, s) >= 90:
+        return False
+    return True
 
 
 def _tema_es_relevante(tema: str, sub_tema: str, contexto: str = '') -> bool:
@@ -1132,70 +1260,468 @@ def _tema_es_relevante(tema: str, sub_tema: str, contexto: str = '') -> bool:
     """
     if not _tema_distinto_de_subtema(tema, sub_tema):
         return False
-    tema_tokens = {raiz(t) for t in words(tema) if t not in CONECT and len(t) > 3}
-    sub_tokens = {raiz(t) for t in words(sub_tema) if t not in CONECT and len(t) > 3}
-    contexto_tokens = {raiz(t) for t in words(contexto) if t not in CONECT and len(t) > 3}
-    if len(tema_tokens & sub_tokens) >= 1:
+    tema_tokens = {raiz(t) for t in words(tema) if t not in CONECT and len(t) >= 3}
+    if not tema_tokens:
+        return False
+    sub_tokens = {raiz(t) for t in words(sub_tema) if t not in CONECT and len(t) >= 3}
+    contexto_tokens = {raiz(t) for t in words(contexto) if t not in CONECT and len(t) >= 3}
+    if tema_tokens & sub_tokens:
         return True
-    return len(tema_tokens & contexto_tokens) >= 2
+    return len(tema_tokens & contexto_tokens) >= 1
+
+
+def cluster_familias_subtema(items: Sequence[dict]) -> List[List[dict]]:
+    """Une subtemas afines de ESTE lote (asunto compartido, hechos distintos)."""
+    items = [it for it in items if it and it.get('sub_tema')]
+    if not items:
+        return []
+    par = list(range(len(items)))
+
+    def find(x):
+        while par[x] != x:
+            par[x] = par[par[x]]
+            x = par[x]
+        return x
+
+    def uni(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            par[max(ra, rb)] = min(ra, rb)
+
+    for i in range(len(items)):
+        for j in range(i + 1, len(items)):
+            if _subtemas_misma_familia(items[i]['sub_tema'], items[j]['sub_tema']):
+                uni(i, j)
+                continue
+            ea = _contenido_discriminante(items[i].get('evidencia') or items[i]['sub_tema'])
+            eb = _contenido_discriminante(items[j].get('evidencia') or items[j]['sub_tema'])
+            if len(ea & eb) >= 2:
+                uni(i, j)
+
+    buckets = defaultdict(list)
+    for i, it in enumerate(items):
+        buckets[find(i)].append(it)
+    return [buckets[k] for k in sorted(buckets)]
+
+
+def generalizar_tema_desde_subtemas(subtemas: Sequence[str], titulos: Optional[Sequence[str]] = None,
+                                    contextos: Optional[Sequence[str]] = None) -> str:
+    """Nombre más general (2 a 5 palabras) a partir de los subtemas del lote."""
+    subtemas = [sq(s) for s in (subtemas or []) if sq(s)]
+    titulos = [sq(t) for t in (titulos or []) if sq(t)]
+    n = max(1, len(subtemas))
+    cnt = Counter()
+    for s in subtemas:
+        cnt.update(_contenido_discriminante(s))
+    umbral = 1 if n == 1 else max(1, (n + 1) // 2)
+    roots = [t for t, c in cnt.most_common() if c >= umbral]
+    if n == 1:
+        roots = roots[:3]
+    if len(roots) < 2:
+        tcnt = Counter()
+        for t in titulos:
+            tcnt.update(_contenido_discriminante(t))
+        for tok, _ in tcnt.most_common():
+            if tok not in roots:
+                roots.append(tok)
+            if len(roots) >= 2:
+                break
+    roots = roots[:4]
+    formas = defaultdict(Counter)
+    for s in list(subtemas) + list(titulos):
+        for w in str(s).split():
+            formas[raiz(w)][w] += 1
+
+    def armar(rs: Sequence[str]) -> str:
+        pal = [formas[r].most_common(1)[0][0] if formas.get(r) else r for r in rs]
+        nombre = sq(' '.join(pal))
+        if nombre:
+            nombre = nombre[0].upper() + nombre[1:]
+        v = cubo_valido(nombre, {'temas': []}, True)
+        return v or nombre
+
+    nombre = armar(roots) if roots else ''
+    if not nombre:
+        tcnt = Counter()
+        for t in titulos:
+            tcnt.update(_contenido_discriminante(t))
+        nombre = armar([t for t, _ in tcnt.most_common(3)])
+
+    for s in subtemas:
+        if _tema_distinto_de_subtema(nombre, s):
+            continue
+        if len(roots) > 2:
+            cand = armar(roots[:2])
+            if cand and all(_tema_distinto_de_subtema(cand, s2) for s2 in subtemas):
+                nombre = cand
+                break
+        extra = []
+        for t in titulos:
+            extra.extend(tok for tok in _contenido_discriminante(t)
+                         if tok not in _contenido_discriminante(s))
+        extra = list(dict.fromkeys(extra))[:3]
+        if extra:
+            cand = armar(extra)
+            if cand and all(_tema_distinto_de_subtema(cand, s2) for s2 in subtemas):
+                nombre = cand
+                break
+        break
+
+    if not nombre or nz(nombre) in CUBO_PROHIBIDO or nz(nombre) in ROTULO_GEN:
+        tcnt = Counter()
+        for t in titulos:
+            tcnt.update(_contenido_discriminante(t))
+        fallback = armar([t for t, _ in tcnt.most_common(3)])
+        if fallback and nz(fallback) not in CUBO_PROHIBIDO:
+            return fallback
+        return 'Agenda informativa local'
+    return nombre
+
+
+def _mejor_candidato_tema(subtemas: Sequence[str], titulos: Sequence[str],
+                          contextos: Sequence[str], candidatos: Sequence[str]) -> Optional[str]:
+    if not candidatos:
+        return None
+    from rapidfuzz import fuzz
+    evidencia = ' '.join(list(subtemas) + list(titulos or []) +
+                         [str(c)[:300] for c in (contextos or [])])
+    best, score = None, 0
+    for c in candidatos:
+        if nz(c) in CUBO_PROHIBIDO or nz(c) in ROTULO_GEN:
+            continue
+        if any(not _tema_distinto_de_subtema(c, s) for s in subtemas if s):
+            continue
+        if not any(_tema_es_relevante(c, s, evidencia) for s in subtemas if s):
+            continue
+        sc = fuzz.token_set_ratio(nz(c), nz(evidencia))
+        if sc > score:
+            best, score = c, sc
+    return best if best and score >= 45 else None
+
+
+def prompt_temas_familias(familias: Sequence[dict]) -> str:
+    bloques = []
+    for f in familias:
+        bloques.append(
+            'FAMILIA id=%d\nSUBTEMAS:\n%s\nTITULARES:\n%s' % (
+                f['id'],
+                '\n'.join('- %s' % s for s in f.get('subtemas') or []),
+                '\n'.join('- %s' % t for t in (f.get('titulos') or [])[:6]),
+            )
+        )
+    return (
+        'Agrupas SUBTEMAS de un mismo lote de noticias en TEMAS más generales.\n'
+        'No hay lista cerrada: el nombre sale de ESTOS subtemas y titulares.\n'
+        'Reglas: 2 a 5 palabras; más general que cada subtema; no copies ni parafrasees un subtema;\n'
+        'debe cubrir el contenido; sin "Otros", "General" ni rótulos vacíos.\n'
+        'Responde SOLO JSON: {"resultados":[{"id":<familia>,"tema":"..."}]}\n\n'
+        + '\n\n'.join(bloques)
+    )
+
+
+def nombrar_familias_tema(cfg: dict, familias: Sequence[dict],
+                          candidatos: Optional[Sequence[str]] = None) -> Dict[int, str]:
+    """Nombra cada familia una sola vez (LLM opcional + respaldo determinista)."""
+    out: Dict[int, str] = {}
+    if not familias:
+        return out
+    if cfg.get('api_key'):
+        try:
+            txt = llamar_llm(cfg, [
+                {'role': 'system',
+                 'content': 'Eres analista de medios en Colombia. Nombras temas más generales a partir de subtemas. JSON.'},
+                {'role': 'user', 'content': prompt_temas_familias(familias)},
+            ])
+            data = _json_loose(txt) or {}
+        except Exception:
+            data = {}
+        for r in data.get('resultados', []) or []:
+            try:
+                fid = int(r.get('id'))
+            except Exception:
+                continue
+            fam = next((f for f in familias if f['id'] == fid), None)
+            if not fam:
+                continue
+            nombre = cubo_valido(r.get('tema'), {'temas': []}, True)
+            if not nombre:
+                continue
+            if any(not _tema_distinto_de_subtema(nombre, s) for s in fam.get('subtemas') or []):
+                continue
+            evidencia = ' '.join((fam.get('subtemas') or []) + (fam.get('titulos') or []))
+            if all(_tema_es_relevante(nombre, s, evidencia) for s in (fam.get('subtemas') or [])[:4] if s):
+                out[fid] = nombre
+    for fam in familias:
+        if fam['id'] in out:
+            continue
+        cand = _mejor_candidato_tema(fam.get('subtemas') or [], fam.get('titulos') or [],
+                                     fam.get('contextos') or [], candidatos or [])
+        if cand:
+            out[fam['id']] = cand
+            continue
+        out[fam['id']] = generalizar_tema_desde_subtemas(
+            fam.get('subtemas') or [], fam.get('titulos'), fam.get('contextos'))
+    return out
+
+
+def forzar_un_tema_por_subtema(temas: Dict[int, str], etiquetas: Dict[int, dict]) -> int:
+    """Invariante: un subtema canónico ⇒ exactamente un tema en el lote."""
+    por_sub = defaultdict(list)
+    for gid, e in etiquetas.items():
+        if gid not in temas:
+            continue
+        por_sub[nz(e.get('sub_tema'))].append(gid)
+    cambios = 0
+    for gids in por_sub.values():
+        usados = [temas[g] for g in gids if temas.get(g)]
+        if len({nz(t) for t in usados}) <= 1:
+            continue
+        ganador_nz = Counter(nz(t) for t in usados).most_common(1)[0][0]
+        display = next(t for t in usados if nz(t) == ganador_nz)
+        for g in gids:
+            if nz(temas.get(g, '')) != ganador_nz:
+                temas[g] = display
+                cambios += 1
+    return cambios
+
+
+def _confianza_jev(answer: dict) -> float:
+    if not isinstance(answer, dict):
+        return 0.0
+    for k in ('confidence', 'confianza', 'score', 'probability'):
+        try:
+            v = float(answer.get(k))
+            if v > 1:
+                v = v / 100.0
+            return max(0.0, min(1.0, v))
+        except (TypeError, ValueError):
+            continue
+    if any(k in answer for k in ('boolean', 'choice', 'value')):
+        return 0.8
+    return 0.0
+
+
+def _bool_jev(answer: dict) -> Optional[bool]:
+    if not isinstance(answer, dict):
+        return None
+    if 'boolean' in answer:
+        return bool(answer.get('boolean'))
+    ch = str(answer.get('choice') or answer.get('value') or '').strip().lower()
+    if ch in ('true', 'si', 'sí', 'yes', '1'):
+        return True
+    if ch in ('false', 'no', '0'):
+        return False
+    return None
+
+
+def _tema_con_jev(cfg: dict, tema: str, sub_tema: str, titulo: str,
+                  contexto: str) -> Optional[dict]:
+    """Corrector Jev del TEMA (boolean/choice). No genera subtemas ni toca el tono."""
+    api_key = (cfg.get('typesafe_api_key') or '').strip()
+    if not api_key:
+        return None
+    payload = {
+        'model': cfg.get('typesafe_model') or 'jev-latest',
+        'state': {
+            'tema': tema,
+            'subtema': sub_tema,
+            'titular': sq(titulo or '')[:500],
+            'contexto': sq(contexto or '')[:4000],
+        },
+        'questions': {
+            'cubre': {
+                'type': 'boolean',
+                'instructions': (
+                    '¿El TEMA cubre el SUBTEMA y el titular? Debe ser una categoría más general '
+                    'que describa el asunto de la noticia, no un relleno genérico.'
+                ),
+            },
+            'demasiado_especifico': {
+                'type': 'boolean',
+                'instructions': (
+                    '¿El TEMA es demasiado específico o casi igual al SUBTEMA? '
+                    'True si copia el hecho o no es más general.'
+                ),
+            },
+        },
+    }
+    try:
+        response = requests.post(
+            cfg.get('typesafe_url') or JEV_URL_DEFECTO,
+            headers={'Authorization': 'Bearer %s' % api_key, 'Content-Type': 'application/json'},
+            json=payload,
+            timeout=int(cfg.get('typesafe_timeout', 60)),
+        )
+        if response.status_code != 200:
+            raise RuntimeError('HTTP %s: %s' % (response.status_code, response.text[:250]))
+        answers = response.json().get('answers') or {}
+        cubre_a = answers.get('cubre') or {}
+        spec_a = answers.get('demasiado_especifico') or {}
+        return {
+            'cubre': _bool_jev(cubre_a),
+            'demasiado_especifico': _bool_jev(spec_a),
+            'confianza_cubre': _confianza_jev(cubre_a),
+            'confianza_especifico': _confianza_jev(spec_a),
+        }
+    except Exception as exc:
+        _ULTIMO_RESUMEN.setdefault('errores_jev', []).append(str(exc)[:200])
+        return None
+
+
+def corregir_temas_con_jev(cfg: dict, grupos: Sequence[dict], etiquetas: Dict[int, dict],
+                           temas: Dict[int, str]) -> List[int]:
+    """Alta confianza ⇒ corrige el tema. Baja confianza ⇒ deja y marca revisión.
+
+    Jev no genera subtemas y no reemplaza el pipeline de tono.
+    """
+    if not (cfg.get('typesafe_api_key') or '').strip():
+        return []
+    por_sub = {}
+    por_gid = {g['grupo']: g for g in grupos}
+    for g in grupos:
+        e = etiquetas.get(g['grupo']) or {}
+        clave = nz(e.get('sub_tema'))
+        if clave and clave not in por_sub:
+            por_sub[clave] = g['grupo']
+    umbral = float(cfg.get('jev_confianza_min', 0.75) or 0.75)
+    revisar, corregidos = [], []
+    for gid in por_sub.values():
+        tema = temas.get(gid)
+        e = etiquetas.get(gid) or {}
+        g = por_gid.get(gid) or {}
+        if not tema:
+            continue
+        ver = _tema_con_jev(cfg, tema, e.get('sub_tema', ''), g.get('titulo'),
+                            g.get('contexto') or g.get('texto'))
+        if not ver:
+            continue
+        cubre, spec = ver.get('cubre'), ver.get('demasiado_especifico')
+        conf = max(ver.get('confianza_cubre') or 0.0, ver.get('confianza_especifico') or 0.0)
+        malo = (cubre is False) or (spec is True)
+        if not malo:
+            continue
+        if conf < umbral:
+            revisar.append(gid)
+            continue
+        nuevo = generalizar_tema_desde_subtemas(
+            [e.get('sub_tema', '')], [g.get('titulo')], [g.get('contexto') or g.get('texto')])
+        if nuevo and _tema_distinto_de_subtema(nuevo, e.get('sub_tema', '')):
+            clave = nz(e.get('sub_tema'))
+            for g2 in grupos:
+                e2 = etiquetas.get(g2['grupo']) or {}
+                if nz(e2.get('sub_tema')) == clave:
+                    temas[g2['grupo']] = nuevo
+            corregidos.append(gid)
+        else:
+            revisar.append(gid)
+    if revisar:
+        _ULTIMO_RESUMEN['temas_para_revision'] = revisar
+    if corregidos:
+        _ULTIMO_RESUMEN['temas_corregidos_por_jev'] = corregidos
+    return corregidos
 
 
 def asignar_temas(cfg: dict, grupos: List[dict], etiquetas: Dict[int, dict], tax: dict,
                   progress: Optional[Callable] = None) -> Tuple[Dict[int, str], Dict[int, str]]:
-    from rapidfuzz import fuzz
-    temas, origen, pendientes = {}, {}, []
-    for g in grupos:
-        e = etiquetas.get(g['grupo'], {})
-        pendientes.append({'grupo': g['grupo'], 'sub_tema': e.get('sub_tema', ''),
-                           'titulo': g['titulo'],
-                           'contexto': '%s\n%s\n%s' %
-                                       (g.get('contexto') or '', g.get('titulo') or '',
-                                        g.get('texto') or '')})
-    if pendientes and progress:
-        progress(min(93, 93), 'Clasificando tema de %d grupos nuevos…' % len(pendientes))
-    # Un subtema canónico exacto debe tener un único Tema. La API se consulta
-    # una sola vez por subtema y el resultado se propaga a sus grupos.
-    representantes = {}
-    grupos_por_subtema = {}
-    for p in pendientes:
-        clave = nz(p['sub_tema'])
-        grupos_por_subtema.setdefault(clave, []).append(p['grupo'])
-        representantes.setdefault(clave, p)
-    pendientes_api = list(representantes.values())
+    """Asigna temas BOTTOM-UP en este lote: un subtema canónico ⇒ un tema.
 
-    elegidos_rep = elegir_cubos(cfg, pendientes_api, tax, permitir_nuevos=True)
-    no_validos = [p for p in pendientes_api
-                  if not _tema_es_relevante(elegidos_rep.get(p['grupo'], ''),
-                                            p['sub_tema'], p.get('contexto', ''))]
-    if no_validos:
-        elegidos_rep.update(elegir_cubos(cfg, no_validos, tax, permitir_nuevos=True))
-    elegidos = {}
-    for clave, ids in grupos_por_subtema.items():
-        tema_rep = elegidos_rep.get(representantes[clave]['grupo'])
-        for gid in ids:
-            elegidos[gid] = tema_rep
-    nuevos = []
-    for p in pendientes:
-        t = elegidos.get(p['grupo'])
-        if not t or not _tema_es_relevante(t, p['sub_tema'], p.get('contexto', '')):
-            t = _cubo_mas_cercano(p['sub_tema'], p['titulo'], tax)
-            origen[p['grupo']] = 'evidencia_respaldo'
-        else:
-            origen[p['grupo']] = 'llm'
-            if nz(t) not in {nz(x) for x in tax['temas']}:
-                nuevos.append(t)
-        if not t:
-            t = max(tax['temas'], key=lambda x: fuzz.token_set_ratio(
-                nz(x), nz('%s %s' % (p['sub_tema'], p.get('contexto', '')))))
-        temas[p['grupo']] = t
-    _ULTIMO_RESUMEN['cubos_nuevos'] = sorted(set(nuevos))
+    `tax['temas']` solo aporta nombres candidatos (opcional). No hay memoria
+    entre corridas ni clasificación independiente por fila o por grupo.
+    """
+    temas, origen = {}, {}
+    if not grupos:
+        return temas, origen
+    if progress:
+        progress(93, 'Agrupando subtemas del lote en temas…')
+    candidatos = [t for t in list((tax or {}).get('temas') or [])
+                  if nz(t) not in CUBO_PROHIBIDO]
+    por_sub = defaultdict(list)
+    meta_sub: Dict[str, dict] = {}
+    for g in grupos:
+        e = etiquetas.get(g['grupo']) or {}
+        sub = e.get('sub_tema') or ''
+        clave = nz(sub)
+        por_sub[clave].append(g['grupo'])
+        if clave not in meta_sub:
+            meta_sub[clave] = {'sub_tema': sub, 'titulos': [], 'contextos': []}
+        meta_sub[clave]['titulos'].append(g.get('titulo') or '')
+        meta_sub[clave]['contextos'].append(
+            '%s\n%s' % (g.get('contexto') or '', g.get('texto') or ''))
+
+    items = []
+    for clave, meta in meta_sub.items():
+        if not clave:
+            continue
+        items.append({
+            'sub_tema': meta['sub_tema'],
+            'evidencia': ' '.join([meta['sub_tema']] + meta['titulos'][:4]),
+            'clave': clave,
+        })
+    familias_items = cluster_familias_subtema(items)
+    familias = []
+    for i, miembros in enumerate(familias_items, 1):
+        subs, titulos, contextos, gids = [], [], [], []
+        for it in miembros:
+            m = meta_sub[it['clave']]
+            subs.append(m['sub_tema'])
+            titulos.extend(m['titulos'])
+            contextos.extend(m['contextos'])
+            gids.extend(por_sub[it['clave']])
+        familias.append({
+            'id': i, 'subtemas': subs, 'titulos': titulos,
+            'contextos': contextos, 'gids': gids,
+        })
+    nombres = nombrar_familias_tema(cfg or {}, familias, candidatos=candidatos)
+    for fam in familias:
+        nombre = nombres.get(fam['id']) or generalizar_tema_desde_subtemas(
+            fam['subtemas'], fam['titulos'], fam['contextos'])
+        for gid in fam['gids']:
+            temas[gid] = nombre
+            origen[gid] = 'familia:%d' % fam['id']
+
+    for gid, e in etiquetas.items():
+        t = temas.get(gid)
+        s = e.get('sub_tema') or ''
+        if t and not _tema_distinto_de_subtema(t, s):
+            g = next((x for x in grupos if x['grupo'] == gid), {})
+            temas[gid] = generalizar_tema_desde_subtemas(
+                [s], [g.get('titulo')], [g.get('contexto') or g.get('texto')])
+            origen[gid] = 'guarda_generalidad'
+        elif gid not in temas and s:
+            g = next((x for x in grupos if x['grupo'] == gid), {})
+            temas[gid] = generalizar_tema_desde_subtemas(
+                [s], [g.get('titulo')], [g.get('contexto') or g.get('texto')])
+            origen[gid] = 'fallback_lote'
+
+    cambios = forzar_un_tema_por_subtema(temas, etiquetas)
+    _ULTIMO_RESUMEN['cubos_nuevos'] = sorted(set(temas.values()) - set(candidatos))
     _ULTIMO_RESUMEN['temas_por_llm'] = sum(1 for v in origen.values() if v == 'llm')
-    _ULTIMO_RESUMEN['temas_por_regla'] = sum(1 for v in origen.values() if v.startswith('regla'))
-    unificados = canonizar_cubos(temas, tax)
-    if unificados:
-        _ULTIMO_RESUMEN['cubos_unificados'] = unificados
-        _ULTIMO_RESUMEN['cubos_nuevos'] = sorted(set(temas.values()) - {t for t in tax['temas']})
+    _ULTIMO_RESUMEN['temas_por_regla'] = sum(1 for v in origen.values() if str(v).startswith('regla'))
+    _ULTIMO_RESUMEN['familias_tema'] = len(familias)
+    _ULTIMO_RESUMEN['temas_unificados_por_subtema'] = cambios
+    if progress:
+        progress(94, 'Temas del lote: %d familias' % len(familias))
     return temas, origen
+
+
+def volcar_analisis_en_filas(rows: List[dict], mapa: Dict[int, int],
+                             etiquetas: Dict[int, dict], temas: Dict[int, str]) -> List[dict]:
+    """Propaga etiqueta de GRUPO. No reasigna tema por fila."""
+    for i, row in enumerate(rows):
+        if row.get('is_duplicate'):
+            row['Tono_IA'] = 'Duplicada'
+            row['Tema_IA'] = '-'
+            row['Subtema_IA'] = '-'
+            continue
+        gid = mapa.get(i)
+        e = etiquetas.get(gid, {}) if gid else {}
+        row['Tono_IA'] = e.get('tono') or 'Neutro'
+        row['Tema_IA'] = temas.get(gid) or ''
+        row['Subtema_IA'] = e.get('sub_tema') or 'Hecho informativo'
+        if not row['Tema_IA'] and row['Subtema_IA'] not in ('', '-'):
+            row['Tema_IA'] = generalizar_tema_desde_subtemas(
+                [row['Subtema_IA']], [_titulo_fila(row, {})])
+    return rows
 
 
 # ============================================================================
@@ -1230,13 +1756,12 @@ def enrich_rows_with_ai(
         'timeout': int(extra.get('timeout', 120)),
     }
     modo_tax = extra.get('taxonomia')
-    tax = None
+    candidatos_tax: List[str] = []
     if isinstance(modo_tax, dict):
-        tax = modo_tax
-    elif not modo_tax or str(modo_tax).lower().startswith('autom'):
-        tax = None  # se genera despues de etiquetar, con los hechos de este archivo
-    else:
-        tax = taxonomia_por_nombre(modo_tax)
+        candidatos_tax = list(modo_tax.get('temas') or [])
+    elif modo_tax and not str(modo_tax).lower().startswith('autom'):
+        candidatos_tax = list(taxonomia_por_nombre(modo_tax).get('temas') or [])
+    candidatos_tax = [c for c in candidatos_tax if nz(c) not in CUBO_PROHIBIDO]
     tam_lote = int(extra.get('tam_lote') or TAM_LOTE_DEFECTO)
     workers = int(extra.get('workers') or WORKERS_DEFECTO)
     votos = int(extra.get('votos') or 2)
@@ -1266,22 +1791,9 @@ def enrich_rows_with_ai(
     etiquetas = etiquetar_grupos(cfg, grupos, progreso, tam_lote=tam_lote, workers=workers,
                                  votos=votos)
     cambios = canonizar_subtemas(etiquetas)
-    if cambios and progress_callback:
-        progreso(93, 'Sub-temas unificados: %d' % cambios)
-
-    # --- lista de Temas: fija del cliente o generada desde el propio archivo ---
-    if tax is None:
-        tax = proponer_taxonomia(cfg, grupos, etiquetas,
-                                 objetivo=int(extra.get('cubos_objetivo') or 16),
-                                 progress=progress_callback and progreso)
-        _ULTIMO_RESUMEN['taxonomia'] = list(tax.get('temas') or [])
-        _ULTIMO_RESUMEN['modo_taxonomia'] = 'automatica'
-    else:
-        _ULTIMO_RESUMEN['taxonomia'] = list(tax.get('temas') or [])
-        _ULTIMO_RESUMEN['modo_taxonomia'] = 'fija'
-    _ULTIMO_RESUMEN['taxonomia_detalle'] = {'temas': list(tax.get('temas') or []),
-                                            'reglas': list(tax.get('reglas') or []),
-                                            'nota': tax.get('nota', '')}
+    extra_uni = unificar_subtemas_noticias_similares(grupos, etiquetas)
+    if (cambios or extra_uni) and progress_callback:
+        progreso(93, 'Sub-temas unificados: %d' % (cambios + extra_uni))
 
     corregidos = aplicar_guarda_tono(grupos, etiquetas, brand, aliases)
     positivos = aplicar_guarda_positiva(grupos, etiquetas, brand, aliases,
@@ -1294,10 +1806,12 @@ def enrich_rows_with_ai(
         if progress_callback:
             progreso(93, 'Guarda del tono: %d Negativos sin señalamiento pasaron a Neutro' % len(corregidos))
 
-    # --- tema por reglas + lista cerrada ---
-    temas, origen = asignar_temas(cfg, grupos, etiquetas, tax, progreso)
+    # --- tema bottom-up de ESTE lote (un subtema canónico ⇒ un tema) ---
+    tax_lote = {'temas': candidatos_tax, 'reglas': derivar_reglas(candidatos_tax) if candidatos_tax else []}
+    temas, origen = asignar_temas(cfg, grupos, etiquetas, tax_lote, progreso)
+    corregir_temas_con_jev(cfg, grupos, etiquetas, temas)
 
-    # --- PKL del cliente: sobreescribe tono y/o tema sin perder el subtema ---
+    # --- PKL del cliente: sobreescribe tono y/o tema; NUNCA reemplaza el subtema ---
     plan_tone = tone_model is not None
     plan_theme = theme_model is not None
     pkl_cache: Dict[int, Tuple[Optional[str], Optional[str]]] = {}
@@ -1314,47 +1828,39 @@ def enrich_rows_with_ai(
             if p_theme:
                 temas[g['grupo']] = p_theme
                 origen[g['grupo']] = 'pkl'
-                from ai_analyzer import ensure_subtema_distinct_from_tema
-                e['sub_tema'] = ensure_subtema_distinct_from_tema(
-                    p_theme, e['sub_tema'], brand, g['titulo'], ctx)
+        if plan_theme:
+            forzar_un_tema_por_subtema(temas, etiquetas)
+            for gid, e in etiquetas.items():
+                t = temas.get(gid)
+                s = e.get('sub_tema') or ''
+                if t and s and not _tema_distinto_de_subtema(t, s):
+                    g = next((x for x in grupos if x['grupo'] == gid), {})
+                    temas[gid] = generalizar_tema_desde_subtemas(
+                        [s], [g.get('titulo')], [g.get('contexto') or g.get('texto')])
+            forzar_un_tema_por_subtema(temas, etiquetas)
 
-    # --- volcado a las filas ---
-    for i, row in enumerate(rows):
-        if row.get('is_duplicate'):
-            row['Tono_IA'] = 'Duplicada'
-            row['Tema_IA'] = '-'
-            row['Subtema_IA'] = '-'
-            continue
-        gid = mapa.get(i)
-        e = etiquetas.get(gid, {}) if gid else {}
-        tema_final = temas.get(gid) or _cubo_mas_cercano(e.get('sub_tema', ''), _titulo_fila(row, km), tax)
-        if not _tema_es_relevante(
-            tema_final or '',
-            e.get('sub_tema', ''),
-            '%s %s %s' % (
-                row.get(km.get('titulo', 'Título'), ''),
-                row.get('Contexto analizado', ''),
-                _texto_fila(row, km),
-            ),
-        ):
-            tema_final = (
-                _cubo_mas_cercano(e.get('sub_tema', ''), _titulo_fila(row, km), tax)
-                or temas.get(gid)
-                or next(
-                    (x for x in tax['temas']
-                     if _tema_distinto_de_subtema(x, e.get('sub_tema', ''))),
-                    tax['temas'][0],
-                )
-            )
-        row['Tono_IA'] = e.get('tono') or 'Neutro'
-        row['Tema_IA'] = tema_final
-        row['Subtema_IA'] = e.get('sub_tema') or 'Hecho informativo'
+    volcar_analisis_en_filas(rows, mapa, etiquetas, temas)
 
+    temas_lote: List[str] = []
+    vistos = set()
+    for t in temas.values():
+        k = nz(t)
+        if t and k not in vistos:
+            vistos.add(k)
+            temas_lote.append(t)
+    _ULTIMO_RESUMEN['taxonomia'] = temas_lote
+    _ULTIMO_RESUMEN['modo_taxonomia'] = 'lote'
+    _ULTIMO_RESUMEN['taxonomia_detalle'] = {
+        'temas': temas_lote,
+        'reglas': [],
+        'nota': ('Temas generados bottom-up a partir de los subtemas de este lote. '
+                 'Sin memoria entre corridas.'),
+    }
     _ULTIMO_RESUMEN['votos_tono'] = votos
     _ULTIMO_RESUMEN['filas'] = len(rows)
     _ULTIMO_RESUMEN['duplicadas'] = sum(1 for r in rows if r.get('is_duplicate'))
     if progress_callback:
-        progreso(93, 'Etiquetado listo: %d grupos, %d cubos de tema' % (len(grupos), len(set(temas.values()))))
+        progreso(93, 'Etiquetado listo: %d grupos, %d temas del lote' % (len(grupos), len(temas_lote)))
     return rows
 
 # ============================================================================
@@ -1413,6 +1919,9 @@ def aplicar_guarda_tono(grupos: Sequence[dict], etiquetas: Dict[int, dict],
         if _tema_negativo(texto) and not _critica_dirigida(texto, brand, aliases):
             e['tono'] = 'Neutro'
             corregidos.append(g['grupo'])
+    return corregidos
+
+
 def aplicar_guarda_positiva(grupos: Sequence[dict], etiquetas: Dict[int, dict],
                             brand: str, aliases: Sequence[str],
                             voceros: Sequence[str] = ()) -> List[int]:

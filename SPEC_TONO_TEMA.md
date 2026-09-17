@@ -19,10 +19,10 @@ quedan **iguales**: son las mismas de Grill-API.
 | `app.py` | Interfaz Streamlit. Tema claro/oscuro, `APP_PASSWORD`, panel de progreso, descarga. |
 | `pipeline.py` | **Limpieza y estructuración (NO TOCAR)** + el hook al motor (`process_dossier`). |
 | `analyzer_tono_tema.py` | **Motor nuevo** de Tono/Tema/Sub-tema. |
-| `catalogo_tono_tema.py` | **Rúbrica del motor**: `CRITERIOS_TONO`, `TONOS`, `REGLAS_SUBTEMA`, `EJEMPLOS`, `CUBO_PROHIBIDO`, `MIN_PAL`/`MAX_PAL`, taxonomías fijas. Fuente de verdad del criterio. |
+| `catalogo_tono_tema.py` | **Rúbrica del motor**: `CRITERIOS_TONO`, `TONOS`, `REGLAS_SUBTEMA`, `EJEMPLOS`, `CUBO_PROHIBIDO`, `MIN_PAL`/`MAX_PAL`. Las taxonomías nombradas son solo **nombres candidatos** opcionales; el tema del lote no se clasifica contra una lista cerrada. |
 | `ai_analyzer.py` | Legado. Solo se usan `extract_brand_context`, `generate_brand_variants`, `ensure_subtema_distinct_from_tema`. Su `enrich_rows_with_ai` ya **no se ejecuta**. |
-| `pkl_classifier.py` | Clasificadores PKL del cliente (opcionales) que sobreescriben tono y/o tema. |
-| `tests/` | 45 pruebas sin API (modelo simulado). |
+| `pkl_classifier.py` | Clasificadores PKL del cliente (opcionales) que sobreescriben tono y/o tema. Tras PKL se reafirma: un subtema ⇒ un tema. |
+| `tests/` | Pruebas sin API de clustering, canonización, un tema por subtema, tema ≠ subtema y etiquetado solo-del-lote. |
 
 **Punto de contacto único:** `pipeline.process_dossier` llama
 `analyzer_tono_tema.enrich_rows_with_ai(...)` con `extra=ai_config`, y el resumen de auditoría sale
@@ -37,18 +37,25 @@ por `analyzer_tono_tema.ultimo_resumen()` en `resultado["analisis"]`.
 - El motor **no** debe depender del paquete `openai` para arrancar: hace HTTP con `requests`.
 - Sin refactors, sin renombres, sin archivos nuevos fuera de esta lista.
 
-## 4. Las cinco piezas del motor (quitar una = volver al prompt suelto)
+## 4. Las seis piezas del motor (quitar una = volver al prompt suelto)
 
 1. **Agrupación previa** — `construir_grupos`: se etiqueta por grupo de notas equivalentes, nunca
    fila por fila (rapidfuzz sobre titulares + 5-gramas del cuerpo).
-2. **Sub-tema primero, después el tono** — `prompt_lote` + `etiquar_grupos`; los sub-temas ya usados
-   viajan en cada lote como **CANDIDATOS** y `canonizar_subtemas` unifica variantes.
+2. **Sub-tema primero, después el tono** — `prompt_lote` + `etiquetar_grupos`; los sub-temas ya usados
+   viajan en cada lote como **CANDIDATOS** y `canonizar_subtemas` unifica variantes del mismo hecho.
+   `unificar_subtemas_noticias_similares` cubre el caso en que dos grupos siguen separados pero
+   son la misma noticia.
 3. **Validador duro + reparación** — `validar` (3-7 palabras, sin verbo conjugado inicial, sin
    preposición final, sin rótulos vacíos, sin `:` `;` `|`) y `prompt_reparacion` en ciclo contra el
    propio modelo.
-4. **Tema por reglas sobre lista cerrada** — `derivar_reglas` + `asignar_temas`; el modelo solo elige
-   dentro de la lista o propone un cubo nuevo específico (`prompt_cubos`).
-5. **Nunca "Otros"** — `CUBO_PROHIBIDO`, `cubo_valido`, `_cubo_mas_cercano`.
+4. **Tema bottom-up de ESTE LOTE** — `asignar_temas` agrupa subtemas canónicos afines y nombra cada
+   familia **una sola vez**. No hay lista cerrada ni memoria entre corridas. Un subtema canónico
+   implica exactamente un tema. `volcar_analisis_en_filas` no reasigna por fila.
+5. **Guarda de generalidad** — el tema es más general que el subtema (`_tema_distinto_de_subtema`):
+   no igual, no casi igual, no copia el hecho. El subtema sigue siendo el hecho concreto.
+6. **Nunca "Otros"** — `CUBO_PROHIBIDO`, `cubo_valido`. Jev (TypeSafe) es opcional y **solo**
+   corrige temas mal clasificados (boolean/choice, alta confianza). No genera subtemas ni reemplaza
+   el pipeline de tono.
 
 Estabilizadores porque el modelo es pequeño (sesgo sistemático, no ruido):
 
@@ -63,14 +70,14 @@ Estabilizadores porque el modelo es pequeño (sesgo sistemático, no ruido):
   `.streamlit/secrets.toml`).
 - Secrets necesarios: `APP_PASSWORD`, `REGIONES_CSV_URL`, `INTERNET_CSV_URL`, `OPENAI_API_KEY`.
 - Si falta `OPENAI_API_KEY` y la IA está activada, la app **avisa**; no cae en silencio a heurística.
-- Criterio de tono y lista de Temas se eligen en la interfaz (`criterio`, `taxonomia`); la lista de
-  Temas se puede generar del archivo y **descargar en JSON** para reutilizarla el mes siguiente del
-  mismo cliente (si cambia, el cruce en Power BI se rompe).
+- Criterio de tono se elige en la interfaz (`criterio`). Los Temas se arman bottom-up en el lote
+  del día a partir de los subtemas; no hay vocabulario persistente entre corridas. Una lista JSON
+  o una taxonomía nombrada, si se carga, solo aporta **nombres candidatos** para esas familias.
 
 ## 6. Criterios de aceptación
 
 ```bash
-python -m unittest discover -s tests          # 45 pruebas, todas OK, sin API
+python -m unittest discover -s tests          # invariantes de tema/subtema, sin API
 python -m compileall -q app.py pipeline.py analyzer_tono_tema.py catalogo_tono_tema.py
 ```
 
@@ -110,6 +117,6 @@ camino PKL. Si algún día se unifica el motor, hay que migrar Sucre en el mismo
 
 ## 10. Estado conocido de las pruebas
 
-`python -m unittest discover -s tests` en `main` ya traía **2 fallos** en
-`tests/test_link_export_style.py` (estilo de `Link Nota` / `Streaming`). No provienen de este motor:
-existen igual en `main` y se mantienen idénticos. Todo lo demás (125 pruebas) pasa.
+`python -m unittest discover -s tests` cubre las invariantes de tema/subtema del lote
+(clustering, canonización, un tema por subtema, tema ≠ subtema, sin memoria entre corridas).
+No hay llamadas a API.

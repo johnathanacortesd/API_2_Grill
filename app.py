@@ -460,10 +460,10 @@ def main():
                      "Gobierno territorial (21 cubos)",
                      "Gremio o sector (16 cubos)"],
                     index=0,
-                    help="Los clientes son muy distintos (universidades, sector público, privado, marcas), "
-                         "así que lo recomendado es que la lista de Temas se genere leyendo los hechos "
-                         "de este archivo. También puedes reutilizar la lista de un cliente concreta o "
-                         "cargar una en JSON.",
+                    help="Por defecto los Temas se arman bottom-up en ESTE lote: se agrupan subtemas "
+                         "afines y se nombra cada familia. No hay memoria entre corridas. Las listas "
+                         "fijas o un JSON solo se usan como nombres candidatos, no como clasificación "
+                         "independiente por fila.",
                 )
 
             with st.expander("⚙ Ajustes finos del análisis (opcional)"):
@@ -554,19 +554,6 @@ def main():
                         except Exception as exc:
                             st.error(f"La lista de Temas (JSON) no es válida: {exc}")
                             st.stop()
-                    elif tax_nombre == "Automática según el archivo (recomendada)":
-                        # Reutiliza la taxonomía de la corrida previa del mismo cliente
-                        # para que los Temas no cambien entre períodos (Power BI).
-                        try:
-                            from historial_cliente import taxonomia_anterior
-                            previa = taxonomia_anterior(
-                                brand_input.strip(),
-                                extra={"historial_dir": st.secrets.get("HISTORIAL_DIR")})
-                            if previa and previa.get("temas"):
-                                tax_cargada = previa
-                                st.session_state["taxonomia_reutilizada"] = len(previa["temas"])
-                        except Exception:
-                            pass
                     tone_bytes = f_tono.getvalue() if f_tono else None
                     theme_bytes = f_tema.getvalue() if f_tema else None
                     try:
@@ -661,22 +648,21 @@ def main():
             detalle_tax = analisis.get("taxonomia_detalle") or {}
             if temas_gen:
                 modo = analisis.get("modo_taxonomia")
-                etiqueta = ("generada desde el archivo" if modo == "automatica"
-                            else "lista fija del cliente")
-                with st.expander("Lista de Temas usada (%d cubos, %s)" % (len(temas_gen), etiqueta),
-                                 expanded=(modo == "automatica")):
+                etiqueta = ("de este lote" if modo in ("lote", "automatica")
+                            else "nombres candidatos del cliente")
+                with st.expander("Temas de este lote (%d, %s)" % (len(temas_gen), etiqueta),
+                                 expanded=(modo in ("lote", "automatica"))):
                     st.markdown(" · ".join("`%s`" % t for t in temas_gen))
                     if detalle_tax:
                         st.download_button(
-                            "⬇ Descargar lista de Temas (JSON) para reutilizarla",
+                            "⬇ Descargar Temas de este lote (JSON)",
                             data=json.dumps(detalle_tax, ensure_ascii=False, indent=1),
                             file_name="temas_%s.json" % str(
                                 st.session_state.get("output_filename", "cliente")).replace(".xlsx", ""),
                             mime="application/json",
                         )
-                        st.caption("Súbela en «Reutilizar la lista de Temas de un cliente» para que el "
-                                   "próximo período del mismo cliente use los mismos Temas y puedas "
-                                   "comparar entre meses.")
+                        st.caption("Son los Temas armados bottom-up en esta corrida. El próximo lote "
+                                   "vuelve a agrupar sus propios subtemas; no se reutiliza el vocabulario.")
         
         st.markdown(f"""
         <div class="metrics-grid">
@@ -695,9 +681,6 @@ def main():
                 _historial = listar_historial(_sl, extra=st.session_state.get("ai_config_extra") or {})
         except Exception:
             _historial = []
-        if st.session_state.get("taxonomia_reutilizada"):
-            st.info("Se reutilizó la lista de Temas de la corrida anterior del mismo cliente "
-                    f"({st.session_state['taxonomia_reutilizada']} cubos) para comparar entre períodos.")
         if _historial:
             with st.expander(f"Historial del cliente ({len(_historial)} corridas previas)"):
                 for h in _historial[:10]:
