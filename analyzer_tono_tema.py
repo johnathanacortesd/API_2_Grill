@@ -507,35 +507,44 @@ def cubo_valido(nombre, tax, permitir_nuevos=True):
     return nombre if contenido else None
 
 
-def _cubo_mas_cercano(sub_tema: str, titulo: str, tax: dict) -> str:
-    """Fallback determinista: el cubo con mas tokens de CONTENIDO en comun (por
-    raiz) y, cuando no hay coincidencia lexica, el de mayor similitud de texto
-    (fuzzy). Nunca devuelve 'Otros'."""
-    from rapidfuzz import fuzz
-    objetivo = set()
-    for token in re.findall(r'[a-z0-9ñ]+', nz('%s %s' % (sub_tema, titulo))):
-        if token not in CONECT and token not in FILLER and token not in MARCO and len(token) > 3:
-            objetivo.add(raiz(token) if len(token) > 4 else token)
-    mejor, score = None, -1
-    mejor_fz, best_fz = None, -1.0
-    sub_norm = nz('%s %s' % (sub_tema, titulo))
-    for t in tax['temas']:
-        if nz(t) in CUBO_PROHIBIDO:
+def _cubo_mas_cercano(sub_tema: str, titulo: str, tax: dict) -> Optional[str]:
+    """Devuelve un cubo solo si comparte evidencia léxica suficiente.
+
+    Nunca devuelve arbitrariamente el primer tema de la taxonomía: eso convertía
+    nutrición escolar en cuidado ambiental cuando el modelo no encontraba cubo.
+    """
+    objetivo = {raiz(t) for t in words(sub_tema)
+                if t not in CONECT and t not in FILLER and t not in MARCO and len(t) > 3}
+    candidatos = []
+    for nombre in tax.get('temas', []):
+        if nz(nombre) in CUBO_PROHIBIDO:
             continue
-        claves = set(re.findall(r'[a-z0-9ñ]+', nz(t)))
-        claves = claves | {raiz(c) if len(c) > 4 else c
-                           for c in claves if c not in CONECT and len(c) > 3}
-        s = len(objetivo & claves)
-        if s > score:
-            mejor, score = t, s
-        fz = fuzz.token_set_ratio(sub_norm, nz(t)) / 100.0
-        if fz > best_fz:
-            mejor_fz, best_fz = t, fz
-    if mejor is not None and score > 0:
-        return mejor
-    if mejor_fz and best_fz >= 0.45:
-        return mejor_fz
-    return tax['temas'][0]
+        claves = {raiz(t) for t in words(nombre)
+                  if t not in CONECT and t not in FILLER and t not in MARCO and len(t) > 3}
+        comun = objetivo & claves
+        if comun:
+            candidatos.append((len(comun), len(claves), nombre))
+    return max(candidatos, key=lambda x: (x[0], x[1]))[2] if candidatos else None
+
+
+def _tema_especifico_desde_subtema(sub_tema: str) -> str:
+    """Crea un tema propio cuando ningún cubo existente corresponde.
+
+    Elimina verbos/modificadores de acción y conserva el núcleo del hecho; así
+    ``Fortalecimiento de la nutrición escolar`` produce ``Nutrición escolar``
+    en vez de heredar un tema no relacionado.
+    """
+    excluir = CONECT | {'fortalecimiento', 'fortalecer', 'mejoramiento', 'mejora',
+                         'promocion', 'promoción', 'implementacion', 'implementación',
+                         'ejecucion', 'ejecución', 'atencion', 'atención', 'acciones',
+                         'desarrollo', 'apoyo', 'participacion', 'participación'}
+    originales = [t.strip('.,;:') for t in str(sub_tema or '').split()]
+    tokens = [t for t in originales if nz(t) not in excluir and len(nz(t)) > 3]
+    if not tokens:
+        tokens = [t for t in originales if nz(t) not in CONECT]
+    tokens = tokens[:3]
+    return ' '.join(tokens).capitalize() if tokens else 'Tema específico'
+
 
 
 # ============================================================================
@@ -614,7 +623,9 @@ def prompt_cubos(pendientes: Sequence[dict], tax: dict, permitir_nuevos: bool) -
     extra = ('Si ningun cubo sirve, propón uno NUEVO en 2 a 5 palabras que describa el asunto concreto\n'
              '(por ejemplo "Tramite de pasaportes"). No se acepta un cubo generico.\n'
              if permitir_nuevos else 'No propongas cubos nuevos: elige siempre uno de la lista.\n')
-    bloques = ['GRUPO id=%d\nSUB-TEMA: %s\nTITULAR: %s' % (p['grupo'], p['sub_tema'], sq(p['titulo'])[:180])
+    bloques = ['GRUPO id=%d\nSUB-TEMA: %s\nTITULAR: %s\nCONTEXTO: %s' %
+               (p['grupo'], p['sub_tema'], sq(p['titulo'])[:180],
+                sq(p.get('contexto') or '')[:5000])
                for p in pendientes]
     return ('Clasificas notas de prensa en cubos tematicos cerrados.\nCubos disponibles:\n%s\n\n%s'
             'Responde UNICAMENTE con {"resultados":[{"id":<grupo>,"cubo":"<nombre del cubo>"}]}\n\n%s'
@@ -1031,6 +1042,20 @@ def proponer_taxonomia(cfg: dict, grupos: List[dict], etiquetas: Dict[int, dict]
     return tax
 
 
+def _tema_es_relevante(tema: str, sub_tema: str, contexto: str = '') -> bool:
+    """Valida que un tema propuesto comparta evidencia con el hecho.
+
+    El subtema tiene prioridad; el contexto solo confirma la relación. Evita
+    aceptar un cubo temáticamente ajeno propuesto por el modelo.
+    """
+    tema_tokens = {raiz(t) for t in words(tema) if t not in CONECT and len(t) > 3}
+    sub_tokens = {raiz(t) for t in words(sub_tema) if t not in CONECT and len(t) > 3}
+    if tema_tokens & sub_tokens:
+        return True
+    contexto_tokens = {raiz(t) for t in words(contexto) if t not in CONECT and len(t) > 3}
+    return len(tema_tokens & contexto_tokens) >= 2
+
+
 def asignar_temas(cfg: dict, grupos: List[dict], etiquetas: Dict[int, dict], tax: dict,
                   progress: Optional[Callable] = None) -> Tuple[Dict[int, str], Dict[int, str]]:
     temas, origen, pendientes = {}, {}, []
@@ -1042,16 +1067,27 @@ def asignar_temas(cfg: dict, grupos: List[dict], etiquetas: Dict[int, dict], tax
             origen[g['grupo']] = 'regla:%s' % k
         else:
             pendientes.append({'grupo': g['grupo'], 'sub_tema': e.get('sub_tema', ''),
-                               'titulo': g['titulo']})
+                               'titulo': g['titulo'],
+                               'contexto': g.get('contexto') or g.get('contexto_marca') or ''})
     if pendientes and progress:
         progress(min(93, 93), 'Clasificando tema de %d grupos nuevos…' % len(pendientes))
     elegidos = elegir_cubos(cfg, pendientes, tax, permitir_nuevos=True)
     nuevos = []
     for p in pendientes:
         t = elegidos.get(p['grupo'])
+        if t and not _tema_es_relevante(t, p['sub_tema'], p.get('contexto', '')):
+            t = None
         if not t:
             t = _cubo_mas_cercano(p['sub_tema'], p['titulo'], tax)
-            origen[p['grupo']] = 'cercano'
+            if t:
+                origen[p['grupo']] = 'cercano'
+            else:
+                t = _tema_especifico_desde_subtema(p['sub_tema'])
+                origen[p['grupo']] = 'especifico'
+                if nz(t) not in {nz(x) for x in tax['temas']}:
+                    tax['temas'].append(t)
+                    tax['reglas'] = derivar_reglas(tax['temas'])
+                    nuevos.append(t)
         else:
             origen[p['grupo']] = 'llm'
             if nz(t) not in {nz(x) for x in tax['temas']}:
