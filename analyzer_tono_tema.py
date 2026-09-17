@@ -498,7 +498,7 @@ def tema_de(sub_tema: str, titulo: str, tax: dict):
             for k in r['claves']:
                 if _es_geografia(k):
                     continue
-                if re.search(patron(k), txt):
+                if re.search(patron(k), txt) and _tema_distinto_de_subtema(t, sub_tema):
                     return r['tema'], k
     return None, None
 
@@ -543,22 +543,12 @@ def _cubo_mas_cercano(sub_tema: str, titulo: str, tax: dict) -> Optional[str]:
 
 
 def _tema_especifico_desde_subtema(sub_tema: str) -> str:
-    """Crea un tema propio cuando ningún cubo existente corresponde.
+    """Respaldo explícito cuando ningún cubo válido tiene evidencia suficiente.
 
-    Elimina verbos/modificadores de acción y conserva el núcleo del hecho; así
-    ``Fortalecimiento de la nutrición escolar`` produce ``Nutrición escolar``
-    en vez de heredar un tema no relacionado.
+    No construye temas pegando palabras del subtema: eso produce etiquetas
+    artificiales y confunde Tema con Subtema.
     """
-    excluir = CONECT | {'fortalecimiento', 'fortalecer', 'mejoramiento', 'mejora',
-                         'promocion', 'promoción', 'implementacion', 'implementación',
-                         'ejecucion', 'ejecución', 'atencion', 'atención', 'acciones',
-                         'desarrollo', 'apoyo', 'participacion', 'participación'}
-    originales = [t.strip('.,;:') for t in str(sub_tema or '').split()]
-    tokens = [t for t in originales if nz(t) not in excluir and not _es_geografia(t) and len(nz(t)) > 3]
-    if not tokens:
-        tokens = [t for t in originales if nz(t) not in CONECT and not _es_geografia(t)]
-    tokens = tokens[:3]
-    return ' '.join(tokens).capitalize() if tokens else 'Tema específico'
+    return 'Pendiente de clasificación'
 
 
 
@@ -1267,9 +1257,9 @@ def enrich_rows_with_ai(
     # --- etiquetado ---
     etiquetas = etiquetar_grupos(cfg, grupos, progreso, tam_lote=tam_lote, workers=workers,
                                  votos=votos)
-    # El subtema se conserva exactamente como lo generó el etiquetador.
-    # La canonización y agrupación para el Tema se hacen sobre evidencia,
-    # sin modificar la etiqueta Subtema_IA exportada.
+    cambios = canonizar_subtemas(etiquetas)
+    if cambios and progress_callback:
+        progreso(93, 'Sub-temas unificados: %d' % cambios)
 
     # --- lista de Temas: fija del cliente o generada desde el propio archivo ---
     if tax is None:
@@ -1313,13 +1303,12 @@ def enrich_rows_with_ai(
             pkl_cache[g['grupo']] = (p_tone, p_theme)
             if p_tone:
                 e['tono'] = p_tone
-            if p_theme and _tema_es_relevante(p_theme, e.get('sub_tema', ''),
-                                               '%s %s %s' % (g.get('titulo', ''), ctx,
-                                                             g.get('texto', ''))):
+            if p_theme:
                 temas[g['grupo']] = p_theme
                 origen[g['grupo']] = 'pkl'
-                # El PKL puede aportar el Tema, pero nunca reemplaza el Subtema
-                # generado por el etiquetador.
+                from ai_analyzer import ensure_subtema_distinct_from_tema
+                e['sub_tema'] = ensure_subtema_distinct_from_tema(
+                    p_theme, e['sub_tema'], brand, g['titulo'], ctx)
 
     # --- volcado a las filas ---
     for i, row in enumerate(rows):
@@ -1330,8 +1319,19 @@ def enrich_rows_with_ai(
             continue
         gid = mapa.get(i)
         e = etiquetas.get(gid, {}) if gid else {}
+        tema_final = temas.get(gid) or _cubo_mas_cercano(e.get('sub_tema', ''), _titulo_fila(row, km), tax)
+        if not _tema_es_relevante(
+            tema_final or '',
+            e.get('sub_tema', ''),
+            '%s %s %s' % (
+                row.get(km.get('titulo', 'Título'), ''),
+                row.get('Contexto analizado', ''),
+                _texto_fila(row, km),
+            ),
+        ):
+            tema_final = 'Pendiente de clasificación'
         row['Tono_IA'] = e.get('tono') or 'Neutro'
-        row['Tema_IA'] = temas.get(gid) or _cubo_mas_cercano(e.get('sub_tema', ''), _titulo_fila(row, km), tax)
+        row['Tema_IA'] = tema_final
         row['Subtema_IA'] = e.get('sub_tema') or 'Hecho informativo'
 
     _ULTIMO_RESUMEN['votos_tono'] = votos
