@@ -1142,42 +1142,36 @@ def _tema_es_relevante(tema: str, sub_tema: str, contexto: str = '') -> bool:
 
 def asignar_temas(cfg: dict, grupos: List[dict], etiquetas: Dict[int, dict], tax: dict,
                   progress: Optional[Callable] = None) -> Tuple[Dict[int, str], Dict[int, str]]:
+    from rapidfuzz import fuzz
     temas, origen, pendientes = {}, {}, []
     for g in grupos:
         e = etiquetas.get(g['grupo'], {})
-        t, k = tema_de(e.get('sub_tema', ''), g['titulo'], tax)
-        if t:
-            temas[g['grupo']] = t
-            origen[g['grupo']] = 'regla:%s' % k
-        else:
-            pendientes.append({'grupo': g['grupo'], 'sub_tema': e.get('sub_tema', ''),
-                               'titulo': g['titulo'],
-                               # Evidencia combinada para validar relación del Tema:
-                               # CuerpoEs/texto, Título y Contexto analizado.
-                               'contexto': '%s\n%s\n%s' %
-                                           (g.get('contexto') or '', g.get('titulo') or '',
-                                            g.get('texto') or '')})
+        pendientes.append({'grupo': g['grupo'], 'sub_tema': e.get('sub_tema', ''),
+                           'titulo': g['titulo'],
+                           'contexto': '%s\n%s\n%s' %
+                                       (g.get('contexto') or '', g.get('titulo') or '',
+                                        g.get('texto') or '')})
     if pendientes and progress:
         progress(min(93, 93), 'Clasificando tema de %d grupos nuevos…' % len(pendientes))
     elegidos = elegir_cubos(cfg, pendientes, tax, permitir_nuevos=True)
+    no_validos = [p for p in pendientes
+                  if not _tema_es_relevante(elegidos.get(p['grupo'], ''),
+                                            p['sub_tema'], p.get('contexto', ''))]
+    if no_validos:
+        elegidos.update(elegir_cubos(cfg, no_validos, tax, permitir_nuevos=True))
     nuevos = []
     for p in pendientes:
         t = elegidos.get(p['grupo'])
-        if t and not _tema_es_relevante(t, p['sub_tema'], p.get('contexto', '')):
-            t = None
-        if not t:
+        if not t or not _tema_es_relevante(t, p['sub_tema'], p.get('contexto', '')):
             t = _cubo_mas_cercano(p['sub_tema'], p['titulo'], tax)
-            if t:
-                origen[p['grupo']] = 'cercano'
-            else:
-                # La taxonomía siempre debe resolver el grupo; no se emite
-                # una etiqueta de pendiente ni se concatenan palabras.
-                t = max(tax['temas'], key=lambda x: len(nz(x)))
-                origen[p['grupo']] = 'taxonomia_respaldo'
+            origen[p['grupo']] = 'evidencia_respaldo'
         else:
             origen[p['grupo']] = 'llm'
             if nz(t) not in {nz(x) for x in tax['temas']}:
                 nuevos.append(t)
+        if not t:
+            t = max(tax['temas'], key=lambda x: fuzz.token_set_ratio(
+                nz(x), nz('%s %s' % (p['sub_tema'], p.get('contexto', '')))))
         temas[p['grupo']] = t
     _ULTIMO_RESUMEN['cubos_nuevos'] = sorted(set(nuevos))
     _ULTIMO_RESUMEN['temas_por_llm'] = sum(1 for v in origen.values() if v == 'llm')
