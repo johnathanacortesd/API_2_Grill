@@ -49,10 +49,13 @@ por `analyzer_tono_tema.ultimo_resumen()` en `resultado["analisis"]`.
    preposición final, sin rótulos vacíos, sin `:` `;` `|`) y `prompt_reparacion` en ciclo contra el
    propio modelo.
 4. **Tema bottom-up de ESTE LOTE** — `asignar_temas` agrupa subtemas canónicos afines y nombra cada
-   familia **una sola vez**. No hay lista cerrada ni memoria entre corridas. Un subtema canónico
-   implica exactamente un tema. `volcar_analisis_en_filas` no reasigna por fila.
-5. **Guarda de generalidad** — el tema es más general que el subtema (`_tema_distinto_de_subtema`):
-   no igual, no casi igual, no copia el hecho. El subtema sigue siendo el hecho concreto.
+   familia **una sola vez** con una **frase nominal española** (LLM o recorte de una frase ya
+   gramatical). Prohibido unir stems/keywords. No hay lista cerrada ni memoria entre corridas.
+   Un subtema canónico implica exactamente un tema. `volcar_analisis_en_filas` no reasigna por fila.
+5. **Guarda de generalidad y de lengua** — el tema es más general que el subtema
+   (`_tema_distinto_de_subtema`) y pasa `tema_frase_natural`: no igual, no collage
+   ("Jóvenes empleo", "Sede Puerto Inauguración"), no copia el hecho. El subtema sigue
+   siendo el hecho concreto.
 6. **Nunca "Otros"** — `CUBO_PROHIBIDO`, `cubo_valido`. Jev (TypeSafe) es opcional y **solo**
    corrige temas mal clasificados (boolean/choice, alta confianza). No genera subtemas ni reemplaza
    el pipeline de tono.
@@ -71,8 +74,9 @@ Estabilizadores porque el modelo es pequeño (sesgo sistemático, no ruido):
 - Secrets necesarios: `APP_PASSWORD`, `REGIONES_CSV_URL`, `INTERNET_CSV_URL`, `OPENAI_API_KEY`.
 - Si falta `OPENAI_API_KEY` y la IA está activada, la app **avisa**; no cae en silencio a heurística.
 - Criterio de tono se elige en la interfaz (`criterio`). Los Temas se arman bottom-up en el lote
-  del día a partir de los subtemas; no hay vocabulario persistente entre corridas. Una lista JSON
-  o una taxonomía nombrada, si se carga, solo aporta **nombres candidatos** para esas familias.
+  del día a partir de los subtemas, como frases nominales naturales (no uniones de keywords).
+  No hay vocabulario persistente entre corridas. Una lista JSON o una taxonomía nombrada, si se
+  carga, solo aporta **nombres candidatos** para esas familias.
 
 ## 6. Criterios de aceptación
 

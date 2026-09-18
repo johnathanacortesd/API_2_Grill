@@ -12,11 +12,14 @@ from analyzer_tono_tema import (
     canonizar_subtemas,
     construir_grupos,
     corregir_temas_con_jev,
+    cubo_valido,
     enrich_rows_with_ai,
     forzar_un_tema_por_subtema,
     generalizar_tema_desde_subtemas,
+    nombrar_familias_tema,
     nz,
     taxonomia_por_nombre,
+    tema_frase_natural,
     unificar_subtemas_noticias_similares,
     volcar_analisis_en_filas,
 )
@@ -289,6 +292,74 @@ class TestEnrichLoteInvariantes(unittest.TestCase):
             ["La Procuraduría suspende al exsecretario por retraso en el PAE."],
         )
         self.assertTrue(_tema_distinto_de_subtema(tema, sub))
+
+
+class TestCalidadLinguisticaTema(unittest.TestCase):
+    MALOS = ("Jóvenes empleo", "Sede Puerto Inauguración", "Nueva Puerto sede n",
+             "Desempleo juventud")
+    BUENOS = ("Empleo juvenil", "Inauguración de sede", "Alimentación escolar",
+              "Concurso de robótica")
+
+    def test_rechaza_uniones_de_keywords(self):
+        for malo in self.MALOS:
+            self.assertFalse(tema_frase_natural(malo), malo)
+            self.assertIsNone(cubo_valido(malo, {"temas": []}, True), malo)
+
+    def test_acepta_frases_nominales_naturales(self):
+        for bueno in self.BUENOS:
+            self.assertTrue(tema_frase_natural(bueno), bueno)
+            self.assertEqual(cubo_valido(bueno, {"temas": []}, True), bueno)
+
+    def test_generalizar_no_emite_jovenes_empleo(self):
+        tema = generalizar_tema_desde_subtemas(
+            ["Informe sobre juventud y desempleo"],
+            ["Cifras de desempleo en jóvenes de la región"],
+        )
+        self.assertNotEqual(nz(tema), nz("Jóvenes empleo"))
+        self.assertNotEqual(nz(tema), nz("Desempleo juventud"))
+        self.assertTrue(tema_frase_natural(tema), tema)
+        self.assertTrue(_tema_distinto_de_subtema(tema, "Informe sobre juventud y desempleo"))
+
+    def test_generalizar_no_emite_sede_puerto_inauguracion(self):
+        tema = generalizar_tema_desde_subtemas(
+            ["Inauguración de sede en Puerto"],
+            ["Inauguran la nueva sede en Puerto"],
+        )
+        self.assertNotEqual(nz(tema), nz("Sede Puerto Inauguración"))
+        self.assertNotEqual(nz(tema), nz("Inauguración Puerto"))
+        self.assertTrue(tema_frase_natural(tema), tema)
+        self.assertIn("de", tema.lower())
+        self.assertTrue(_tema_distinto_de_subtema(tema, "Inauguración de sede en Puerto"))
+
+    def test_asignar_temas_jovenes_no_es_keyword_union(self):
+        grupos = [_grupo(1, "Cifras de desempleo en jóvenes de la región",
+                         "El informe presenta cifras de desempleo en jóvenes.")]
+        etiquetas = {1: {"sub_tema": "Informe sobre juventud y desempleo", "tono": "Neutro"}}
+        temas, _ = asignar_temas({}, grupos, etiquetas, {"temas": []})
+        self.assertTrue(tema_frase_natural(temas[1]), temas[1])
+        self.assertNotEqual(nz(temas[1]), nz("Jóvenes empleo"))
+
+    def test_asignar_temas_inauguracion_no_es_keyword_union(self):
+        grupos = [_grupo(1, "Inauguran la nueva sede en Puerto",
+                         "Quedó inaugurada la nueva sede en Puerto.")]
+        etiquetas = {1: {"sub_tema": "Inauguración de sede en Puerto", "tono": "Positivo"}}
+        temas, _ = asignar_temas({}, grupos, etiquetas, {"temas": []})
+        self.assertTrue(tema_frase_natural(temas[1]), temas[1])
+        self.assertNotEqual(nz(temas[1]), nz("Sede Puerto Inauguración"))
+        self.assertIn("inaugur", nz(temas[1]))
+
+    def test_llm_keyword_union_se_descarta(self):
+        familias = [{
+            "id": 1,
+            "subtemas": ["Informe sobre juventud y desempleo"],
+            "titulos": ["Cifras de desempleo en jóvenes de la región"],
+            "contextos": ["El informe presenta cifras de desempleo en jóvenes."],
+        }]
+        with patch("analyzer_tono_tema.llamar_llm",
+                   return_value='{"resultados":[{"id":1,"tema":"Jóvenes empleo"}]}'):
+            out = nombrar_familias_tema({"api_key": "test"}, familias)
+        self.assertNotEqual(nz(out[1]), nz("Jóvenes empleo"))
+        self.assertTrue(tema_frase_natural(out[1]), out[1])
 
 
 if __name__ == "__main__":
