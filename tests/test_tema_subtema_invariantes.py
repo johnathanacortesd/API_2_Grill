@@ -8,6 +8,7 @@ from unittest.mock import patch
 from catalogo_tono_tema import TAX_GOBIERNO, TEMAS_EJEMPLO_BUENOS, TEMAS_EJEMPLO_MALOS
 from analyzer_tono_tema import (
     _asegurar_tema_texto,
+    _tema_copia_o_prefijo_titulo,
     _tema_distinto_de_subtema,
     _tema_en_blanco,
     _tema_util,
@@ -502,6 +503,12 @@ class TestTemaNuncaVacio(unittest.TestCase):
             self.assertTrue(_tema_exportable_no_vacio(tema),
                             "generalizar vacío sub=%r tit=%r -> %r" % (sub, tit, tema))
             self.assertFalse(_tema_en_blanco(tema), tema)
+            for t in tit:
+                self.assertFalse(
+                    _tema_copia_o_prefijo_titulo(tema, [t])
+                    and not tema_frase_natural(tema, titulos=[t]),
+                    "prefijo de titular sub=%r tit=%r tema=%r" % (sub, t, tema),
+                )
 
     def test_asegurar_siempre_llena_aunque_generalizar_falle(self):
         with patch("analyzer_tono_tema.generalizar_tema_desde_subtemas", return_value=""):
@@ -641,7 +648,90 @@ class TestTemaNuncaVacio(unittest.TestCase):
             if not _tema_exportable_no_vacio(r.get("Tema_IA")):
                 blancos.append((r["Título"], r.get("Tema_IA")))
             self.assertNotIn(nz(r["Tema_IA"]), {nz(x) for x in TEMAS_EJEMPLO_MALOS})
+            self.assertFalse(
+                _tema_copia_o_prefijo_titulo(r["Tema_IA"], [r["Título"]]),
+                "tema prefijo del titular: %r ← %r" % (r["Tema_IA"], r["Título"]),
+            )
         self.assertEqual(blancos, [], "export con temas en blanco: %r" % blancos)
+
+
+class TestTemaNoCopiaTitular(unittest.TestCase):
+    """El tema no es un recorte ni las primeras palabras del titular."""
+
+    PREFIJOS = (
+        ("Alcalde anuncia obra vial en el municipio",
+         ("Alcalde anuncia obra vial", "Alcalde anuncia obra", "Alcalde anuncia")),
+        ("Roban 180 mil huevos en una granja del Atlántico",
+         ("Roban 180 mil huevos", "Roban 180 mil")),
+        ("Soledad fortalece la nutrición escolar con el PAE",
+         ("Soledad fortalece la nutrición escolar", "Soledad fortalece la nutrición")),
+    )
+
+    def test_prefijo_de_titulo_falla_el_gate(self):
+        for titulo, malos in self.PREFIJOS:
+            for malo in malos:
+                self.assertTrue(
+                    problemas_calidad_tema(malo, titulos=[titulo]),
+                    "gate debió rechazar %r vs %r" % (malo, titulo),
+                )
+                self.assertFalse(tema_frase_natural(malo, titulos=[titulo]), malo)
+                self.assertTrue(_tema_copia_o_prefijo_titulo(malo, [titulo]), malo)
+
+    def test_tema_igual_al_titulo_falla_el_gate(self):
+        titulo = "Alcalde anuncia obra vial en el municipio"
+        self.assertIn("copia_titular", problemas_calidad_tema(titulo, titulos=[titulo]))
+        self.assertFalse(tema_frase_natural(titulo, titulos=[titulo]))
+
+    def test_categoria_canonica_no_se_rechaza_por_coincidencia(self):
+        # Etiqueta de significado, no un clip: puede aparecer en el titular.
+        self.assertTrue(tema_frase_natural(
+            "Alimentación escolar",
+            titulos=["Alimentación escolar del PAE en Soledad"],
+        ))
+
+    def test_generalizar_no_usa_prefijo_del_titulo(self):
+        titulo = "Alcalde anuncia obra vial en el municipio"
+        tema = generalizar_tema_desde_subtemas(
+            ["Alcalde anuncia obra vial"], [titulo],
+            ["El alcalde anunció una obra vial."],
+        )
+        self.assertTrue(_tema_exportable_no_vacio(tema), tema)
+        self.assertFalse(_tema_copia_o_prefijo_titulo(tema, [titulo]), tema)
+        self.assertNotEqual(nz(tema), nz(titulo))
+
+    def test_asegurar_reemplaza_prefijo_de_titulo(self):
+        titulo = "Roban 180 mil huevos en una granja del Atlántico"
+        tema = _asegurar_tema_texto(
+            "Roban 180 mil huevos",
+            ["Hurto de huevos en granja"],
+            [titulo],
+        )
+        self.assertTrue(_tema_exportable_no_vacio(tema), tema)
+        self.assertFalse(_tema_copia_o_prefijo_titulo(tema, [titulo]), tema)
+        self.assertNotEqual(nz(tema), nz("Roban 180 mil huevos"))
+
+    def test_asignar_reemplaza_copia_de_apertura(self):
+        titulo = "Soledad fortalece la nutrición escolar con el PAE"
+        grupos = [_grupo(1, titulo, PAE_CUERPO)]
+        etiquetas = {1: {"sub_tema": "Fortalecimiento del PAE escolar", "tono": "Positivo"}}
+        with patch("analyzer_tono_tema.llamar_llm", side_effect=RuntimeError("sin api")):
+            temas, _ = asignar_temas({}, grupos, etiquetas, {"temas": []})
+        self.assertTrue(_tema_exportable_no_vacio(temas[1]), temas[1])
+        self.assertFalse(_tema_copia_o_prefijo_titulo(temas[1], [titulo]), temas[1])
+
+    def test_volcar_reemplaza_tema_que_es_prefijo(self):
+        titulo = "Alcalde anuncia obra vial en el municipio"
+        rows = [_row(titulo, "El alcalde anunció una obra vial.")]
+        volcar_analisis_en_filas(
+            rows, {0: 1},
+            {1: {"sub_tema": "Anuncio de obra vial", "tono": "Neutro"}},
+            {1: "Alcalde anuncia obra vial"},
+        )
+        self.assertTrue(_tema_exportable_no_vacio(rows[0]["Tema_IA"]), rows[0]["Tema_IA"])
+        self.assertFalse(
+            _tema_copia_o_prefijo_titulo(rows[0]["Tema_IA"], [titulo]),
+            rows[0]["Tema_IA"],
+        )
 
 
 if __name__ == "__main__":
