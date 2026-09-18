@@ -12,7 +12,11 @@ from analyzer_tono_tema import (
     volcar_analisis_en_filas,
     tema_frase_natural,
 )
-from pkl_classifier import apply_pkl_classifiers, classification_plan
+from pkl_classifier import (
+    apply_pkl_classifiers,
+    classification_plan,
+    load_sklearn_estimator,
+)
 
 
 KM = {"titulo": "Título"}
@@ -35,9 +39,10 @@ PAE_CUERPO = (
 class FakeClf:
     """Estimador duck-typed: expone predict como un PKL sklearn."""
 
-    def __init__(self, label, by_text=None):
+    def __init__(self, label, by_text=None, classes=None):
         self.label = label
         self.by_text = by_text or {}
+        self.classes_ = list(classes or [label])
         self.calls = []
 
     def predict(self, texts):
@@ -154,7 +159,11 @@ class TestEnrichHonraPkl(unittest.TestCase):
             _row("Estudiantes ganan el concurso nacional de robótica",
                  "El equipo de estudiantes ganó el concurso nacional de robótica."),
         ]
-        theme = FakeClf(PKL_TEMA, by_text={"robót": PKL_TEMA_B, "robot": PKL_TEMA_B})
+        theme = FakeClf(
+            PKL_TEMA,
+            by_text={"robót": PKL_TEMA_B, "robot": PKL_TEMA_B},
+            classes=[PKL_TEMA, PKL_TEMA_B],
+        )
 
         with patch("analyzer_tono_tema.etiquetar_grupos", side_effect=_fake_etq_pae), \
              patch("analyzer_tono_tema.asignar_temas") as mock_asig, \
@@ -172,8 +181,11 @@ class TestEnrichHonraPkl(unittest.TestCase):
         self.assertGreaterEqual(len(theme.calls), 1)
         unicos = [r for r in rows if not r.get("is_duplicate")]
         temas = {r["Tema_IA"] for r in unicos}
+        self.assertTrue(temas <= set(theme.classes_), temas)
         self.assertTrue(temas <= {PKL_TEMA, PKL_TEMA_B}, temas)
         self.assertNotIn(LOTE_TEMA, temas)
+        for r in unicos:
+            self.assertIn(r["Tema_IA"], theme.classes_)
         for r in unicos:
             self.assertEqual(r["Subtema_IA"], LOTE_SUB)
         resumen = ultimo_resumen()
@@ -299,6 +311,83 @@ class TestApplyPklClassifiersPath(unittest.TestCase):
         self.assertTrue(plan_none["use_llm_theme"])
         self.assertFalse(plan_none["use_pkl_tone"])
         self.assertFalse(plan_none["use_pkl_theme"])
+
+
+def _joblib_bytes(estimator) -> bytes:
+    import io
+    import joblib
+    buf = io.BytesIO()
+    joblib.dump(estimator, buf)
+    return buf.getvalue()
+
+
+def _fit_tema_pipeline():
+    from sklearn.feature_extraction.text import TfidfVectorizer
+    from sklearn.naive_bayes import MultinomialNB
+    from sklearn.pipeline import make_pipeline
+
+    texts = [
+        "alimentación escolar pae soledad nutrición desayunos almuerzos",
+        "programa de alimentación escolar y seguimiento nutricional",
+        "jornada de vacunación hospital municipal infantil",
+        "vacunación en el hospital y puesto de salud",
+    ]
+    labels = [PKL_TEMA, PKL_TEMA, PKL_TEMA_B, PKL_TEMA_B]
+    clf = make_pipeline(TfidfVectorizer(), MultinomialNB())
+    clf.fit(texts, labels)
+    return clf
+
+
+class TestPklUploadLoadClassify(unittest.TestCase):
+    """Bytes como los del uploader → load_sklearn_estimator → enrich usa esas clases."""
+
+    def test_bytes_de_tema_pkl_se_cargan_y_tema_pertenece_a_classes(self):
+        raw = _joblib_bytes(_fit_tema_pipeline())
+        theme, classes = load_sklearn_estimator(raw, "tema")
+        self.assertIsNotNone(theme)
+        pkl_classes = {str(c) for c in (classes if classes is not None else theme.named_steps["multinomialnb"].classes_)}
+        self.assertEqual(pkl_classes, {PKL_TEMA, PKL_TEMA_B})
+
+        rows = [
+            _row("Soledad fortalece la nutrición escolar con el PAE", PAE_CUERPO),
+            _row("Jornada de vacunación en el hospital municipal",
+                 "El hospital municipal adelanta una jornada de vacunación infantil."),
+        ]
+        with patch("analyzer_tono_tema.etiquetar_grupos", side_effect=_fake_etq_pae), \
+             patch("analyzer_tono_tema.asignar_temas") as mock_asig, \
+             patch("analyzer_tono_tema.corregir_temas_con_jev"), \
+             patch("analyzer_tono_tema.llamar_llm", side_effect=RuntimeError("sin api")):
+            enrich_rows_with_ai(
+                rows, KM, "Soledad", [], api_key="",
+                theme_model=theme,
+                extra={"votos": 1, "taxonomia": "Automática según el archivo"},
+            )
+            mock_asig.assert_not_called()
+
+        for r in rows:
+            self.assertIn(r["Tema_IA"], pkl_classes, r["Tema_IA"])
+            self.assertNotEqual(r["Tema_IA"], LOTE_TEMA)
+        self.assertEqual({r["Tema_IA"] for r in rows}, pkl_classes)
+
+    def test_pipeline_carga_theme_pkl_bytes_del_ai_config(self):
+        from pipeline import _load_optional_pkl_models
+
+        raw = _joblib_bytes(_fit_tema_pipeline())
+        tone, theme = _load_optional_pkl_models({
+            "theme_pkl_bytes": raw,
+            "tone_pkl_bytes": None,
+        })
+        self.assertIsNone(tone)
+        self.assertIsNotNone(theme)
+        preds = theme.predict([PAE_CUERPO])
+        self.assertIn(str(preds[0]), {PKL_TEMA, PKL_TEMA_B})
+
+    def test_sin_bytes_no_carga_modelos(self):
+        from pipeline import _load_optional_pkl_models
+
+        tone, theme = _load_optional_pkl_models({"enabled": True})
+        self.assertIsNone(tone)
+        self.assertIsNone(theme)
 
 
 if __name__ == "__main__":
