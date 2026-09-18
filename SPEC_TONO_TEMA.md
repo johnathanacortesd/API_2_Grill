@@ -21,8 +21,8 @@ quedan **iguales**: son las mismas de Grill-API.
 | `analyzer_tono_tema.py` | **Motor nuevo** de Tono/Tema/Sub-tema. |
 | `catalogo_tono_tema.py` | **Rúbrica del motor**: `CRITERIOS_TONO`, `TONOS`, `REGLAS_SUBTEMA`, `EJEMPLOS`, `CUBO_PROHIBIDO`, `MIN_PAL`/`MAX_PAL`. Las taxonomías nombradas son solo **nombres candidatos** opcionales; el tema del lote no se clasifica contra una lista cerrada. |
 | `ai_analyzer.py` | Legado. Solo se usan `extract_brand_context`, `generate_brand_variants`, `ensure_subtema_distinct_from_tema`. Su `enrich_rows_with_ai` ya **no se ejecuta**. |
-| `pkl_classifier.py` | Clasificadores PKL del cliente (opcionales) que sobreescriben tono y/o tema. Tras PKL se reafirma: un subtema ⇒ un tema. |
-| `tests/` | Pruebas sin API de clustering, canonización, un tema por subtema, tema ≠ subtema y etiquetado solo-del-lote. |
+| `pkl_classifier.py` | Clasificadores PKL del cliente (opcionales) que **ganan** sobre el motor de lote/LLM en tono y/o tema. El quality-gate de frases del lote **no** reescribe las clases del PKL. El subtema nunca usa PKL. |
+| `tests/` | Pruebas sin API de clustering, canonización, un tema por subtema, tema ≠ subtema, etiquetado solo-del-lote y camino PKL (el predict se invoca y gana). |
 
 **Punto de contacto único:** `pipeline.process_dossier` llama
 `analyzer_tono_tema.enrich_rows_with_ai(...)` con `extra=ai_config`, y el resumen de auditoría sale
@@ -59,6 +59,9 @@ por `analyzer_tono_tema.ultimo_resumen()` en `resultado["analisis"]`.
    frase segura. Prohibido bag-of-words, unir stems y recortes que suelten el núcleo o el objeto.
    No hay lista cerrada ni memoria entre corridas. Un subtema canónico implica exactamente un tema.
    `volcar_analisis_en_filas` no reasigna por fila. Si el gate rechaza, **no se descarta a vacío**.
+   **Excepción PKL:** si hay `theme_model`, se **omite** `asignar_temas` / Jev y `Tema_IA` son las
+   clases de ese modelo. El gate de frases (`tema_frase_natural`, `forzar_un_tema_por_subtema`)
+   no las sustituye. Si hay `tone_model`, `Tono_IA` son las clases de ese modelo (sin guarda LLM).
 5. **Guarda de generalidad y de lengua** — el tema es más general que el subtema
    (`_tema_distinto_de_subtema`) y pasa `problemas_calidad_tema` / `tema_frase_natural`:
    frase completa, no verbo/cláusula, no PP truncado, no solo adjetivos, no persona, no sigla
@@ -83,8 +86,10 @@ Estabilizadores porque el modelo es pequeño (sesgo sistemático, no ruido):
 - Si falta `OPENAI_API_KEY` y la IA está activada, la app **avisa**; no cae en silencio a heurística.
 - Criterio de tono se elige en la interfaz (`criterio`). Los Temas se arman bottom-up en el lote
   del día a partir de los subtemas, como frases nominales **completas** (no uniones de keywords
-  ni recortes). No hay vocabulario persistente entre corridas. Una lista JSON o una taxonomía
-  nombrada, si se carga, solo aporta **nombres candidatos** para esas familias.
+  ni recortes), **salvo** si el cliente subió un PKL de tema: entonces las clases de ese modelo
+  son `Tema_IA`. Si subió un PKL de tono, esas clases son `Tono_IA`. No hay vocabulario persistente
+  entre corridas. Una lista JSON o una taxonomía nombrada, si se carga, solo aporta **nombres
+  candidatos** para esas familias cuando no hay PKL de tema.
 
 ## 6. Criterios de aceptación
 
@@ -122,7 +127,7 @@ Este repo tiene **dos motores de análisis**, y el port solo cambia el de Grill:
 |---|---|---|
 | `app.py` → `pipeline.process_dossier` | `analyzer_tono_tema.py` (nuevo) | `analyzer_tono_tema.construir_grupos` |
 | `app_sucre.py` → `sucre_pipeline.process_sucre_dossier` | `ai_analyzer.enrich_rows_with_ai` (legado) | `ai_analyzer.cluster_similar_rows` |
-| Modelos PKL del cliente | tono/tema por PKL, subtema intacto | `pkl_classifier` (+ `ai_analyzer`) |
+| Modelos PKL del cliente | tono/tema por PKL (autoridad), subtema intacto | `pkl_classifier` + `aplicar_pkl_del_cliente` |
 
 `ai_analyzer.py` **no se toca**: sigue alimentando `Contexto analizado`, la variante Sucre y el
 camino PKL. Si algún día se unifica el motor, hay que migrar Sucre en el mismo cambio; no antes.
@@ -130,5 +135,6 @@ camino PKL. Si algún día se unifica el motor, hay que migrar Sucre en el mismo
 ## 10. Estado conocido de las pruebas
 
 `python -m unittest discover -s tests` cubre las invariantes de tema/subtema del lote
-(clustering, canonización, un tema por subtema, tema ≠ subtema, sin memoria entre corridas).
+(clustering, canonización, un tema por subtema, tema ≠ subtema, sin memoria entre corridas)
+y el camino PKL (el predict del PKL se invoca y gana sobre el nombrado libre/LLM del lote).
 No hay llamadas a API.

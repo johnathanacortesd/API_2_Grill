@@ -18,6 +18,9 @@ POR QUE ESTE MOTOR DA MEJOR RESULTADO QUE UN PROMPT SUELTO
      Un subtema canonico tiene exactamente un tema. Nunca "Otros". Nunca un Tema vacio:
      si el gate rechaza, se repara o se usa un fallback no vacio (frase nominal del
      subtema/titulo). Rechazo ≠ celda en blanco.
+     EXCEPCION: si el cliente sube un PKL de tema, las clases de ese modelo son la
+     fuente de Tema_IA. El gate del lote NO las reescribe. Si sube un PKL de tono,
+     ese modelo es la fuente de Tono_IA (la guarda LLM no lo pisa).
   5. Los sub-temas ya usados viajan en cada lote como CANDIDATOS: un mismo hecho reutiliza el
      mismo texto en vez de generar variantes.
 
@@ -2544,9 +2547,65 @@ def asignar_temas(cfg: dict, grupos: List[dict], etiquetas: Dict[int, dict], tax
     return temas, origen
 
 
+def _texto_para_pkl(grupo: dict, rows: List[dict]) -> str:
+    """Texto que ve el PKL: contexto de marca, o título + cuerpo del grupo."""
+    idxs = grupo.get('idxs') or []
+    if idxs:
+        ctx = str(rows[idxs[0]].get('Contexto analizado') or '').strip()
+        if ctx and ctx not in ('-', 'nan', 'None'):
+            return ctx
+    for key in ('contexto', 'texto', 'titulo'):
+        val = str(grupo.get(key) or '').strip()
+        if val and val not in ('-', 'nan', 'None'):
+            return val[:800]
+    return ''
+
+
+def aplicar_pkl_del_cliente(
+    grupos: List[dict],
+    rows: List[dict],
+    etiquetas: Dict[int, dict],
+    temas: Dict[int, str],
+    origen: Dict[int, str],
+    tone_model=None,
+    theme_model=None,
+) -> Dict[str, int]:
+    """Aplica PKL de tono y/o tema. Gana sobre LLM/lote. Nunca toca el subtema.
+
+    Las clases del PKL de tema NO se pasan por el quality-gate del lote
+    (`tema_frase_natural`, `forzar_un_tema_por_subtema`, `_asegurar_tema_texto`):
+    ese gate nombra frases libres; el PKL trae las clases del cliente.
+    """
+    applied = {'tono': 0, 'tema': 0}
+    if tone_model is None and theme_model is None:
+        return applied
+    from pkl_classifier import _safe_predict, format_theme_label, map_tone_label
+    for g in grupos:
+        gid = g['grupo']
+        e = etiquetas.setdefault(gid, {})
+        ctx = _texto_para_pkl(g, rows)
+        if tone_model is not None:
+            p_tone = map_tone_label(_safe_predict(tone_model, [ctx], 'tono')[0])
+            if p_tone:
+                e['tono'] = p_tone
+                applied['tono'] += 1
+        if theme_model is not None:
+            p_theme = format_theme_label(_safe_predict(theme_model, [ctx], 'tema')[0])
+            if p_theme:
+                temas[gid] = p_theme
+                origen[gid] = 'pkl'
+                applied['tema'] += 1
+    return applied
+
+
 def volcar_analisis_en_filas(rows: List[dict], mapa: Dict[int, int],
-                             etiquetas: Dict[int, dict], temas: Dict[int, str]) -> List[dict]:
-    """Propaga etiqueta de GRUPO. No reasigna tema por fila."""
+                             etiquetas: Dict[int, dict], temas: Dict[int, str],
+                             preservar_tema: bool = False) -> List[dict]:
+    """Propaga etiqueta de GRUPO. No reasigna tema por fila.
+
+    `preservar_tema=True` (PKL de tema): solo rellena si la celda quedó vacía.
+    No reescribe clases del cliente con el gate de frases del lote.
+    """
     for i, row in enumerate(rows):
         if row.get('is_duplicate'):
             row['Tono_IA'] = 'Duplicada'
@@ -2558,8 +2617,9 @@ def volcar_analisis_en_filas(rows: List[dict], mapa: Dict[int, int],
         row['Tono_IA'] = e.get('tono') or 'Neutro'
         row['Tema_IA'] = temas.get(gid) if gid is not None else ''
         row['Subtema_IA'] = e.get('sub_tema') or 'Hecho informativo'
-        if (not _tema_util(row['Tema_IA'])
-                or _tema_copia_o_prefijo_titulo(row['Tema_IA'], [_titulo_fila(row, {})])):
+        falta = not _tema_util(row['Tema_IA'])
+        copia_titulo = _tema_copia_o_prefijo_titulo(row['Tema_IA'], [_titulo_fila(row, {})])
+        if falta or (copia_titulo and not preservar_tema):
             row['Tema_IA'] = _asegurar_tema_texto(
                 row['Tema_IA'],
                 [row['Subtema_IA']],
@@ -2640,58 +2700,39 @@ def enrich_rows_with_ai(
     if (cambios or extra_uni) and progress_callback:
         progreso(93, 'Sub-temas unificados: %d' % (cambios + extra_uni))
 
-    corregidos = aplicar_guarda_tono(grupos, etiquetas, brand, aliases)
-    positivos = aplicar_guarda_positiva(grupos, etiquetas, brand, aliases,
-                                        voceros=cfg.get('voceros') or [])
-    if positivos:
-        _ULTIMO_RESUMEN['tono_corregido_positivo'] = positivos
-        _ULTIMO_RESUMEN['tono_subido_por_guarda'] = positivos
-    if corregidos:
-        _ULTIMO_RESUMEN['tono_corregido_por_guarda'] = corregidos
-        if progress_callback:
-            progreso(93, 'Guarda del tono: %d Negativos sin señalamiento pasaron a Neutro' % len(corregidos))
+    # Con PKL de tono el modelo del cliente es la autoridad: no se aplica la
+    # guarda LLM (degradar Negativo / subir a Positivo) porque pisaría el PKL.
+    if tone_model is None:
+        corregidos = aplicar_guarda_tono(grupos, etiquetas, brand, aliases)
+        positivos = aplicar_guarda_positiva(grupos, etiquetas, brand, aliases,
+                                            voceros=cfg.get('voceros') or [])
+        if positivos:
+            _ULTIMO_RESUMEN['tono_corregido_positivo'] = positivos
+            _ULTIMO_RESUMEN['tono_subido_por_guarda'] = positivos
+        if corregidos:
+            _ULTIMO_RESUMEN['tono_corregido_por_guarda'] = corregidos
+            if progress_callback:
+                progreso(93, 'Guarda del tono: %d Negativos sin señalamiento pasaron a Neutro' % len(corregidos))
 
-    # --- tema bottom-up de ESTE lote (un subtema canónico ⇒ un tema) ---
-    tax_lote = {'temas': candidatos_tax, 'reglas': derivar_reglas(candidatos_tax) if candidatos_tax else []}
-    temas, origen = asignar_temas(cfg, grupos, etiquetas, tax_lote, progreso)
-    corregir_temas_con_jev(cfg, grupos, etiquetas, temas)
+    # --- tema: PKL del cliente = clases del modelo; si no hay PKL, bottom-up de ESTE lote ---
+    temas: Dict[int, str] = {}
+    origen: Dict[int, str] = {}
+    if theme_model is None:
+        tax_lote = {'temas': candidatos_tax, 'reglas': derivar_reglas(candidatos_tax) if candidatos_tax else []}
+        temas, origen = asignar_temas(cfg, grupos, etiquetas, tax_lote, progreso)
+        corregir_temas_con_jev(cfg, grupos, etiquetas, temas)
 
-    # --- PKL del cliente: sobreescribe tono y/o tema; NUNCA reemplaza el subtema ---
-    plan_tone = tone_model is not None
-    plan_theme = theme_model is not None
-    pkl_cache: Dict[int, Tuple[Optional[str], Optional[str]]] = {}
-    if plan_tone or plan_theme:
-        from pkl_classifier import _safe_predict, format_theme_label, map_tone_label
-        for g in grupos:
-            e = etiquetas[g['grupo']]
-            ctx = str(rows[g['idxs'][0]].get('Contexto analizado', '') or '')
-            p_tone = map_tone_label(_safe_predict(tone_model, [ctx], 'tono')[0]) if plan_tone else None
-            p_theme = format_theme_label(_safe_predict(theme_model, [ctx], 'tema')[0]) if plan_theme else None
-            pkl_cache[g['grupo']] = (p_tone, p_theme)
-            if p_tone:
-                e['tono'] = p_tone
-            if p_theme:
-                temas[g['grupo']] = p_theme
-                origen[g['grupo']] = 'pkl'
-        if plan_theme:
-            forzar_un_tema_por_subtema(temas, etiquetas)
-            for gid, e in etiquetas.items():
-                t = temas.get(gid)
-                s = e.get('sub_tema') or ''
-                g = next((x for x in grupos if x['grupo'] == gid), {})
-                if t and s and (not tema_frase_natural(t, titulos=[g.get('titulo')])
-                                or not _tema_distinto_de_subtema(t, s)):
-                    nuevo = generalizar_tema_desde_subtemas(
-                        [s], [g.get('titulo')], [g.get('contexto') or g.get('texto')])
-                    temas[gid] = _asegurar_tema_texto(
-                        nuevo if _tema_util(nuevo) else t,
-                        [s], [g.get('titulo')], [g.get('contexto') or g.get('texto')])
-                elif not _tema_util(t) or _tema_copia_o_prefijo_titulo(t, [g.get('titulo')]):
-                    temas[gid] = _asegurar_tema_texto(
-                        t, [s], [g.get('titulo')], [g.get('contexto') or g.get('texto')])
-            forzar_un_tema_por_subtema(temas, etiquetas)
+    # PKL gana sobre LLM/lote. NUNCA reemplaza el subtema. El gate de frases
+    # del lote no reescribe las clases del cliente (antes las sustituía).
+    pkl_counts = aplicar_pkl_del_cliente(
+        grupos, rows, etiquetas, temas, origen,
+        tone_model=tone_model, theme_model=theme_model,
+    )
 
-    volcar_analisis_en_filas(rows, mapa, etiquetas, temas)
+    volcar_analisis_en_filas(
+        rows, mapa, etiquetas, temas,
+        preservar_tema=theme_model is not None,
+    )
 
     temas_lote: List[str] = []
     vistos = set()
@@ -2701,13 +2742,25 @@ def enrich_rows_with_ai(
             vistos.add(k)
             temas_lote.append(t)
     _ULTIMO_RESUMEN['taxonomia'] = temas_lote
-    _ULTIMO_RESUMEN['modo_taxonomia'] = 'lote'
-    _ULTIMO_RESUMEN['taxonomia_detalle'] = {
-        'temas': temas_lote,
-        'reglas': [],
-        'nota': ('Temas generados bottom-up a partir de los subtemas de este lote. '
-                 'Sin memoria entre corridas.'),
-    }
+    if theme_model is not None:
+        _ULTIMO_RESUMEN['modo_taxonomia'] = 'pkl'
+        _ULTIMO_RESUMEN['temas_por_pkl'] = pkl_counts.get('tema', 0)
+        _ULTIMO_RESUMEN['taxonomia_detalle'] = {
+            'temas': temas_lote,
+            'reglas': [],
+            'nota': ('Temas clasificados con el modelo PKL del cliente. '
+                     'Las etiquetas son las clases del modelo, no nombres inventados del lote.'),
+        }
+    else:
+        _ULTIMO_RESUMEN['modo_taxonomia'] = 'lote'
+        _ULTIMO_RESUMEN['taxonomia_detalle'] = {
+            'temas': temas_lote,
+            'reglas': [],
+            'nota': ('Temas generados bottom-up a partir de los subtemas de este lote. '
+                     'Sin memoria entre corridas.'),
+        }
+    if tone_model is not None:
+        _ULTIMO_RESUMEN['tonos_por_pkl'] = pkl_counts.get('tono', 0)
     _ULTIMO_RESUMEN['votos_tono'] = votos
     _ULTIMO_RESUMEN['filas'] = len(rows)
     _ULTIMO_RESUMEN['duplicadas'] = sum(1 for r in rows if r.get('is_duplicate'))
