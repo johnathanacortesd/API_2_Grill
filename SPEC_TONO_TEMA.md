@@ -49,8 +49,10 @@ por `analyzer_tono_tema.ultimo_resumen()` en `resultado["analisis"]`.
    preposición final, sin rótulos vacíos, sin `:` `;` `|`) y `prompt_reparacion` en ciclo contra el
    propio modelo.
 4. **Tema bottom-up de ESTE LOTE** — `asignar_temas` agrupa subtemas canónicos afines y nombra cada
-   familia **una sola vez**. No hay lista cerrada ni memoria entre corridas. Un subtema canónico
-   implica exactamente un tema. `volcar_analisis_en_filas` no reasigna por fila.
+   familia **una sola vez** con una **frase nominal natural** (la misma calidad lingüística que un
+   buen subtema: se extrae un tramo gramatical de subtema/titular; se rechazan ensaladas de
+   keywords y raíces cortadas). No hay lista cerrada ni memoria entre corridas. Un subtema
+   canónico implica exactamente un tema. `volcar_analisis_en_filas` no reasigna por fila.
 5. **Guarda de generalidad** — el tema es más general que el subtema (`_tema_distinto_de_subtema`):
    no igual, no casi igual, no copia el hecho. El subtema sigue siendo el hecho concreto.
 6. **Nunca "Otros"** — `CUBO_PROHIBIDO`, `cubo_valido`. Jev (TypeSafe) es opcional y **solo**

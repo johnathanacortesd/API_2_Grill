@@ -2,12 +2,15 @@
 """Invariantes de tema/subtema del lote del día (sin llamadas a API)."""
 from __future__ import annotations
 
+import re
 import unittest
 from unittest.mock import patch
 
 from catalogo_tono_tema import TAX_GOBIERNO
 from analyzer_tono_tema import (
+    _parece_ensalada_keywords,
     _tema_distinto_de_subtema,
+    _tema_frase_ok,
     asignar_temas,
     canonizar_subtemas,
     construir_grupos,
@@ -278,6 +281,8 @@ class TestEnrichLoteInvariantes(unittest.TestCase):
         self.assertEqual(len({r["Subtema_IA"] for r in pae}), 1)
         self.assertEqual(len({r["Tema_IA"] for r in pae}), 1)
         self.assertTrue(_tema_distinto_de_subtema(pae[0]["Tema_IA"], pae[0]["Subtema_IA"]))
+        self.assertTrue(_tema_frase_ok(pae[0]["Tema_IA"], [pae[0]["Subtema_IA"]], [pae[0]["Título"]]))
+        self.assertFalse(_parece_ensalada_keywords(pae[0]["Tema_IA"]))
         self.assertNotEqual(nz(pae[0]["Tema_IA"]), nz(robot[0]["Tema_IA"]))
         self.assertNotEqual(nz(pae[0]["Subtema_IA"]), nz(robot[0]["Subtema_IA"]))
 
@@ -289,6 +294,83 @@ class TestEnrichLoteInvariantes(unittest.TestCase):
             ["La Procuraduría suspende al exsecretario por retraso en el PAE."],
         )
         self.assertTrue(_tema_distinto_de_subtema(tema, sub))
+
+
+class TestCalidadLinguisticaTema(unittest.TestCase):
+    JUNK = [
+        "Nueva Puerto sede n",
+        "Soledad PAE nutrición seguimiento",
+        "Sede n puerto",
+        "nueva puerto sede",
+        "Fortalec nutricion pae soledad",
+    ]
+    LIMPIOS = [
+        "Alimentación escolar",
+        "Nueva sede",
+        "Infraestructura de sedes",
+        "Programa de alimentación escolar",
+        "Educación superior",
+    ]
+
+    def test_rechaza_ensaladas_y_truncados(self):
+        sub = "Inauguración de la nueva sede en Puerto"
+        tit = "Inauguran la nueva sede en Puerto"
+        for junk in self.JUNK:
+            self.assertFalse(
+                _tema_frase_ok(junk, [sub], [tit]),
+                msg="debería rechazar: %r" % junk,
+            )
+        self.assertTrue(_parece_ensalada_keywords("Nueva Puerto sede n"))
+        self.assertTrue(_parece_ensalada_keywords("Soledad PAE nutrición seguimiento"))
+        self.assertFalse(_parece_ensalada_keywords("Alimentación escolar"))
+        self.assertFalse(_parece_ensalada_keywords("Programa de alimentación escolar"))
+
+    def test_acepta_frases_nominales_limpias(self):
+        sub = "Inicio de clases con alimentación escolar"
+        tit = "40 mil niños inician clases con alimentación escolar"
+        for limpio in self.LIMPIOS:
+            self.assertTrue(
+                _tema_frase_ok(limpio, [sub, "Inauguración de la nueva sede",
+                                        "Acreditación de alta calidad"],
+                               [tit, "Inauguran la nueva sede",
+                                "Programa de alimentación escolar",
+                                "Infraestructura de sedes universitarias",
+                                "Educación superior en el Caribe"]),
+                msg="debería aceptar: %r" % limpio,
+            )
+
+    def test_generalizar_no_produce_ensalada_ni_truncado(self):
+        sub = "Inauguración de la nueva sede en Puerto"
+        tema = generalizar_tema_desde_subtemas(
+            [sub],
+            ["Inauguran la nueva sede en Puerto"],
+            ["La universidad inaugura la nueva sede en Puerto."],
+        )
+        self.assertTrue(_tema_frase_ok(tema, [sub], ["Inauguran la nueva sede en Puerto"]))
+        self.assertEqual(nz(tema), nz("Nueva sede"))
+        self.assertFalse(_parece_ensalada_keywords(tema))
+        self.assertNotIn(nz(tema), {nz(j) for j in self.JUNK})
+        self.assertFalse(re.search(r'(^| )\w( |$)', tema) and ' n' in (' ' + tema.lower() + ' '))
+        self.assertTrue(_tema_distinto_de_subtema(tema, sub))
+        self.assertGreaterEqual(len(tema.split()), 2)
+        self.assertFalse(any(
+            len(nz(t)) == 1 and nz(t) not in {"y", "o", "a", "e", "u"} for t in tema.split()
+        ))
+
+    def test_asignar_temas_entrega_rotulo_natural(self):
+        grupos = [_grupo(
+            1,
+            "Inauguran la nueva sede en Puerto",
+            "La universidad inaugura la nueva sede en Puerto para los programas de salud.",
+        )]
+        etiquetas = {1: {"sub_tema": "Inauguración de la nueva sede en Puerto", "tono": "Positivo"}}
+        temas, _ = asignar_temas({}, grupos, etiquetas, {"temas": []})
+        tema = temas[1]
+        self.assertTrue(_tema_frase_ok(
+            tema, [etiquetas[1]["sub_tema"]], [grupos[0]["titulo"]]))
+        self.assertFalse(_parece_ensalada_keywords(tema))
+        self.assertNotEqual(nz(tema), nz("Nueva Puerto sede n"))
+        self.assertTrue(_tema_distinto_de_subtema(tema, etiquetas[1]["sub_tema"]))
 
 
 if __name__ == "__main__":
