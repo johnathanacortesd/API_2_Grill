@@ -33,6 +33,10 @@ por `analyzer_tono_tema.ultimo_resumen()` en `resultado["analisis"]`.
 - Las 4 columnas de análisis —`Contexto analizado`, `Tono_IA`, `Tema_IA`, `Subtema_IA`— se insertan
   **después de `revalorización` y antes de `resumen corto`** (`BASE_OUTPUT_COLUMNS`).
 - Las filas duplicadas conservan `Tono_IA = "Duplicada"` y `Tema_IA = Subtema_IA = "-"`.
+- **Tema nunca en blanco.** `Tema_IA` de cada fila no duplicada es una frase nominal española
+  no vacía (no `null`, no `""`, no solo espacios). Rechazo del quality gate ≠ vacío: se repara
+  o se usa un fallback no vacío derivado de título/subtema (frase nominal completa). Preferir
+  una frase mediocre precisa a una celda vacía.
 - Firma de `enrich_rows_with_ai` y de `process_dossier`: no cambian (los llamadores no se tocan).
 - El motor **no** debe depender del paquete `openai` para arrancar: hace HTTP con `requests`.
 - Sin refactors, sin renombres, sin archivos nuevos fuera de esta lista.
@@ -53,7 +57,7 @@ por `analyzer_tono_tema.ultimo_resumen()` en `resultado["analisis"]`.
    analista pondría en Power BI): LLM con few-shot buenos/malos → gate duro → una reparación →
    frase segura. Prohibido bag-of-words, unir stems y recortes que suelten el núcleo o el objeto.
    No hay lista cerrada ni memoria entre corridas. Un subtema canónico implica exactamente un tema.
-   `volcar_analisis_en_filas` no reasigna por fila.
+   `volcar_analisis_en_filas` no reasigna por fila. Si el gate rechaza, **no se descarta a vacío**.
 5. **Guarda de generalidad y de lengua** — el tema es más general que el subtema
    (`_tema_distinto_de_subtema`) y pasa `problemas_calidad_tema` / `tema_frase_natural`:
    frase completa, no verbo/cláusula, no PP truncado, no solo adjetivos, no persona, no sigla
