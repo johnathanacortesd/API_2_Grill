@@ -461,9 +461,9 @@ def main():
                      "Gremio o sector (16 cubos)"],
                     index=0,
                     help="Por defecto los Temas se arman bottom-up en ESTE lote: se agrupan subtemas "
-                         "afines y se nombra cada familia. No hay memoria entre corridas. Las listas "
-                         "fijas o un JSON solo se usan como nombres candidatos, no como clasificación "
-                         "independiente por fila.",
+                         "afines y se nombra cada familia. Si subes un PKL de tema, se usan las clases "
+                         "de ese modelo y no se inventan temas del lote. No hay memoria entre corridas. "
+                         "Las listas fijas o un JSON solo se usan como nombres candidatos cuando no hay PKL.",
                 )
 
             with st.expander("⚙ Ajustes finos del análisis (opcional)"):
@@ -623,6 +623,8 @@ def main():
             cubos_nuevos = analisis.get("cubos_nuevos") or []
             reglas = analisis.get("temas_por_regla")
             por_llm = analisis.get("temas_por_llm")
+            por_pkl = analisis.get("temas_por_pkl")
+            tonos_pkl = analisis.get("tonos_por_pkl")
             fallback = len(analisis.get("grupos_con_fallback") or [])
             errores = analisis.get("errores_api") or []
             guarda = len(analisis.get("tono_corregido_por_guarda") or [])
@@ -630,11 +632,15 @@ def main():
             piezas = []
             if grupos:
                 piezas.append(f"{grupos} hechos únicos agrupados")
-            if votos:
+            if tonos_pkl:
+                piezas.append(f"tono clasificado con PKL del cliente ({tonos_pkl} grupos)")
+            elif votos:
                 piezas.append(f"tono verificado {votos}× por grupo")
             if guarda:
                 piezas.append(f"guarda del tono: {guarda} Negativos sin señalamiento pasaron a Neutro")
-            if reglas is not None:
+            if por_pkl:
+                piezas.append(f"Tema por PKL del cliente: {por_pkl}")
+            elif reglas is not None:
                 piezas.append(f"Tema por reglas: {reglas} · por IA: {por_llm or 0}")
             if cubos_nuevos:
                 piezas.append("Cubos nuevos específicos: " + ", ".join(cubos_nuevos[:4]))
@@ -648,10 +654,16 @@ def main():
             detalle_tax = analisis.get("taxonomia_detalle") or {}
             if temas_gen:
                 modo = analisis.get("modo_taxonomia")
-                etiqueta = ("de este lote" if modo in ("lote", "automatica")
-                            else "nombres candidatos del cliente")
-                with st.expander("Temas de este lote (%d, %s)" % (len(temas_gen), etiqueta),
-                                 expanded=(modo in ("lote", "automatica"))):
+                if modo == "pkl":
+                    etiqueta = "clases del PKL del cliente"
+                elif modo in ("lote", "automatica"):
+                    etiqueta = "de este lote"
+                else:
+                    etiqueta = "nombres candidatos del cliente"
+                titulo_exp = ("Temas del PKL (%d, %s)" % (len(temas_gen), etiqueta)
+                              if modo == "pkl"
+                              else "Temas de este lote (%d, %s)" % (len(temas_gen), etiqueta))
+                with st.expander(titulo_exp, expanded=(modo in ("lote", "automatica", "pkl"))):
                     st.markdown(" · ".join("`%s`" % t for t in temas_gen))
                     if detalle_tax:
                         st.download_button(
@@ -661,8 +673,12 @@ def main():
                                 st.session_state.get("output_filename", "cliente")).replace(".xlsx", ""),
                             mime="application/json",
                         )
-                        st.caption("Son los Temas armados bottom-up en esta corrida. El próximo lote "
-                                   "vuelve a agrupar sus propios subtemas; no se reutiliza el vocabulario.")
+                        if modo == "pkl":
+                            st.caption("Son las clases del PKL de tema del cliente. No se inventan "
+                                       "nombres bottom-up ni se reescriben con el quality-gate del lote.")
+                        else:
+                            st.caption("Son los Temas armados bottom-up en esta corrida. El próximo lote "
+                                       "vuelve a agrupar sus propios subtemas; no se reutiliza el vocabulario.")
         
         st.markdown(f"""
         <div class="metrics-grid">
