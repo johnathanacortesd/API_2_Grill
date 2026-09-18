@@ -1078,7 +1078,8 @@ REGLAS_TEMA = (
     "- Sin terminar en preposicion ni en 'X entre Y' incompleto.\n"
     "- Sin pilas de adjetivos, sin siglas sueltas (IA), sin mash de keywords.\n"
     "- Sin nombres de persona ni hechos puntuales (eso es subtema).\n"
-    "- Sin rotulos vacios ('Reunion de expertos', 'Ayuda en salud')."
+    "- Sin rotulos vacios ('Reunion de expertos', 'Ayuda en salud').\n"
+    "- NUNCA copies el titular ni uses las primeras palabras del titular como tema."
 )
 TEMAS_EJEMPLO_BUENOS = (
     "Medios en crisis",
