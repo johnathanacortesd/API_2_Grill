@@ -1066,6 +1066,54 @@ META_CUBO = {'entidad', 'cliente', 'empresa', 'compania', 'organizacion', 'insti
              'gubernamental', 'departamental', 'regional', 'municipal', 'general', 'generales', 'varios',
              'varias', 'otros', 'otras', 'miscelaneo', 'miscelanea', 'temas', 'asuntos'}
 
+# ---------------------------------------------------------------- calidad linguistica del TEMA (lote del dia)
+# El tema es una frase nominal TEMATICA completa, un nivel mas general que el subtema.
+# Misma calidad linguistica que un buen subtema: la pondria un analista en Power BI.
+TEMA_MIN_PAL, TEMA_MAX_PAL = 2, 6
+REGLAS_TEMA = (
+    "El TEMA es una frase nominal espanola COMPLETA, la que un analista de medios pondria en Power BI.\n"
+    "Es un nivel MAS GENERAL que el subtema, con la misma calidad linguistica (no peor).\n"
+    "- Nucleo + complementos enteros. Nunca recortes que dejen el objeto o el nucleo a medias.\n"
+    "- Sin verbo conjugado ni infinitivo (no es una oracion ni una clausula).\n"
+    "- Sin terminar en preposicion ni en 'X entre Y' incompleto.\n"
+    "- Sin pilas de adjetivos, sin siglas sueltas (IA), sin mash de keywords.\n"
+    "- Sin nombres de persona ni hechos puntuales (eso es subtema).\n"
+    "- Sin rotulos vacios ('Reunion de expertos', 'Ayuda en salud')."
+)
+TEMAS_EJEMPLO_BUENOS = (
+    "Medios en crisis",
+    "Inauguración de nuevas sedes universitarias",
+    "Participación estudiantil en iniciativas ecológicas",
+    "Congreso internacional de criminología",
+    "Creación de nuevos campus universitarios",
+    "Prevención del suicidio",
+    "Empleo juvenil",
+    "Inauguración de sede",
+    "Alimentación escolar",
+    "Concurso de robótica",
+    "Criminalidad e inteligencia artificial",
+)
+TEMAS_EJEMPLO_MALOS = (
+    "Fortalecimiento de nutrición",
+    "Iberoamericano de suicidología",
+    "Reunión de expertos",
+    "Estudiar y conseguir empleo",
+    "Cuidado para llevar",
+    "Viene para la fiesta",
+    "Criminalidad y IA",
+    "Ayuda en salud",
+    "Muerte de Juliana",
+    "Graduación de técnicos",
+    "Ciudadana en economía",
+    "Laboral por IA",
+    "Multimodal y personalizada",
+    "Conexión entre educación",
+    "Hacen visible",
+    "Intentos de suicidio",
+    "Obras de manejo",
+    "Cuida y quiénes",
+)
+
 
 def taxonomia_por_nombre(nombre):
     """Devuelve la taxonomia segun el nombre que muestra la interfaz."""

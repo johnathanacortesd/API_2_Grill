@@ -5,7 +5,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
-from catalogo_tono_tema import TAX_GOBIERNO
+from catalogo_tono_tema import TAX_GOBIERNO, TEMAS_EJEMPLO_BUENOS, TEMAS_EJEMPLO_MALOS
 from analyzer_tono_tema import (
     _tema_distinto_de_subtema,
     asignar_temas,
@@ -18,6 +18,7 @@ from analyzer_tono_tema import (
     generalizar_tema_desde_subtemas,
     nombrar_familias_tema,
     nz,
+    problemas_calidad_tema,
     taxonomia_por_nombre,
     tema_frase_natural,
     unificar_subtemas_noticias_similares,
@@ -360,6 +361,115 @@ class TestCalidadLinguisticaTema(unittest.TestCase):
             out = nombrar_familias_tema({"api_key": "test"}, familias)
         self.assertNotEqual(nz(out[1]), nz("Jóvenes empleo"))
         self.assertTrue(tema_frase_natural(out[1]), out[1])
+
+
+class TestCalidadTemaLote24(unittest.TestCase):
+    """Barra de calidad del lote real: los malos no salen; los buenos sí pasan."""
+
+    def test_rechaza_exactos_inaceptables(self):
+        for malo in TEMAS_EJEMPLO_MALOS:
+            self.assertFalse(tema_frase_natural(malo), malo)
+            self.assertTrue(problemas_calidad_tema(malo), malo)
+            self.assertIsNone(cubo_valido(malo, {"temas": []}, True), malo)
+
+    def test_acepta_exactos_aceptables(self):
+        for bueno in TEMAS_EJEMPLO_BUENOS:
+            self.assertFalse(problemas_calidad_tema(bueno), bueno)
+            self.assertTrue(tema_frase_natural(bueno), bueno)
+            self.assertEqual(cubo_valido(bueno, {"temas": []}, True), bueno)
+
+    def test_no_recorta_obras_de_manejo(self):
+        tema = generalizar_tema_desde_subtemas(
+            ["Obras de manejo ambiental en la ciénaga"],
+            ["Obras de manejo ambiental no dan espera en la ciénaga del Totumo"],
+        )
+        self.assertNotEqual(nz(tema), nz("Obras de manejo"))
+        self.assertTrue(tema_frase_natural(tema), tema)
+        self.assertIn("ambiental", nz(tema))
+
+    def test_suicidios_alinean_prevencion(self):
+        grupos = [
+            _grupo(1, "Más de la mitad de los intentos de suicidio son de jóvenes",
+                   "El informe alerta por intentos de suicidio en jóvenes."),
+            _grupo(2, "Congreso iberoamericano de suicidología en la universidad",
+                   "Expertos se reúnen en el congreso iberoamericano de suicidología."),
+        ]
+        etiquetas = {
+            1: {"sub_tema": "Intentos de suicidio en jóvenes", "tono": "Neutro"},
+            2: {"sub_tema": "Congreso iberoamericano de suicidología", "tono": "Neutro"},
+        }
+        temas, _ = asignar_temas({}, grupos, etiquetas, {"temas": []})
+        self.assertEqual(nz(temas[1]), nz("Prevención del suicidio"))
+        self.assertEqual(nz(temas[2]), nz("Prevención del suicidio"))
+        self.assertNotIn(nz("Intentos de suicidio"), {nz(temas[1]), nz(temas[2])})
+        self.assertNotIn(nz("Iberoamericano de suicidología"), {nz(temas[1]), nz(temas[2])})
+
+    def test_ia_no_queda_como_sigla(self):
+        tema = generalizar_tema_desde_subtemas(
+            ["Criminalidad y uso de IA en investigaciones"],
+            ["Expertos debaten criminalidad e inteligencia artificial"],
+        )
+        self.assertNotEqual(nz(tema), nz("Criminalidad y IA"))
+        self.assertNotIn(" ia", " " + nz(tema) + " ")
+        self.assertTrue(tema_frase_natural(tema), tema)
+
+    def test_persona_no_es_tema(self):
+        tema = generalizar_tema_desde_subtemas(
+            ["Muerte de Juliana en competencia"],
+            ["Muere Juliana y los especialistas reaccionan"],
+        )
+        self.assertNotEqual(nz(tema), nz("Muerte de Juliana"))
+        self.assertTrue(tema_frase_natural(tema), tema)
+        self.assertFalse(any(x in nz(tema) for x in ("juliana",)))
+
+    def test_llm_malo_se_repara_o_cae_a_seguro(self):
+        familias = [{
+            "id": 1,
+            "subtemas": ["Intentos de suicidio en jóvenes"],
+            "titulos": ["Cifras de intentos de suicidio en el país"],
+            "contextos": ["El estudio mide intentos de suicidio."],
+        }]
+        with patch("analyzer_tono_tema.llamar_llm",
+                   return_value='{"resultados":[{"id":1,"tema":"Intentos de suicidio"}]}'):
+            out = nombrar_familias_tema({"api_key": "test"}, familias)
+        self.assertEqual(nz(out[1]), nz("Prevención del suicidio"))
+        self.assertTrue(tema_frase_natural(out[1]), out[1])
+
+    def test_llm_repara_en_segunda_pasada(self):
+        familias = [{
+            "id": 1,
+            "subtemas": ["Apertura de sede universitaria en el norte"],
+            "titulos": ["Inauguran nueva sede universitaria"],
+            "contextos": ["La universidad abre un campus y una sede universitaria nueva."],
+        }]
+        respuestas = [
+            '{"resultados":[{"id":1,"tema":"Fortalecimiento de nutrición"}]}',
+            '{"resultados":[{"id":1,"tema":"Inauguración de nuevas sedes universitarias"}]}',
+        ]
+        with patch("analyzer_tono_tema.llamar_llm", side_effect=respuestas):
+            out = nombrar_familias_tema({"api_key": "test"}, familias)
+        self.assertEqual(nz(out[1]), nz("Inauguración de nuevas sedes universitarias"))
+
+    def test_export_nunca_lleva_inaceptables(self):
+        casos = [
+            ("Fortalecimiento de la nutrición escolar con el PAE",
+             "Soledad fortalece la nutrición escolar con el PAE",
+             "Alimentación escolar"),
+            ("Reunión de expertos en el campus",
+             "Expertos universitarios se reúnen en un foro académico de educación superior",
+             None),
+            ("Estudiar y conseguir empleo en la región",
+             "Jóvenes buscan estudiar y conseguir empleo formal",
+             None),
+        ]
+        for i, (sub, tit, esperado) in enumerate(casos, 1):
+            grupos = [_grupo(i, tit, tit)]
+            etiquetas = {i: {"sub_tema": sub, "tono": "Neutro"}}
+            temas, _ = asignar_temas({}, grupos, etiquetas, {"temas": []})
+            self.assertTrue(tema_frase_natural(temas[i]), temas[i])
+            self.assertNotIn(nz(temas[i]), {nz(x) for x in TEMAS_EJEMPLO_MALOS})
+            if esperado:
+                self.assertEqual(nz(temas[i]), nz(esperado))
 
 
 if __name__ == "__main__":

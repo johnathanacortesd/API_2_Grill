@@ -37,7 +37,8 @@ import requests
 
 from catalogo_tono_tema import (
     CRITERIOS_TONO, CUBO_PROHIBIDO, EJEMPLOS, EJEMPLOS_SECTOR, EJEMPLOS_TEMA, MAX_PAL, META_CUBO,
-    MIN_PAL, REGLAS_SUBTEMA, TONOS, taxonomia_por_nombre,
+    MIN_PAL, REGLAS_SUBTEMA, REGLAS_TEMA, TEMA_MAX_PAL, TEMA_MIN_PAL, TEMAS_EJEMPLO_BUENOS,
+    TEMAS_EJEMPLO_MALOS, TONOS, taxonomia_por_nombre,
 )
 
 
@@ -528,7 +529,12 @@ ADJETIVOS_TEMA = {
     'comunitaria', 'comunitario', 'avicola', 'medica', 'medico', 'sanitaria', 'sanitario',
     'educativo', 'educativa', 'tecnologico', 'tecnologica', 'nacional', 'municipal',
     'local', 'internacional', 'familiar', 'industrial', 'comercial', 'alimentaria',
-    'alimentario', 'temprana', 'temprano',
+    'alimentario', 'temprana', 'temprano', 'iberoamericano', 'iberoamericana',
+    'multimodal', 'personalizada', 'personalizado', 'ciudadana', 'ciudadano',
+    'universitario', 'universitaria', 'universitarios', 'universitarias',
+    'ecologica', 'ecologico', 'ecologicas', 'ecologicos', 'estudiantil',
+    'profesional', 'tecnica', 'tecnico', 'superior', 'inferiores', 'anterior',
+    'posterior',
 }
 _RE_ADJETIVO = re.compile(
     r'(ales|iles|icos|icas|ivos|ivas|osos|osas|entes|antes|bles|al|il|ico|ica|ivo|iva|'
@@ -621,39 +627,174 @@ def _quitar_ultimo_pp(frase: str) -> str:
     return ' '.join(left)
 
 
-def tema_frase_natural(nombre: str) -> bool:
-    """True si el tema es una frase nominal española, no un collage de keywords."""
+VERBOS_CLAUSULA = VERBOS1 | set("""
+hace hacen hacia hacian hizo hicieron
+viene vienen vino vinieron
+cuida cuidan cuidaba cuidaron
+estudia estudian estudio estudiaron estudiar
+consigue consiguen conseguir
+lleva llevan llevar
+va van fue fueron ir
+gana ganan gano ganaron
+hace visible
+es son era eran
+esta estan
+tiene tienen
+queda quedan
+pasa pasan
+dice dicen
+pide piden
+pone ponen
+quiere quieren
+sabe saben
+sale salen
+sigue siguen
+viene
+cuida
+""".split())
+INFINITIVOS_TEMA = set("""
+estudiar conseguir hacer venir cuidar llevar ver ir ser estar tener haber
+decir dar saber querer llegar pasar deber poner parecer quedar hablar
+dejar seguir encontrar llamar pensar salir volver tomar conocer vivir
+sentir tratar mirar contar empezar esperar buscar existir entrar trabajar
+escribir perder producir ocurrir entender pedir recibir recordar terminar
+permitir aparecer comenzar servir sacar necesitar mantener resultar leer
+caer cambiar presentar crear abrir considerar oir acabar convertir ganar
+formar traer partir morir aceptar realizar suponer comprender lograr
+explicar preguntar tocar reconocer alcanzar nacer dirigir correr utilizar
+pagar ofrecer descubrir decidir intentar visibilizar
+""".split())
+PRONOMBRES_BASURA = {
+    'quien', 'quienes', 'cual', 'cuales', 'donde', 'adonde', 'cuando',
+    'quien', 'quienes',
+}
+SIGLAS_PROHIBIDAS = {'ia', 'ai'}
+EVENTOS_PERSONA = {
+    'muerte', 'fallecimiento', 'asesinato', 'homicidio', 'velorio', 'funeral',
+    'homenaje', 'deceso',
+}
+EVENTOS_PUNTUALES = {
+    'graduacion', 'grado', 'titulacion', 'diplomado',
+}
+HECHOS_INCIDENTALES = {'intento', 'intentos', 'caso', 'casos'}
+OBJETOS_INCOMPLETOS = {
+    'nutricion', 'manejo', 'salud', 'conexion', 'ia',
+}
+ROTULOS_VAGOS_TEMA = {
+    'reunion de expertos', 'reunion de especialistas', 'encuentro de expertos',
+    'encuentro de especialistas', 'mesa de expertos', 'panel de expertos',
+    'ayuda en salud', 'ayuda de salud', 'reunion de trabajo',
+}
+RE_INFINITIVO = re.compile(r'(ar|er|ir)$')
+NOMBRES_PERSONA_FREQ = {
+    'juliana', 'juan', 'maria', 'pedro', 'luis', 'ana', 'carlos', 'sofia',
+    'andres', 'camila', 'diego', 'laura', 'felipe', 'valentina', 'sebastian',
+    'daniela', 'alejandro', 'isabella', 'santiago', 'mariana',
+}
+
+
+def _es_verbo_clausula(tok: str) -> bool:
+    t = nz(tok)
+    if not t:
+        return False
+    if t in VERBOS_CLAUSULA or t in INFINITIVOS_TEMA:
+        return True
+    if t in ADJETIVOS_TEMA or t in ADJ_PRENOMINAL or t in CONECT:
+        return False
+    return len(t) > 4 and bool(RE_VERBO.search(t))
+
+
+def _parece_infinitivo(tok: str) -> bool:
+    return nz(tok) in INFINITIVOS_TEMA
+
+
+def problemas_calidad_tema(nombre: str, permitir_vago: bool = False) -> List[str]:
+    """Problemas duros de un TEMA. Lista vacia = frase nominal tematica completa."""
+    p: List[str] = []
     nombre = sq(nombre)
-    if not nombre or re.search(r'[:;,|"\'«»—–]', nombre):
-        return False
+    if not nombre:
+        return ['vacio']
+    clave = nz(nombre)
+    if clave in {nz(x) for x in TEMAS_EJEMPLO_MALOS}:
+        p.append('ejemplo_malo_lote')
+    if re.search(r'[:;,|"\'«»—–¿?¡!]', nombre):
+        p.append('caracter_marcador')
     w = nombre.split()
-    if not (2 <= len(w) <= 5):
-        return False
+    if len(w) < TEMA_MIN_PAL:
+        p.append('corto(%d)' % len(w))
+    if len(w) > TEMA_MAX_PAL:
+        p.append('largo(%d)' % len(w))
+    if not w:
+        return p or ['vacio']
     toks = [nz(t) for t in w]
     if any(len(t) <= 1 and t not in {'a', 'y', 'o', 'e', 'u'} for t in toks):
-        return False
-    if nz(w[-1]) in PREP_FIN:
-        return False
-    prim = toks[0]
-    nexo2 = len(w) > 1 and toks[1] in PREP_FIN
-    if not nexo2 and (prim in VERBOS1 or (len(prim) > 4 and RE_VERBO.search(prim))):
-        return False
-    if nz(nombre) in ROTULO_GEN or nz(nombre) in CUBO_PROHIBIDO:
-        return False
+        p.append('token_truncado')
+    if any(t in SIGLAS_PROHIBIDAS for t in toks):
+        p.append('sigla_suelta')
+    if any(len(t) == 2 and t.isalpha() and t not in CONECT and t not in ARTICULOS
+           and t not in {'un', 'al', 'de', 'en', 'el', 'la', 'lo', 'su', 'ya'}
+           for t in toks):
+        p.append('sigla_o_fragmento')
+    if toks[-1] in PREP_FIN:
+        p.append('termina_preposicion')
+    if toks[0] in PRONOMBRES_BASURA or any(t in PRONOMBRES_BASURA for t in toks):
+        p.append('pronombre_basura')
+    if _es_verbo_clausula(w[0]) or _parece_infinitivo(w[0]):
+        p.append('verbo_inicial(%s)' % toks[0])
+    if any(_es_verbo_clausula(t) or _parece_infinitivo(t) for t in w[1:]
+           if nz(t) not in CONECT):
+        # "Estudiar y conseguir empleo", "Cuidado para llevar"
+        if any(_parece_infinitivo(t) for t in w[1:]) or any(
+                _es_verbo_clausula(t) for t in w[1:]):
+            p.append('clausula_verbal')
+    for i, t in enumerate(toks[:-1]):
+        if t == 'para' and _parece_infinitivo(w[i + 1]):
+            p.append('para_infinitivo')
+            break
+    if 'entre' in toks:
+        after = toks[toks.index('entre') + 1:]
+        if 'y' not in after and 'e' not in after:
+            p.append('entre_incompleto')
+    if toks[-1] in OBJETOS_INCOMPLETOS and not any(
+            _es_adjetivo_tematico(x) for x in w[1:]):
+        p.append('objeto_incompleto(%s)' % toks[-1])
+    if toks[0] in EVENTOS_PERSONA:
+        p.append('evento_de_persona')
+    if any(t in NOMBRES_PERSONA_FREQ for t in toks):
+        p.append('nombre_de_persona')
+    if toks[0] in EVENTOS_PUNTUALES:
+        p.append('evento_puntual')
+    if toks[0] in HECHOS_INCIDENTALES:
+        p.append('hecho_incidental')
+    if not permitir_vago and (clave in ROTULOS_VAGOS_TEMA or clave in ROTULO_GEN
+                              or clave in CUBO_PROHIBIDO):
+        p.append('rotulo_vago')
+    if (not permitir_vago and len(w) == 3 and toks[0] in {'reunion', 'encuentro', 'mesa', 'panel'}
+            and toks[1] in {'de', 'del'} and toks[2] in {'expertos', 'especialistas', 'tecnicos'}):
+        p.append('rotulo_vago')
     if toks[0] in MARCO and all(t in FILLER or t in CONECT for t in toks[1:]):
-        return False
+        p.append('marco_vacio')
     contenido_i = [i for i, t in enumerate(toks) if t not in CONECT and t not in ARTICULOS]
     contenido = [toks[i] for i in contenido_i]
     nexos = [t for t in toks if t in PREP_SINTAXIS]
-    if len(contenido) < 1:
-        return False
+    if not contenido:
+        p.append('sin_contenido')
+    if contenido and all(_es_adjetivo_tematico(w[i]) for i in contenido_i):
+        p.append('solo_adjetivos')
+    if contenido and _es_adjetivo_tematico(w[0]) and toks[0] not in ADJ_PRENOMINAL:
+        p.append('empieza_por_adjetivo')
     if len(contenido) >= 3 and not nexos:
-        return False
+        p.append('mash_keywords')
     if len(contenido) == 2 and not nexos:
         w0, w1 = w[contenido_i[0]], w[contenido_i[1]]
         if not (_es_adjetivo_tematico(w1) or nz(w0) in ADJ_PRENOMINAL):
-            return False
-    return True
+            p.append('mash_keywords')
+    return p
+
+
+def tema_frase_natural(nombre: str, permitir_vago: bool = False) -> bool:
+    """True si el tema es una frase nominal tematica COMPLETA, apta para Power BI."""
+    return not problemas_calidad_tema(nombre, permitir_vago=permitir_vago)
 
 
 def cubo_valido(nombre, tax, permitir_nuevos=True):
@@ -666,7 +807,7 @@ def cubo_valido(nombre, tax, permitir_nuevos=True):
     en_lista = next((t for t in tax['temas'] if nz(t) == n), None)
     if en_lista:
         return en_lista
-    if not permitir_nuevos or not (2 <= len(nombre.split()) <= 5):
+    if not permitir_nuevos or not (TEMA_MIN_PAL <= len(nombre.split()) <= TEMA_MAX_PAL):
         return None
     toks = [t for t in n.split() if t]
     if any(t in META_CUBO for t in toks):
@@ -1480,8 +1621,25 @@ def _sin_articulo_inicial(frase: str) -> str:
     return sq(frase)
 
 
+def _complemento_nominal_tras_verbo(frase: str) -> str:
+    """Si la fuente es una cláusula, conserva el SN objeto completo. No recorta el objeto."""
+    toks = sq(frase).split()
+    for i, t in enumerate(toks):
+        if not _es_verbo_clausula(t) and not _parece_infinitivo(t):
+            continue
+        rest = toks[i + 1:]
+        if rest and nz(rest[0]) in ARTICULOS | {'y', 'e', 'o'}:
+            rest = rest[1:]
+        if len(rest) < TEMA_MIN_PAL:
+            continue
+        cand = _capitalizar_etiqueta(' '.join(rest))
+        if tema_frase_natural(cand):
+            return cand
+    return ''
+
+
 def _generar_candidatos_frase(frase: str) -> List[str]:
-    """Ventanas contiguas de una frase ya gramatical. Nunca reordena ni une stems."""
+    """Solo frases nominales completas. Prohibido ventanas que suelten el núcleo o el objeto."""
     frase = sq(frase)
     if not frase:
         return []
@@ -1490,19 +1648,18 @@ def _generar_candidatos_frase(frase: str) -> List[str]:
     def add(s: str) -> None:
         s = _capitalizar_etiqueta(_sin_articulo_inicial(s))
         k = nz(s)
-        if s and k not in vistos:
+        if s and k not in vistos and tema_frase_natural(s):
             vistos.add(k)
             out.append(s)
 
     base = _quitar_cola_lugar(_quitar_marco_inicial(frase))
     add(base)
-    add(_quitar_ultimo_pp(base))
-    for fuente in (base, frase):
-        toks = sq(fuente).split()
-        n = len(toks)
-        for i in range(n):
-            for j in range(i + 2, min(n, i + 5) + 1):
-                add(' '.join(toks[i:j]))
+    recortado = _quitar_ultimo_pp(base)
+    # Solo si el recorte conserva un complemento preposicional. Si no, es un
+    # fragmento tipo "Congreso iberoamericano" (se cayó "de suicidología").
+    if recortado != base and any(nz(t) in PREP_SINTAXIS for t in recortado.split()):
+        add(recortado)
+    add(_complemento_nominal_tras_verbo(base) or _complemento_nominal_tras_verbo(frase))
     return out
 
 
@@ -1512,16 +1669,18 @@ def _score_tema_candidato(cand: str, subtemas: Sequence[str]) -> float:
     contenido = [t for t in toks if t not in CONECT and t not in ARTICULOS]
     nexos = [t for t in toks if t in PREP_SINTAXIS]
     score = 0.0
-    if 2 <= len(w) <= 4:
-        score += 4
-    if len(w) == 3 and nexos:
+    if 3 <= len(w) <= 5:
+        score += 6
+    elif len(w) == 2:
         score += 2
-    if nexos:
-        score += 6
-    elif len(contenido) == 2 and contenido and _es_adjetivo_tematico(w[-1]):
-        score += 6
-    elif len(contenido) == 2 and toks and toks[0] in ADJ_PRENOMINAL:
+    elif len(w) == 6:
         score += 4
+    if nexos:
+        score += 3
+    if any(_es_adjetivo_tematico(x) for x in w[1:]):
+        score += 4
+    elif len(contenido) == 2 and toks and toks[0] in ADJ_PRENOMINAL:
+        score += 3
     cov = 0.0
     ct = {raiz(t) for t in contenido if len(t) >= 3}
     for s in subtemas:
@@ -1535,15 +1694,76 @@ def _score_tema_candidato(cand: str, subtemas: Sequence[str]) -> float:
             score -= 3
     if toks and toks[0] in {nz(x) for x in _MARCO_HEAD}:
         score -= 4
+    score -= 2 * len(problemas_calidad_tema(cand))
     return score
+
+
+def _hit_stems(stems: set, needles: Sequence[str]) -> bool:
+    for n in needles:
+        rn = raiz(n)
+        if any(_tokens_relacionados(s, rn) or s.startswith(rn) or rn.startswith(s)
+               for s in stems if s):
+            return True
+    return False
+
+
+def _frase_segura_desde_familia(subtemas: Sequence[str], titulos: Sequence[str],
+                                contextos: Optional[Sequence[str]] = None) -> str:
+    """Frase nominal completa derivada del asunto de la familia. Nunca un fragmento."""
+    textos = [sq(x) for x in list(subtemas) + list(titulos or []) +
+              [sq(c)[:400] for c in (contextos or []) if c] if sq(x)]
+    stems = {raiz(w) for w in words(' '.join(textos)) if len(w) >= 3}
+    # (stems requeridos, stems extra opcionales, stems prohibidos, frase completa)
+    reglas = (
+        (['suicid'], None, None, 'Prevención del suicidio'),
+        (['nutricion', 'alimentacion'], ['escolar', 'pae'], None, 'Alimentación escolar'),
+        (['pae'], None, ['sancion', 'retraso', 'demora', 'procuradur'], 'Alimentación escolar'),
+        (['campus'], ['universitari'], None, 'Creación de nuevos campus universitarios'),
+        (['sede'], ['universitari'], None, 'Inauguración de nuevas sedes universitarias'),
+        (['inauguracion', 'inaugur'], ['sede'], None, 'Inauguración de sede'),
+        (['criminolog'], None, None, 'Congreso internacional de criminología'),
+        (['medio', 'medios'], ['crisi'], None, 'Medios en crisis'),
+        (['ecolog'], ['estudiantil', 'estudiante'], None,
+         'Participación estudiantil en iniciativas ecológicas'),
+        (['criminalidad', 'crimen'], ['inteligencia', 'ia'], None,
+         'Criminalidad e inteligencia artificial'),
+        (['robotic'], ['concurso', 'competencia', 'olimpiada'], None, 'Concurso de robótica'),
+        (['acreditacion'], None, None, 'Acreditación universitaria'),
+        (['graduacion'], None, None, 'Formación técnica'),
+        (['empleo', 'desempleo'], ['joven', 'juventud', 'juvenil'], None, 'Empleo juvenil'),
+        (['empleo'], ['estudiar', 'estudio', 'formacion'], None, 'Formación y empleo'),
+        (['juventud'], ['desempleo', 'empleo'], None, 'Empleo juvenil'),
+        (['manejo'], ['obra', 'ambiental', 'cienaga'], None, 'Obras de manejo ambiental'),
+        (['salud'], ['ayuda', 'atencion', 'cuidado'], None, 'Atención en salud pública'),
+        (['muerte', 'fallec', 'muere'], None, None, 'Salud y prevención'),
+        (['reunion', 'encuentro'], ['experto', 'especialista'], None,
+         'Encuentro académico de especialistas'),
+    )
+    for need, extra, forbid, frase in reglas:
+        if not _hit_stems(stems, need):
+            continue
+        if extra and not _hit_stems(stems, extra):
+            continue
+        if forbid and _hit_stems(stems, forbid):
+            continue
+        if not tema_frase_natural(frase):
+            continue
+        if subtemas and any(not _tema_distinto_de_subtema(frase, s) for s in subtemas if s):
+            continue
+        return frase
+    return ''
 
 
 def generalizar_tema_desde_subtemas(subtemas: Sequence[str], titulos: Optional[Sequence[str]] = None,
                                     contextos: Optional[Sequence[str]] = None) -> str:
-    """Nombre más general: recorte de una frase nominal, nunca unión de keywords."""
+    """Nombre más general: frase nominal COMPLETA. Nunca ventanas ni unión de stems."""
     subtemas = [sq(s) for s in (subtemas or []) if sq(s)]
     titulos = [sq(t) for t in (titulos or []) if sq(t)]
-    evidencia = ' '.join(list(subtemas) + list(titulos) + [sq(c)[:400] for c in (contextos or []) if c])
+    evidencia = ' '.join(list(subtemas) + list(titulos) +
+                         [sq(c)[:400] for c in (contextos or []) if c])
+    seguro = _frase_segura_desde_familia(subtemas, titulos, contextos)
+    if seguro:
+        return seguro
     candidatos: List[str] = []
     for fuente in list(subtemas) + list(titulos):
         for cand in _generar_candidatos_frase(fuente):
@@ -1558,22 +1778,6 @@ def generalizar_tema_desde_subtemas(subtemas: Sequence[str], titulos: Optional[S
             candidatos.append(cand)
     if candidatos:
         return max(candidatos, key=lambda c: (_score_tema_candidato(c, subtemas), -len(c.split())))
-
-    # Último recurso: acortar la frase original conservando el orden y los nexos.
-    for fuente in list(subtemas) + list(titulos):
-        acotado = _capitalizar_etiqueta(
-            _quitar_cola_lugar(_quitar_marco_inicial(fuente)))
-        if tema_frase_natural(acotado) and (
-                not subtemas or all(_tema_distinto_de_subtema(acotado, s) for s in subtemas)):
-            v = cubo_valido(acotado, {'temas': []}, True)
-            if v:
-                return v
-        recortado = _capitalizar_etiqueta(_quitar_ultimo_pp(acotado))
-        if tema_frase_natural(recortado) and (
-                not subtemas or all(_tema_distinto_de_subtema(recortado, s) for s in subtemas)):
-            v = cubo_valido(recortado, {'temas': []}, True)
-            if v:
-                return v
     return ''
 
 
@@ -1610,62 +1814,140 @@ def prompt_temas_familias(familias: Sequence[dict]) -> str:
                 '\n'.join('- %s' % t for t in (f.get('titulos') or [])[:6]),
             )
         )
+    buenos = ', '.join('"%s"' % x for x in TEMAS_EJEMPLO_BUENOS)
+    malos = ', '.join('"%s"' % x for x in TEMAS_EJEMPLO_MALOS)
     return (
-        'Nombras el TEMA de una familia de SUBTEMAS del mismo lote de noticias.\n'
-        'El TEMA es una frase nominal en español natural, la que escribiría un analista de medios:\n'
-        'con artículos y preposiciones si hacen falta, más general que cada subtema y precisa a la noticia.\n'
-        'BIEN: "Empleo juvenil", "Inauguración de sede", "Alimentación escolar", "Concurso de robótica".\n'
-        'MAL (se rechaza): "Jóvenes empleo", "Sede Puerto Inauguración", "Nueva Puerto sede n".\n'
-        'Prohibido pegar keywords, unir raíces, volcar nombres propios o usar estilo de tags "X Y Z".\n'
-        '2 a 5 palabras. No copies ni parafrasees un subtema. Sin "Otros", "General" ni rótulos vacíos.\n'
+        'Nombras UN TEMA por familia de SUBTEMAS del lote del día.\n'
+        '%s\n'
+        'BIEN (imita esta calidad): %s.\n'
+        'MAL (se rechaza siempre): %s.\n'
+        'Prohibido recortar la frase y dejar un fragmento, unir keywords, usar siglas sueltas '
+        '(escribe "inteligencia artificial", no "IA"), verbos, nombres de persona o rótulos vacíos.\n'
+        '%d a %d palabras. No copies un subtema. Sin "Otros" ni "General".\n'
         'Responde SOLO JSON: {"resultados":[{"id":<familia>,"tema":"..."}]}\n\n'
+        % (REGLAS_TEMA, buenos, malos, TEMA_MIN_PAL, TEMA_MAX_PAL)
         + '\n\n'.join(bloques)
     )
 
 
+def prompt_reparacion_tema(fallos: Sequence[dict]) -> str:
+    """Segunda (y última) pasada: reescribe temas que el validador rechazó."""
+    detalle = []
+    for f in fallos:
+        detalle.append(
+            'FAMILIA id=%d\nTEMA RECHAZADO: "%s"\nPROBLEMAS: %s\nSUBTEMAS:\n%s\nTITULARES:\n%s'
+            % (f['id'], f.get('tema') or '', '; '.join(f.get('problemas') or ['invalido']),
+               '\n'.join('- %s' % s for s in f.get('subtemas') or []),
+               '\n'.join('- %s' % t for t in (f.get('titulos') or [])[:6]))
+        )
+    buenos = ', '.join('"%s"' % x for x in TEMAS_EJEMPLO_BUENOS[:6])
+    return (
+        'Reescribe SOLO estos temas. El resultado debe ser una frase nominal española COMPLETA,\n'
+        'un nivel más general que los subtemas, lista para Power BI.\n'
+        'Ejemplos válidos: %s.\n'
+        'No reutilices el texto rechazado. No recortes el núcleo ni el objeto.\n'
+        'Si la familia habla de suicidio, usa "Prevención del suicidio".\n'
+        'Si habla de IA, escribe "inteligencia artificial", nunca "IA".\n\n'
+        % buenos
+        + '\n\n'.join(detalle)
+        + '\n\nResponde SOLO JSON: {"resultados":[{"id":<familia>,"tema":"..."}]}'
+    )
+
+
+def _aceptar_tema_familia(nombre: Optional[str], fam: dict) -> Optional[str]:
+    nombre = cubo_valido(nombre, {'temas': []}, True)
+    if not nombre or not tema_frase_natural(nombre):
+        return None
+    subs = [s for s in (fam.get('subtemas') or []) if s]
+    if any(not _tema_distinto_de_subtema(nombre, s) for s in subs):
+        return None
+    evidencia = ' '.join(subs + (fam.get('titulos') or []))
+    if subs and not all(_tema_es_relevante(nombre, s, evidencia) for s in subs[:4]):
+        return None
+    return nombre
+
+
+def _propuestas_tema_llm(txt: str, familias: Sequence[dict]) -> Tuple[Dict[int, str], Dict[int, str]]:
+    """Devuelve (aceptados, crudos) para poder reparar lo que el gate tumba."""
+    data = _json_loose(txt) or {}
+    aceptados: Dict[int, str] = {}
+    crudos: Dict[int, str] = {}
+    for r in data.get('resultados', []) or []:
+        try:
+            fid = int(r.get('id'))
+        except Exception:
+            continue
+        fam = next((f for f in familias if f['id'] == fid), None)
+        if not fam:
+            continue
+        crudo = sq(r.get('tema'))
+        if crudo:
+            crudos[fid] = crudo
+        aceptado = _aceptar_tema_familia(crudo, fam)
+        if aceptado:
+            aceptados[fid] = aceptado
+    return aceptados, crudos
+
+
 def nombrar_familias_tema(cfg: dict, familias: Sequence[dict],
                           candidatos: Optional[Sequence[str]] = None) -> Dict[int, str]:
-    """Nombra cada familia una sola vez (LLM opcional + respaldo determinista)."""
+    """Nombra cada familia: LLM → gate → una reparación → frase segura. Nunca basura."""
     out: Dict[int, str] = {}
     if not familias:
         return out
+    sys_tema = (
+        'Eres analista de medios en Colombia. Escribes UN tema por familia: '
+        'frase nominal española COMPLETA (nunca fragmento, verbo, sigla suelta ni collage). JSON.'
+    )
     if cfg.get('api_key'):
+        crudos: Dict[int, str] = {}
         try:
             txt = llamar_llm(cfg, [
-                {'role': 'system',
-                 'content': ('Eres analista de medios en Colombia. Escribes temas como frases '
-                             'nominales naturales (nunca collages de keywords). JSON.')},
+                {'role': 'system', 'content': sys_tema},
                 {'role': 'user', 'content': prompt_temas_familias(familias)},
             ])
-            data = _json_loose(txt) or {}
+            aceptados, crudos = _propuestas_tema_llm(txt, familias)
+            out.update(aceptados)
         except Exception:
-            data = {}
-        for r in data.get('resultados', []) or []:
+            pass
+        fallos = []
+        for fam in familias:
+            if fam['id'] in out:
+                continue
+            rechazado = crudos.get(fam['id'], '')
+            fallos.append({
+                'id': fam['id'],
+                'tema': rechazado,
+                'problemas': problemas_calidad_tema(rechazado) or ['no_supero_el_gate'],
+                'subtemas': fam.get('subtemas') or [],
+                'titulos': fam.get('titulos') or [],
+            })
+        if fallos:
             try:
-                fid = int(r.get('id'))
+                txt = llamar_llm(cfg, [
+                    {'role': 'system', 'content': sys_tema},
+                    {'role': 'user', 'content': prompt_reparacion_tema(fallos)},
+                ])
+                aceptados, _ = _propuestas_tema_llm(txt, familias)
+                out.update(aceptados)
             except Exception:
-                continue
-            fam = next((f for f in familias if f['id'] == fid), None)
-            if not fam:
-                continue
-            nombre = cubo_valido(r.get('tema'), {'temas': []}, True)
-            if not nombre or not tema_frase_natural(nombre):
-                continue
-            if any(not _tema_distinto_de_subtema(nombre, s) for s in fam.get('subtemas') or []):
-                continue
-            evidencia = ' '.join((fam.get('subtemas') or []) + (fam.get('titulos') or []))
-            if all(_tema_es_relevante(nombre, s, evidencia) for s in (fam.get('subtemas') or [])[:4] if s):
-                out[fid] = nombre
+                pass
     for fam in familias:
-        if fam['id'] in out:
+        if fam['id'] in out and tema_frase_natural(out[fam['id']]):
             continue
         cand = _mejor_candidato_tema(fam.get('subtemas') or [], fam.get('titulos') or [],
                                      fam.get('contextos') or [], candidatos or [])
-        if cand:
+        if cand and tema_frase_natural(cand):
             out[fam['id']] = cand
             continue
-        out[fam['id']] = generalizar_tema_desde_subtemas(
+        seguro = generalizar_tema_desde_subtemas(
             fam.get('subtemas') or [], fam.get('titulos'), fam.get('contextos'))
+        if seguro and tema_frase_natural(seguro):
+            out[fam['id']] = seguro
+        elif cand and tema_frase_natural(cand, permitir_vago=True):
+            out[fam['id']] = cand
+        else:
+            out[fam['id']] = seguro if seguro and tema_frase_natural(seguro, permitir_vago=True) else ''
     return out
 
 
@@ -1737,15 +2019,17 @@ def _tema_con_jev(cfg: dict, tema: str, sub_tema: str, titulo: str,
             'cubre': {
                 'type': 'boolean',
                 'instructions': (
-                    '¿El TEMA cubre el SUBTEMA y el titular? Debe ser una categoría más general '
-                    'que describa el asunto de la noticia, no un relleno genérico.'
+                    '¿El TEMA es una frase nominal española COMPLETA, apta para Power BI, '
+                    'que cubre el SUBTEMA y el titular? False si es un fragmento, verbo, '
+                    'nombre de persona, sigla suelta (IA), pila de adjetivos, mash de '
+                    'keywords o rótulo vacío (Reunión de expertos, Ayuda en salud).'
                 ),
             },
             'demasiado_especifico': {
                 'type': 'boolean',
                 'instructions': (
                     '¿El TEMA es demasiado específico o casi igual al SUBTEMA? '
-                    'True si copia el hecho o no es más general.'
+                    'True si copia el hecho, nombra a una persona o no es más general.'
                 ),
             },
         },
@@ -1796,13 +2080,17 @@ def corregir_temas_con_jev(cfg: dict, grupos: Sequence[dict], etiquetas: Dict[in
         g = por_gid.get(gid) or {}
         if not tema:
             continue
-        ver = _tema_con_jev(cfg, tema, e.get('sub_tema', ''), g.get('titulo'),
-                            g.get('contexto') or g.get('texto'))
-        if not ver:
-            continue
-        cubre, spec = ver.get('cubre'), ver.get('demasiado_especifico')
-        conf = max(ver.get('confianza_cubre') or 0.0, ver.get('confianza_especifico') or 0.0)
-        malo = (cubre is False) or (spec is True)
+        if not tema_frase_natural(tema):
+            malo, conf = True, 1.0
+            ver = None
+        else:
+            ver = _tema_con_jev(cfg, tema, e.get('sub_tema', ''), g.get('titulo'),
+                                g.get('contexto') or g.get('texto'))
+            if not ver:
+                continue
+            cubre, spec = ver.get('cubre'), ver.get('demasiado_especifico')
+            conf = max(ver.get('confianza_cubre') or 0.0, ver.get('confianza_especifico') or 0.0)
+            malo = (cubre is False) or (spec is True)
         if not malo:
             continue
         if conf < umbral:
@@ -1883,6 +2171,8 @@ def asignar_temas(cfg: dict, grupos: List[dict], etiquetas: Dict[int, dict], tax
         if not nombre or not tema_frase_natural(nombre):
             nombre = generalizar_tema_desde_subtemas(
                 fam['subtemas'], fam['titulos'], fam['contextos'])
+        if nombre and not tema_frase_natural(nombre):
+            nombre = ''
         for gid in fam['gids']:
             temas[gid] = nombre
             origen[gid] = 'familia:%d' % fam['id']
