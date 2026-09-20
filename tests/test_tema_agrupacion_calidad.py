@@ -152,6 +152,36 @@ class TestClusteringAfinidad(unittest.TestCase):
             "Desafíos de la criminología con IA"), fams)
 
 
+    def test_foro_periodismo_no_se_mezcla_con_suicidio(self):
+        """Regresión reportada (noticias 60909546, 60916741, 60910659).
+
+        Tres noticias del Foro de periodismo científico recibieron el tema
+        'Prevención del suicidio'. A nivel de clustering ya no deben unirse:
+        el foro habla de medios ante la crisis climática; el suicidio, de
+        prevención y suicidología.
+        """
+        fams = _familias_de([
+            ("Medios ante crisis climática",
+             ["V Foro de Periodismo Científico de Unisimón analizará el papel de los medios",
+              "Periodismo científico: los medios ante la crisis climática",
+              "Unisimón será sede del Foro de Periodismo Científico"]),
+            ("Semana de Prevención del Suicidio",
+             ["Asociación de Psiquiatría promueve la prevención del suicidio"]),
+            ("Congreso iberoamericano de suicidología en Barranquilla",
+             ["Barranquilla recibe congreso iberoamericano de suicidología"]),
+        ])
+        self.assertFalse(_misma_familia(
+            fams, "Medios ante crisis climática",
+            "Semana de Prevención del Suicidio"), fams)
+        self.assertFalse(_misma_familia(
+            fams, "Medios ante crisis climática",
+            "Congreso iberoamericano de suicidología en Barranquilla"), fams)
+        # ...pero el trío de suicidio sí va junto
+        self.assertTrue(_misma_familia(
+            fams, "Semana de Prevención del Suicidio",
+            "Congreso iberoamericano de suicidología en Barranquilla"), fams)
+
+
 class TestFusionTemasCasiIdenticos(unittest.TestCase):
     def _temas(self, pares):
         temas = {i + 1: t for i, (t, _) in enumerate(pares)}
@@ -182,30 +212,66 @@ class TestFusionTemasCasiIdenticos(unittest.TestCase):
         self.assertEqual(temas, antes)
 
 
-class TestMayoriaNoFragmenta(unittest.TestCase):
+class TestGuardPorMiembro(unittest.TestCase):
+    """El tema debe corresponder con el subtema y la noticia de CADA miembro.
+
+    Regresión reportada: tres noticias del 'Foro de periodismo científico'
+    recibieron el tema 'Prevención del suicidio'. Ni siquiera un mal nombre
+    del LLM para una familia gigante puede propagarse: cada miembro se
+    verifica contra su propia evidencia.
+    """
     def _grupo(self, gid, titulo, texto=""):
         return {"grupo": gid, "n": 1, "idxs": [gid - 1], "titulo": titulo,
                 "titulos_alt": [], "texto": texto or titulo,
                 "contexto": texto or titulo}
 
-    def test_minoria_sin_respaldo_conserva_tema_de_la_familia(self):
-        # La familia es de juventud/empleo; el guard léxico no respalda a la
-        # minoría, pero el LLM nombró por semántica: no se fragmenta.
-        subs = ["Desafíos para la juventud", "Desempleo juvenil en Barranquilla",
-                "Barreras para estudiar y trabajar", "Ascenso político de Gutiérrez",
-                "Proyecto de paz barrial"]
-        grupos = [self._grupo(i + 1, s) for i, s in enumerate(subs)]
+    def test_mal_nombre_no_se_propaga_a_miembros_ajenos(self):
+        subs = ["Semana de Prevención del Suicidio",
+                "Foro de periodismo científico",
+                "Foro de periodismo científico",
+                "Foro de periodismo científico"]
+        tits = ["Asociación de Psiquiatría promueve prevención del suicidio",
+                "V Foro de Periodismo Científico analizará el papel de los medios",
+                "V Foro de Periodismo Científico analizará el papel de los medios",
+                "Foro de Periodismo Científico: el papel de los medios"]
+        grupos = [self._grupo(i + 1, t) for i, t in enumerate(tits)]
         etiquetas = {i + 1: {"sub_tema": s, "tono": "Neutro"}
                      for i, s in enumerate(subs)}
         fam = [[{"sub_tema": s, "clave": nz(s)} for s in subs]]
         with patch("analyzer_tono_tema.cluster_familias_subtema",
                    return_value=fam):
             with patch("analyzer_tono_tema.nombrar_familias_tema",
-                       return_value={1: "Desafíos sociales y empleo juvenil"}):
-                temas, _ = asignar_temas({}, grupos, etiquetas, {"temas": []})
-        unicos = {nz(temas[i + 1]) for i in range(5)}
-        self.assertEqual(len(unicos), 1, temas)
-        self.assertEqual(unicos.pop(), nz("Desafíos sociales y empleo juvenil"))
+                       return_value={1: "Prevención del suicidio"}):
+                temas, origen = asignar_temas({}, grupos, etiquetas,
+                                              {"temas": []})
+        self.assertEqual(nz(temas[1]), nz("Prevención del suicidio"))
+        for i in (2, 3, 4):
+            self.assertNotEqual(nz(temas[i]), nz("Prevención del suicidio"),
+                                f"miembro {i} heredó un tema ajeno: {temas[i]}")
+            self.assertFalse(str(origen[i]).startswith("familia:"))
+
+    def test_miembros_respaldados_conservan_tema(self):
+        subs = ["Semana de Prevención del Suicidio",
+                "Prevención del suicidio juvenil",
+                "Foro de periodismo científico"]
+        tits = ["Asociación de Psiquiatría promueve prevención del suicidio",
+                "Aumentan los intentos de suicidio en jóvenes",
+                "V Foro de Periodismo Científico analizará los medios"]
+        grupos = [self._grupo(i + 1, t) for i, t in enumerate(tits)]
+        etiquetas = {i + 1: {"sub_tema": s, "tono": "Neutro"}
+                     for i, s in enumerate(subs)}
+        fam = [[{"sub_tema": s, "clave": nz(s)} for s in subs]]
+        with patch("analyzer_tono_tema.cluster_familias_subtema",
+                   return_value=fam):
+            with patch("analyzer_tono_tema.nombrar_familias_tema",
+                       return_value={1: "Prevención del suicidio"}):
+                temas, origen = asignar_temas({}, grupos, etiquetas,
+                                              {"temas": []})
+        self.assertEqual(nz(temas[1]), nz("Prevención del suicidio"))
+        self.assertEqual(nz(temas[2]), nz("Prevención del suicidio"))
+        self.assertTrue(str(origen[1]).startswith("familia:"))
+        self.assertTrue(str(origen[2]).startswith("familia:"))
+        self.assertNotEqual(nz(temas[3]), nz("Prevención del suicidio"))
 
     def test_mayoria_respaldada_separa_al_ajeno(self):
         # Caso Gutiérrez: 3 respaldan 'Prevención del suicidio', el 4º no.

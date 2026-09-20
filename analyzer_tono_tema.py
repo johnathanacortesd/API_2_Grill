@@ -1425,9 +1425,14 @@ def _contenido_discriminante(s: str) -> set:
 
 
 # Familias morfológicas que el stemmer simple no une y sí comparten asunto.
+# Es el mecanismo probado (v4.4): se canoniza ANTES de comparar, y el
+# clustering usa igualdad exacta. La afinidad por prefijo generaba
+# uniones sorpresa ('empleo'~'desempleo', 'medica'~'medicina'...).
 _EQUIV_STEMS = {
     'juvenil': 'joven', 'juventud': 'joven', 'jovenes': 'joven',
     'criminalidad': 'crimen', 'criminologia': 'crimen',
+    'suicidologia': 'suicidio', 'suicidiologia': 'suicidio',
+    'educativo': 'educacion', 'educativa': 'educacion',
 }
 # Palabras de evento tan genéricas que no prueban asunto común
 # ("congreso" aparece en el de criminología, el de psicología y el de suicidología).
@@ -1833,10 +1838,6 @@ def _prefijo_comun_largo(a: str, b: str, minimo: int = 6) -> bool:
     return i >= minimo
 
 
-def _tokens_afines_guard(a: str, b: str) -> bool:
-    return _tokens_relacionados(a, b) or _prefijo_comun_largo(raiz(a), raiz(b))
-
-
 def _stems_entidad(cfg: dict) -> set:
     """Stems de la marca, sus alias y voceros: dicen QUIÉN, no el asunto.
 
@@ -1849,73 +1850,54 @@ def _stems_entidad(cfg: dict) -> set:
     return {raiz(w) for w in words(' '.join(partes)) if len(w) >= 3}
 
 
-def _stems_afines(a: str, b: str, minimo: int = 5) -> bool:
-    """Afinidad entre stems ya normalizados para el clustering de temas.
-
-    Une variantes morfológicas que el stemmer simple no une
-    ('suicidio' ~ 'suicidología', 'prevenir' ~ 'prevención',
-    'educativo' ~ 'educación') sin necesidad de igualdad exacta.
-    El umbral de prefijo (5) deja fuera pares no relacionados
-    ('nación'/'nacional' comparten 4, 'política'/'policía' comparten 4).
-    """
-    a, b = nz(a), nz(b)
-    if not a or not b:
-        return False
-    if a == b:
-        return True
-    return _prefijo_comun_largo(a, b, minimo)
-
-
-def _emparejar_afines(conj_a: set, conj_b: set, minimo: int = 5) -> list:
-    """Emparejamiento greedy de stems afines entre dos conjuntos.
-
-    Devuelve la lista de pares (x, y); cada stem se usa una sola vez.
-    """
-    rest = set(conj_b)
-    pares = []
-    for x in sorted(conj_a):
-        for y in sorted(rest):
-            if _stems_afines(x, y, minimo):
-                pares.append((x, y))
-                rest.discard(y)
-                break
-    return pares
-
-
 def _tema_relevante_para_miembro(tema: str, sub_tema: str, evidencia: str = '') -> bool:
-    """Como `_tema_es_relevante` pero con afinidad morfológica relajada.
+    """El tema describe a ESTA noticia (no al agregado de la familia).
 
-    Evita fragmentar familias legítimas ('suicidio'/'suicidología') sin dejar
-    pasar agrupamientos forzados: el tema debe tocar el léxico de ESTA noticia,
-    no el del agregado de la familia.
+    Comparación exacta sobre tokens canonizados y distintivos: evita
+    fragmentar familias legítimas ('suicidio'/'suicidología' canonizan al
+    mismo stem) sin dejar pasar agrupamientos forzados. Un tema basado en
+    un genérico ('prevención') no basta para retener a un miembro.
     """
     if not _tema_distinto_de_subtema(tema, sub_tema):
         return False
-    tema_tokens = {raiz(t) for t in words(tema) if t not in CONECT and len(t) >= 3}
+
+    def toks(texto: str) -> set:
+        return {_EQUIV_STEMS.get(raiz(t), raiz(t))
+                for t in words(texto)
+                if t not in CONECT and len(t) >= 3
+                and t not in GENERICO_NO_UNEN
+                and t not in MODIFICADOR_GENERICO_NO_UNE}
+
+    tema_tokens = toks(tema)
     if not tema_tokens:
         return False
-    sub_tokens = {raiz(t) for t in words(sub_tema) if t not in CONECT and len(t) >= 3}
-    evi_tokens = {raiz(t) for t in words(evidencia) if t not in CONECT and len(t) >= 3}
-
-    def hay_afines(src):
-        return any(_tokens_afines_guard(x, y) for x in tema_tokens for y in src)
-
-    if hay_afines(sub_tokens):
+    if tema_tokens & toks(sub_tema):
         return True
-    return hay_afines(evi_tokens)
+    return bool(tema_tokens & toks(evidencia))
 
 
 def cluster_familias_subtema(items: Sequence[dict],
                            excluir_stems: Optional[set] = None) -> List[List[dict]]:
     """Une subtemas afines de ESTE lote (asunto compartido, hechos distintos).
 
-    Tres defensas contra familias espurias:
-    - los stems que aparecen en gran parte del lote (p. ej. "inteligencia
-      artificial" cuando todo el dossier habla de IA) NO cuentan para unir;
-    - los stems de la marca/alias/voceros (`excluir_stems`) dicen QUIÉN, no el
-      asunto, y tampoco unen;
-    - anti-encadenamiento: la unión transitiva A~B~C se divide si A y C no
-      comparten materia distintiva entre sí.
+    Comparación EXACTA sobre stems canonizados: `_EQUIV_STEMS` une
+    'suicidología' con 'suicidio', 'criminalidad' con 'criminología',
+    'educativo' con 'educación', 'juvenil' con 'joven'. La afinidad por
+    prefijo se descartó porque generaba uniones sorpresa.
+
+    Reglas:
+    - A1: mismo hecho (subtemas casi idénticos) o 2+ stems distintivos
+      compartidos en los núcleos.
+    - A2: un único stem compartido en ambos núcleos, solo si es raro en el
+      lote (df_nucleo<=3) y no es demográfico: 'joven' no une suicidio
+      juvenil con desempleo juvenil.
+    - B: 2+ stems distintivos compartidos en la evidencia (titulares y
+      contexto).
+
+    No cuentan para unir: stems omnipresentes en el lote, genéricos
+    ('congreso', 'internacional'...), modificadores genéricos ('prevención',
+    'desafío'...), marca/alias/voceros (dicen QUIÉN, no el asunto) ni
+    atributos demográficos por sí solos.
     """
     items = [it for it in items if it and it.get('sub_tema')]
     if not items:
@@ -1924,12 +1906,14 @@ def cluster_familias_subtema(items: Sequence[dict],
     n = len(items)
     disc_sub, disc_evi = [], []
     df = Counter()
+    df_nucleo = Counter()
     for it in items:
         ds = _contenido_discriminante(it['sub_tema'])
         de = _contenido_discriminante(it.get('evidencia') or it['sub_tema'])
         disc_sub.append(ds)
         disc_evi.append(de)
         df.update(ds | de)
+        df_nucleo.update(ds)
     # Un stem que aparece en muchos items del lote no distingue asuntos
     # (en un dossier de IA, "inteligencia artificial" no une nada).
     limite_df = max(3, int(n * 0.15))
@@ -1941,6 +1925,22 @@ def cluster_familias_subtema(items: Sequence[dict],
                 and t not in MODIFICADOR_GENERICO_NO_UNE
                 and t not in excluir_stems}
 
+    def misma_familia(i: int, j: int) -> bool:
+        a, b = items[i]['sub_tema'], items[j]['sub_tema']
+        if _subtemas_mismo_hecho(a, b):
+            return True
+        comunes = dist(disc_sub[i]) & dist(disc_sub[j])
+        # Los demográficos no unen por sí solos (pero sí acompañan).
+        comunes = {t for t in comunes if t not in ATRIBUTO_DEMOGRAFICO}
+        if len(comunes) >= 2:
+            return True
+        if len(comunes) == 1:
+            return df_nucleo[next(iter(comunes))] <= 3
+        return False
+
+    def evidencia_comun(i: int, j: int) -> bool:
+        return len(dist(disc_evi[i]) & dist(disc_evi[j])) >= 2
+
     par = list(range(n))
 
     def find(x):
@@ -1949,84 +1949,17 @@ def cluster_familias_subtema(items: Sequence[dict],
             x = par[x]
         return x
 
-    def uni(a, b):
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            par[max(ra, rb)] = min(ra, rb)
-
-    def misma_familia(i: int, j: int) -> bool:
-        """Regla A: los subtemas comparten el núcleo del asunto (2+ stems afines).
-
-        La afinidad es morfológica, no igualdad exacta: 'suicidología' une
-        con 'suicidio' y 'criminalidad' con 'criminología'.
-        """
-        a, b = items[i]['sub_tema'], items[j]['sub_tema']
-        if _subtemas_mismo_hecho(a, b):
-            return True
-        ca, cb = dist(disc_sub[i]), dist(disc_sub[j])
-        return len(_emparejar_afines(ca, cb)) >= 2
-
-    def _toca_nucleo(par, ni: set, nj: set) -> bool:
-        x, y = par
-        return (any(_stems_afines(x, t) for t in ni)
-                or any(_stems_afines(y, t) for t in nj))
-
-    def evidencia_comun(i: int, j: int) -> bool:
-        """Regla B: los titulares comparten 2+ stems afines y el puente toca el
-        núcleo de al menos un subtema... o confirmación cruzada: 1 par afín en
-        el núcleo de los subtemas + 1 par afín en la evidencia que toca un
-        núcleo.
-
-        Sin la condición del núcleo, una mención al pasar ("inteligencia
-        artificial" en una nota de PISA) uniría familias de asuntos distintos.
-        """
-        ni, nj = dist(disc_sub[i]), dist(disc_sub[j])
-        pares_evi = _emparejar_afines(dist(disc_evi[i]), dist(disc_evi[j]))
-        # El puente debe tocar el núcleo de al menos un subtema: sin esa
-        # condición, una mención al pasar ("inteligencia artificial" en una
-        # nota de PISA) uniría familias de asuntos distintos.
-        if len(pares_evi) >= 2 and any(_toca_nucleo(p, ni, nj)
-                                       for p in pares_evi):
-            return True
-        # Confirmación cruzada: 1 par afín en el núcleo + 1 en la evidencia.
-        # El par del núcleo debe ser temático (no un atributo demográfico):
-        # "joven" no une desempleo juvenil con suicidio juvenil.
-        pares_nucleo = [p for p in _emparejar_afines(ni, nj)
-                        if not ({p[0], p[1]} & ATRIBUTO_DEMOGRAFICO)]
-        return (len(pares_nucleo) >= 1
-                and any(_toca_nucleo(p, ni, nj) for p in pares_evi))
-
     for i in range(n):
         for j in range(i + 1, n):
             if misma_familia(i, j) or evidencia_comun(i, j):
-                uni(i, j)
+                ra, rb = find(i), find(j)
+                if ra != rb:
+                    par[max(ra, rb)] = min(ra, rb)
 
-    # Anti-encadenamiento: dentro de cada bucket, conserva solo componentes
-    # conexas bajo las reglas estrictas (subtema o evidencia distintiva).
     buckets = defaultdict(list)
     for i in range(n):
         buckets[find(i)].append(i)
-
-    def componentes(idxs: List[int]) -> List[List[int]]:
-        vistos, comps = set(), []
-        for ini in idxs:
-            if ini in vistos:
-                continue
-            comp, pila = [], [ini]
-            vistos.add(ini)
-            while pila:
-                x = pila.pop()
-                comp.append(x)
-                for y in idxs:
-                    if y not in vistos and (misma_familia(x, y) or evidencia_comun(x, y)):
-                        vistos.add(y)
-                        pila.append(y)
-            comps.append(comp)
-        return comps
-
-    return [[items[k] for k in comp]
-            for idxs in buckets.values()
-            for comp in componentes(idxs)]
+    return [[items[k] for k in idxs] for idxs in buckets.values()]
 
 
 def _sin_articulo_inicial(frase: str) -> str:
@@ -2927,40 +2860,20 @@ def asignar_temas(cfg: dict, grupos: List[dict], etiquetas: Dict[int, dict], tax
         # Rechazo del gate ≠ vacío: nunca se descarta dejando la etiqueta en blanco.
         nombre = _asegurar_tema_texto(
             nombre, fam['subtemas'], fam['titulos'], fam['contextos'])
-        # Sin agrupamiento forzado, sin fragmentación ciega: el tema de la
-        # familia se asigna por miembro SOLO si la mayoría de la familia lo
-        # respalda léxicamente. Si el nombre describe a la minoría, el guard
-        # léxico probablemente se equivoca (el LLM nombró por semántica) y se
-        # conserva el nombre para toda la familia: noticias similares ⇒ un
-        # solo tema. Si describe a la mayoría, el miembro ajeno se separa con
-        # tema propio (caso Gutiérrez: 3/4 respaldan 'Prevención del
-        # suicidio', el 4º se nombra aparte).
-        if len(fam['gids']) > 1:
-            pasan = []
-            for gid in fam['gids']:
-                e = etiquetas.get(gid) or {}
-                g = grupo_por_id.get(gid) or {}
-                s = e.get('sub_tema') or ''
-                ev = ' '.join([s, g.get('titulo') or '', g.get('contexto') or '',
-                               g.get('texto') or ''])
-                if _tema_relevante_para_miembro(nombre, s, ev):
-                    pasan.append(gid)
-            if len(pasan) * 2 < len(fam['gids']):
-                for gid in fam['gids']:
-                    temas[gid] = nombre
-                    origen[gid] = 'familia:%d' % fam['id']
-                continue
-            _omitir = set(pasan)
-        else:
-            _omitir = set(fam['gids'])
+        # Sin agrupamiento forzado: el tema de la familia se asigna a cada
+        # miembro solo si describe SU noticia (verificado contra su subtema
+        # y su evidencia). El miembro ajeno se nombra aparte con tema
+        # propio: el tema debe corresponder con el subtema y la noticia.
         for gid in fam['gids']:
-            if gid in _omitir:
-                temas[gid] = nombre
-                origen[gid] = 'familia:%d' % fam['id']
-                continue
             e = etiquetas.get(gid) or {}
             s = e.get('sub_tema') or ''
             g = grupo_por_id.get(gid) or {}
+            ev = ' '.join([s, g.get('titulo') or '', g.get('contexto') or '',
+                           g.get('texto') or ''])
+            if _tema_relevante_para_miembro(nombre, s, ev):
+                temas[gid] = nombre
+                origen[gid] = 'familia:%d' % fam['id']
+                continue
             sueltos.append({
                 'id': 900000 + len(sueltos),
                 'gid': gid,

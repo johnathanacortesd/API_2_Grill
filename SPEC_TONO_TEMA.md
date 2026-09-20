@@ -206,22 +206,28 @@ El análisis se adapta por cliente sin tocar código, mediante `perfil_cliente.p
   insignia IA, enlaces); sin degradados, glows ni animaciones decorativas. Vista
   previa estática en `tema_muse_preview.html`.
 - Sin agrupamiento forzado (`asignar_temas`): el tema de la familia se asigna por
-  miembro, pero solo cuando la mayoría de la familia lo respalda léxicamente
-  (verificado con `_tema_relevante_para_miembro`, que acepta variantes
-  morfológicas como suicidio/suicidología). Si el nombre describe a la minoría,
-  se conserva para toda la familia — el LLM nombró por semántica y el guard
-  léxico probablemente se equivoca; noticias similares ⇒ un solo tema. Si
-  describe a la mayoría, el miembro ajeno se nombra como singleton con tema
-  propio desde su subtema/titular/contexto (origen `tema_propio_sin_agrupar`).
-  Evita casos como "Prevención del suicidio" en una noticia de "Ascenso político
-  de Gutiérrez" sin fragmentar familias legítimas.
-- Afinidad morfológica en clustering (`_stems_afines`, Regla A/B en
-  `cluster_familias_subtema`): variantes como suicidio/suicidología,
-  criminalidad/criminología o educativo/educación cuentan como evidencia de
-  unión cuando hay respaldo de ≥2 stems afines o respaldo afín + toque
-  topónimo/temporal, sin relajar el puente simple (que sigue exigiendo 2 stems
-  exactos). Corrige el caso del dossier donde "Congreso iberoamericano de
-  suicidología" quedaba fuera de "Prevención del suicidio".
+  miembro con `_tema_relevante_para_miembro` (comparación exacta sobre tokens
+  canonizados y distintivos: 'suicidología' canoniza a 'suicidio'). El miembro
+  cuyo subtema/evidencia no toca el léxico distintivo del tema se nombra como
+  singleton con tema propio desde su subtema/titular/contexto (origen
+  `tema_propio_sin_agrupar`). Nunca se conserva el tema familiar "porque la
+  mayoría manda": cada noticia recibe el tema que la describe. Evita casos
+  como "Prevención del suicidio" en "Ascenso político de Gutiérrez" o en las
+  noticias del Foro de periodismo científico.
+- Clustering exacto sobre stems canonizados (v4.6, `cluster_familias_subtema`):
+  `_EQUIV_STEMS` une familias morfológicas ('suicidología'→'suicidio',
+  'criminalidad'/'criminología'→'crimen', 'educativo'→'educación',
+  'juvenil'/'juventud'→'joven') ANTES de comparar; la unión exige igualdad
+  exacta. Regla A1: mismo hecho o 2+ stems distintivos en los núcleos; A2: un
+  solo stem en ambos núcleos solo si es raro en el lote (df_nucleo<=3) y no
+  demográfico ('joven' no une suicidio juvenil con desempleo juvenil); B: 2+
+  stems distintivos en la evidencia (subtema + títulos). La afinidad por
+  prefijo se eliminó: generaba uniones sorpresa ('empleo'~'desempleo',
+  'medica'~'medicina', 'periodistico'~'periodismo') que encadenaban asuntos
+  distintos en una sola familia gigante. Corrige el caso del dossier donde
+  "Congreso iberoamericano de suicidología" quedaba fuera de "Prevención del
+  suicidio" y el caso grave donde tres noticias del Foro de periodismo
+  científico heredaban el tema "Prevención del suicidio".
 - Stems de entidad excluidos del clustering (`_stems_entidad`): marca, alias y
   voceros no unen familias por sí solos (evita unir asuntos distintos solo
   porque todos mencionan la marca).
@@ -255,10 +261,11 @@ el titular ni quedan vagos, guarda positiva para vocero citado como fuente exper
 unificación de tono por hecho. `tests/test_tema_sin_agrupamiento_forzado.py` cubre que un
 miembro ajeno no hereda el tema de la familia (caso "Prevención del suicidio" en
 "Ascenso político de Gutiérrez") y que las familias legítimas no se fragmentan.
-`tests/test_tema_agrupacion_calidad.py` (v4.5) cubre con casos reales del dossier:
-agrupación con afinidad morfológica (suicidio/suicidología, criminalidad/criminología,
-educativo/educación), anti-agrupación (prevención/desafío genéricos, joven demográfico,
+`tests/test_tema_agrupacion_calidad.py` (v4.5/v4.6) cubre con casos reales del dossier:
+canonización morfológica (suicidio/suicidología, criminalidad/criminología,
+educativo/educación se unen por igualdad exacta tras canonizar), anti-agrupación (prevención/desafío genéricos, joven demográfico,
 marca no une familias, PISA no se mezcla con criminología),
-`fusionar_temas_casi_identicos` (fusiona casi-idénticos, no fusiona distintos) y la
-regla de mayoría en `asignar_temas` (minoría sin respaldo conserva el tema; mayoría
-respaldada separa al ajeno, caso Gutiérrez). No hay llamadas a API.
+`fusionar_temas_casi_identicos` (fusiona casi-idénticos, no fusiona distintos) y el
+guard por miembro en `asignar_temas` (cada noticia recibe el tema que la describe;
+el miembro ajeno se separa con tema propio — casos Gutiérrez y Foro de periodismo
+científico — y las familias legítimas no se fragmentan). No hay llamadas a API.
