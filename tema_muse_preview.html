@@ -3,101 +3,105 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Grill-API v4.3 · Tema profesional claro (vista previa)</title>
+<title>Vista previa · Edición Blade Runner v4.4</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 :root{
-    --bg:#f4f4f2;--s1:#ffffff;--s2:#f8f8f6;--s3:#e9e7e2;
-    --border:#e3e1da;--border2:#d3d0c6;
-    --text:#1b1a17;--text2:#44403a;--text3:#78716b;--text4:#a8a29a;
-    --accent:#1c1917;--accent2:#44403c;
-    --info:#1d4ed8;--info-bg:#eff4ff;--info-bdr:#c9d8fa;
-    --green:#15803d;--amber:#b45309;--blue:#1d4ed8;
-    --r:6px;--r2:8px;--r3:12px;
+    color-scheme:dark;
+    --bg:#060608;--s1:#0d0d12;--s2:#121219;--s3:#1a1a24;
+    --border:#20202c;--border2:#2e2e3d;
+    --text:#ece9e1;--text2:#a9a9b6;--text3:#71717e;--text4:#4c4c59;
+    --neon:#ffb224;--neon-line:rgba(255,178,36,0.55);
+    --cyan:#3fd2e8;--green:#3ddc97;
+    --glow:0 0 14px rgba(255,178,36,0.35);
+    --r2:8px;--r3:12px;
 }
-*{box-sizing:border-box}
-body{background:var(--bg);color:var(--text);font-family:'Inter',-apple-system,'Segoe UI',sans-serif;font-size:14px;margin:0;padding:28px;-webkit-font-smoothing:antialiased}
-.wrap{max-width:1100px;margin:0 auto}
-.app-header{background:var(--s1);border:1px solid var(--border);border-radius:var(--r3);padding:1rem 1.4rem;margin-bottom:1.1rem;display:flex;align-items:center;gap:0.9rem;box-shadow:0 1px 2px rgba(16,24,40,0.06)}
-.app-header-icon{width:38px;height:38px;background:var(--accent);border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:1.1rem;color:#fff}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+    background:
+        radial-gradient(1000px 340px at 50% -90px, rgba(255,178,36,0.075), transparent 70%),
+        radial-gradient(700px 260px at 85% 110%, rgba(63,210,232,0.045), transparent 70%),
+        var(--bg);
+    color:var(--text);font-family:'Inter',sans-serif;font-size:14px;min-height:100vh;
+    padding:1.25rem;display:flex;justify-content:center;
+}
+.wrap{width:100%;max-width:1100px}
+.app-header{background:linear-gradient(180deg,#101016,#0c0c11);border:1px solid var(--border);border-radius:var(--r3);padding:1rem 1.4rem;margin-bottom:1.1rem;display:flex;align-items:center;gap:0.9rem;position:relative;overflow:hidden;box-shadow:0 6px 20px rgba(0,0,0,0.6);}
+.app-header::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,var(--neon-line),transparent);}
+.app-header-icon{width:38px;height:38px;background:#0a0a0d;border:1px solid var(--neon-line);border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:1.1rem;color:var(--neon);box-shadow:var(--glow);}
 .app-header-title{font-size:1.2rem;font-weight:700;letter-spacing:-0.015em}
-.app-header-version{font-family:'Roboto Mono',monospace;font-size:0.66rem;color:var(--text3);letter-spacing:0.02em;margin-top:0.15rem}
-.badge{background:var(--s2);border:1px solid var(--border);color:var(--text2);font-family:'Roboto Mono',monospace;font-size:0.62rem;padding:0.28rem 0.75rem;border-radius:6px;letter-spacing:0.04em;text-transform:uppercase;white-space:nowrap}
-.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:0.75rem;margin:0.9rem 0}
-.card{background:var(--s1);border:1px solid var(--border);border-radius:var(--r2);padding:0.85rem 0.6rem;text-align:center;box-shadow:0 1px 2px rgba(16,24,40,0.06);position:relative;overflow:hidden}
-.card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px}
-.c1::before{background:#78716b}.c2::before{background:var(--green)}.c3::before{background:var(--amber)}.c4::before{background:var(--blue)}
-.val{font-size:1.55rem;font-weight:700;letter-spacing:-0.02em}
-.lbl{font-family:'Roboto Mono',monospace;font-size:0.62rem;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em}
-.form{background:var(--s1);border:1px solid var(--border);border-radius:var(--r3);padding:1.25rem 1.5rem;margin-top:1rem;box-shadow:0 1px 2px rgba(16,24,40,0.06)}
-.sec{font-size:0.72rem;font-weight:700;color:var(--text2);letter-spacing:0.09em;text-transform:uppercase;padding-bottom:0.35rem;border-bottom:1px solid var(--s3);margin:0.9rem 0 0.6rem;display:flex;align-items:center;gap:0.55rem}
-.sec::before{content:'';width:3px;height:13px;background:var(--accent);border-radius:1px}
-input{width:100%;background:#fff;border:1px solid var(--border2);color:var(--text);border-radius:var(--r);font-size:0.9rem;padding:0.5rem 0.75rem;margin:0.3rem 0;font-family:'Inter',sans-serif}
-input:focus{outline:none;border-color:var(--info);box-shadow:0 0 0 3px rgba(29,78,216,0.12)}
-.btn{display:inline-block;background:var(--accent);color:#fff;border:none;border-radius:8px;font-weight:600;font-size:0.9rem;padding:0.55rem 1.4rem;margin-top:0.7rem;box-shadow:0 1px 2px rgba(16,24,40,0.06)}
-.btn2{display:inline-block;background:#fff;border:1px solid var(--border2);color:var(--text);border-radius:8px;font-size:0.88rem;padding:0.5rem 1.2rem;margin-top:0.7rem;margin-left:0.5rem}
-.ok{background:#f0f9f2;border:1px solid #bfe3c9;border-left:3px solid var(--green);border-radius:var(--r2);padding:0.8rem 1.1rem;margin-top:1rem;display:flex;gap:0.8rem;align-items:center;color:var(--text2)}
-.panel{background:var(--s1);border:1px solid var(--border);border-radius:var(--r3);padding:1.2rem 1.4rem;margin:1.5rem auto;max-width:720px;box-shadow:0 1px 3px rgba(16,24,40,0.10)}
-.panel h3{font-size:1.05rem;font-weight:700;margin:0 0 0.2rem;letter-spacing:-0.01em;display:flex;align-items:center;gap:0.6rem}
-.dot{width:10px;height:10px;border-radius:50%;background:var(--info);display:inline-block}
-.sub{font-size:0.78rem;color:var(--text3)}
-.bar{height:6px;background:var(--s3);border-radius:4px;margin:0.8rem 0;overflow:hidden}
-.bar div{height:100%;width:42%;background:var(--info);border-radius:4px}
-.steps{font-size:0.82rem;color:var(--text3);line-height:1.9}
-.note{color:var(--text3);font-size:0.8rem;margin-top:1.1rem;line-height:1.5}
-h2{font-size:1.1rem;font-weight:700;margin:1.4rem 0 0.2rem;letter-spacing:-0.01em}
-.palette{display:flex;gap:0.5rem;margin-top:0.8rem;flex-wrap:wrap}
-.sw{flex:1;min-width:90px;border-radius:var(--r2);border:1px solid var(--border);overflow:hidden;background:#fff}
-.sw div:first-child{height:44px}
-.sw div:last-child{font-family:'Roboto Mono',monospace;font-size:0.6rem;padding:0.35rem 0.5rem;color:var(--text2)}
+.app-header-version{font-family:'Roboto Mono',monospace;font-size:0.64rem;color:var(--text3);letter-spacing:0.14em;margin-top:0.2rem;text-transform:uppercase}
+.app-header-badge{margin-left:auto;background:rgba(63,210,232,0.10);border:1px solid rgba(63,210,232,0.35);color:var(--cyan);font-family:'Roboto Mono',monospace;font-size:0.62rem;padding:0.28rem 0.75rem;border-radius:6px;letter-spacing:0.12em;text-transform:uppercase;white-space:nowrap;}
+.card{background:var(--s1);border:1px solid var(--border);border-radius:var(--r3);padding:1.25rem 1.5rem;margin-bottom:1rem;box-shadow:0 6px 20px rgba(0,0,0,0.6);}
+.sec-label{font-family:'Roboto Mono',monospace;font-size:0.68rem;color:var(--text2);letter-spacing:0.16em;text-transform:uppercase;padding-bottom:0.35rem;border-bottom:1px solid var(--border);margin:0.2rem 0 0.9rem;display:flex;align-items:center;gap:0.55rem;}
+.sec-label::before{content:'';display:inline-block;width:3px;height:13px;background:var(--neon);border-radius:1px;box-shadow:var(--glow)}
+.fake-input{background:#0a0a0e;border:1px solid var(--border2);border-radius:6px;padding:0.55rem 0.75rem;color:var(--text4);font-size:0.85rem;margin-bottom:0.6rem;}
+.btn{background:var(--neon);border:1px solid var(--neon);color:#171106;font-weight:700;font-size:0.9rem;padding:0.6rem 1.4rem;border-radius:8px;box-shadow:var(--glow);display:inline-block;margin-top:0.4rem;letter-spacing:0.02em}
+.live-panel{background:linear-gradient(180deg,#101016,#0b0b10);border:1px solid var(--border2);border-radius:var(--r3);padding:1.2rem 1.4rem;margin:1.5rem auto;max-width:720px;position:relative;overflow:hidden;box-shadow:0 6px 20px rgba(0,0,0,0.6);}
+.live-panel::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,var(--neon-line),transparent);}
+.live-panel::after{content:'';position:absolute;left:0;right:0;height:46px;top:-60px;background:linear-gradient(180deg,transparent,rgba(255,178,36,0.06),transparent);animation:scanMove 3.2s ease-in-out infinite;pointer-events:none;}
+@keyframes scanMove{0%{top:-60px}55%{top:110%}100%{top:110%}}
+.live-head{display:flex;align-items:center;gap:0.75rem;margin-bottom:0.8rem;}
+.live-pulse{width:10px;height:10px;border-radius:50%;background:var(--neon);box-shadow:var(--glow);animation:livePulse 1.6s ease-out infinite;}
+@keyframes livePulse{0%{box-shadow:0 0 0 0 rgba(255,178,36,0.45)}70%{box-shadow:0 0 0 10px rgba(255,178,36,0)}100%{box-shadow:0 0 0 0 rgba(255,178,36,0)}}
+.live-title{font-family:'Roboto Mono',monospace;font-size:0.95rem;letter-spacing:0.18em;text-transform:uppercase}
+.live-sub{font-size:0.78rem;color:var(--text3);margin-top:0.25rem}
+.live-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:0.6rem;margin:0.5rem 0 0.8rem}
+.live-metric{background:var(--s2);border:1px solid var(--border);border-radius:6px;padding:0.6rem 0.5rem;text-align:center}
+.live-metric-val{font-size:1.15rem;font-weight:700;color:var(--neon);}
+.live-metric-lbl{font-family:'Roboto Mono',monospace;font-size:0.56rem;color:var(--text3);text-transform:uppercase;letter-spacing:0.12em;margin-top:0.2rem}
+.bar{height:6px;border-radius:4px;background:#1c1c26;margin:0.4rem 0 0.9rem;overflow:hidden}
+.bar>div{height:100%;width:64%;background:linear-gradient(90deg,#c77f0a,var(--neon));border-radius:4px;box-shadow:var(--glow)}
+.step{display:flex;align-items:center;gap:0.55rem;font-size:0.82rem;color:var(--text3);padding:0.22rem 0.1rem}
+.step .dot{width:18px;height:18px;border-radius:50%;border:1.5px solid var(--border2);display:flex;align-items:center;justify-content:center;font-size:0.62rem;background:var(--s1);}
+.step.done{color:var(--text2)}.step.done .dot{background:rgba(61,220,151,0.18);border-color:var(--green);color:var(--green)}
+.step.active{color:var(--text);font-weight:600}.step.active .dot{border-color:var(--neon);color:var(--neon);box-shadow:var(--glow)}
+.footer{font-family:'Roboto Mono',monospace;font-size:0.6rem;color:var(--text4);text-align:center;padding:0.9rem 0;letter-spacing:0.14em;text-transform:uppercase;border-top:1px solid var(--border);margin-top:1.2rem;}
+.note{font-family:'Roboto Mono',monospace;font-size:0.62rem;color:var(--text4);letter-spacing:0.1em;text-transform:uppercase;margin-bottom:0.8rem}
 </style>
 </head>
 <body>
 <div class="wrap">
+    <div class="note">Vista previa estática · v4.4 · edición Blade Runner (oscuro forzado)</div>
     <div class="app-header">
         <div class="app-header-icon">◈</div>
-        <div style="flex:1">
+        <div>
             <div class="app-header-title">Limpieza y Análisis de Noticias</div>
-            <div class="app-header-version">v4.3 · Tono/Tema/Subtema por reglas + IA · tema profesional claro · Realizado por Johnathan Cortés</div>
+            <div class="app-header-version">v4.4 · Tono/Tema/Subtema por reglas + IA · edición Blade Runner · Realizado por Johnathan Cortés</div>
         </div>
-        <div class="badge">Estructurador + IA</div>
+        <div class="app-header-badge">Estructurador + IA</div>
     </div>
 
-    <div class="metrics">
-        <div class="card c1"><div class="val">57</div><div class="lbl">Total registros</div></div>
-        <div class="card c2"><div class="val" style="color:var(--green)">41</div><div class="lbl">Únicos</div></div>
-        <div class="card c3"><div class="val" style="color:var(--amber)">16</div><div class="lbl">Duplicados</div></div>
-        <div class="card c4"><div class="val" style="color:var(--blue)">12.3s</div><div class="lbl">Tiempo</div></div>
+    <div class="card">
+        <div class="sec-label">1. Sube el archivo de entrada</div>
+        <div class="fake-input">dossier_noticias.xlsx · 128 KB</div>
+        <div class="sec-label" style="margin-top:1rem">2. Configuración de análisis IA (Tono, Tema, Subtema)</div>
+        <div class="fake-input">Marca: Universidad Simón Bolívar</div>
+        <div class="fake-input">Alias: unisimon, unisimón…</div>
+        <div class="btn">INICIAR LIMPIEZA Y ANÁLISIS</div>
     </div>
 
-    <div class="form">
-        <div class="sec">1. Archivo de entrada</div>
-        <input value="dossier_universidad_simon_bolivar.xlsx" readonly>
-        <div class="sec">2. Configuración de análisis IA</div>
-        <input value="Universidad Simón Bolívar" readonly>
-        <span class="btn">Iniciar limpieza y análisis</span>
-        <span class="btn2">Guardar perfil</span>
-    </div>
-
-    <h2>Durante el procesamiento: solo la tarjeta</h2>
-    <div class="panel">
-        <h3><span class="dot"></span>Procesando dossier de noticias</h3>
-        <div class="sub">El proceso sigue activo · dossier_universidad_simon_bolivar.xlsx. No cierres esta pestaña.</div>
+    <div class="live-panel">
+        <div class="live-head">
+            <div class="live-pulse"></div>
+            <div>
+                <div class="live-title">Procesando dossier de noticias</div>
+                <div class="live-sub">El proceso sigue activo · dossier_noticias.xlsx. No cierres esta pestaña.</div>
+            </div>
+        </div>
+        <div class="live-metrics">
+            <div class="live-metric"><div class="live-metric-val">64%</div><div class="live-metric-lbl">Avance</div></div>
+            <div class="live-metric"><div class="live-metric-val">01:12</div><div class="live-metric-lbl">Tiempo</div></div>
+            <div class="live-metric"><div class="live-metric-val">en curso</div><div class="live-metric-lbl">Estado</div></div>
+        </div>
         <div class="bar"><div></div></div>
-        <div class="steps">✓ Carga del dossier<br>✓ Deduplicación<br>● Análisis de tono/tema con IA<br>○ Estructuración del Excel</div>
+        <div class="step done"><span class="dot">✓</span>Deduplicación de noticias</div>
+        <div class="step done"><span class="dot">✓</span>Limpieza y estructuración</div>
+        <div class="step active"><span class="dot">●</span>Análisis de tono por IA</div>
+        <div class="step"><span class="dot"></span>Agrupación de temas</div>
     </div>
 
-    <div class="ok">✓ <span><b>Proceso completado.</b>&nbsp; El archivo estructurado y analizado con IA está listo para descargar.</span></div>
-
-    <h2>Paleta profesional</h2>
-    <div class="palette">
-        <div class="sw"><div style="background:#1c1917"></div><div>#1c1917 primario</div></div>
-        <div class="sw"><div style="background:#1d4ed8"></div><div>#1d4ed8 info/progreso</div></div>
-        <div class="sw"><div style="background:#f4f4f2;border-bottom:1px solid #e3e1da"></div><div>#f4f4f2 fondo</div></div>
-        <div class="sw"><div style="background:#ffffff;border-bottom:1px solid #e3e1da"></div><div>#ffffff tarjeta</div></div>
-        <div class="sw"><div style="background:#15803d"></div><div>#15803d éxito</div></div>
-    </div>
-    <p class="note">Tema claro profesional v4.3: neutros sobrios, sin degradados ni glows, radios moderados, tipografía Inter. Al darle a analizar, el encabezado y el formulario se ocultan y solo queda la tarjeta de procesamiento.</p>
+    <div class="footer">Estructuración y Limpieza · Johnathan Cortés ©</div>
 </div>
 </body>
 </html>

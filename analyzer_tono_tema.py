@@ -1795,6 +1795,49 @@ def _tema_es_relevante(tema: str, sub_tema: str, contexto: str = '') -> bool:
     return hay_afines(contexto_tokens)
 
 
+def _prefijo_comun_largo(a: str, b: str, minimo: int = 6) -> bool:
+    """Afinidad morfológica relajada: 'suicidio' ~ 'suicidología'.
+
+    Solo se usa en el guard anti-agrupamiento-forzado, donde el criterio
+    léxico estricto fragmentaría familias legítimas con variantes
+    morfológicas del mismo asunto.
+    """
+    a, b = nz(a), nz(b)
+    if len(a) < minimo or len(b) < minimo:
+        return False
+    i = 0
+    while i < len(a) and i < len(b) and a[i] == b[i]:
+        i += 1
+    return i >= minimo
+
+
+def _tokens_afines_guard(a: str, b: str) -> bool:
+    return _tokens_relacionados(a, b) or _prefijo_comun_largo(raiz(a), raiz(b))
+
+
+def _tema_relevante_para_miembro(tema: str, sub_tema: str, evidencia: str = '') -> bool:
+    """Como `_tema_es_relevante` pero con afinidad morfológica relajada.
+
+    Evita fragmentar familias legítimas ('suicidio'/'suicidología') sin dejar
+    pasar agrupamientos forzados: el tema debe tocar el léxico de ESTA noticia,
+    no el del agregado de la familia.
+    """
+    if not _tema_distinto_de_subtema(tema, sub_tema):
+        return False
+    tema_tokens = {raiz(t) for t in words(tema) if t not in CONECT and len(t) >= 3}
+    if not tema_tokens:
+        return False
+    sub_tokens = {raiz(t) for t in words(sub_tema) if t not in CONECT and len(t) >= 3}
+    evi_tokens = {raiz(t) for t in words(evidencia) if t not in CONECT and len(t) >= 3}
+
+    def hay_afines(src):
+        return any(_tokens_afines_guard(x, y) for x in tema_tokens for y in src)
+
+    if hay_afines(sub_tokens):
+        return True
+    return hay_afines(evi_tokens)
+
+
 def cluster_familias_subtema(items: Sequence[dict]) -> List[List[dict]]:
     """Une subtemas afines de ESTE lote (asunto compartido, hechos distintos).
 
@@ -2715,6 +2758,11 @@ def asignar_temas(cfg: dict, grupos: List[dict], etiquetas: Dict[int, dict], tax
             'contextos': contextos, 'gids': gids,
         })
     nombres = nombrar_familias_tema(cfg or {}, familias, candidatos=candidatos)
+    grupo_por_id = {g['grupo']: g for g in grupos}
+    # Sin agrupamiento forzado: el tema de la familia solo se asigna a los
+    # miembros que sí describe; los demás se nombran como singletons, con
+    # tema propio generado desde SU subtema/titular/contexto.
+    sueltos: List[dict] = []
     for fam in familias:
         nombre = nombres.get(fam['id']) or generalizar_tema_desde_subtemas(
             fam['subtemas'], fam['titulos'], fam['contextos'])
@@ -2725,8 +2773,39 @@ def asignar_temas(cfg: dict, grupos: List[dict], etiquetas: Dict[int, dict], tax
         nombre = _asegurar_tema_texto(
             nombre, fam['subtemas'], fam['titulos'], fam['contextos'])
         for gid in fam['gids']:
-            temas[gid] = nombre
-            origen[gid] = 'familia:%d' % fam['id']
+            e = etiquetas.get(gid) or {}
+            s = e.get('sub_tema') or ''
+            g = grupo_por_id.get(gid) or {}
+            evidencia = ' '.join([
+                s, g.get('titulo') or '', g.get('contexto') or '',
+                g.get('texto') or ''])
+            if _tema_relevante_para_miembro(nombre, s, evidencia):
+                temas[gid] = nombre
+                origen[gid] = 'familia:%d' % fam['id']
+            else:
+                sueltos.append({
+                    'id': 900000 + len(sueltos),
+                    'gid': gid,
+                    'subtemas': [s],
+                    'titulos': [g.get('titulo') or ''],
+                    'contextos': [g.get('contexto') or g.get('texto') or ''],
+                })
+    if sueltos:
+        # Una sola pasada (un solo llamado LLM si hay api_key) para todos.
+        nombres_sueltos = nombrar_familias_tema(cfg or {}, sueltos,
+                                                candidatos=candidatos)
+        for fam_uno in sueltos:
+            gid = fam_uno['gid']
+            tit = fam_uno['titulos']
+            ctx = fam_uno['contextos']
+            sub = fam_uno['subtemas']
+            propio = nombres_sueltos.get(fam_uno['id']) or ''
+            if not propio or not tema_frase_natural(propio, titulos=tit):
+                propio = generalizar_tema_desde_subtemas(sub, tit, ctx)
+            propio = _asegurar_tema_texto(
+                propio if _tema_util(propio) else '', sub, tit, ctx)
+            temas[gid] = propio
+            origen[gid] = 'tema_propio_sin_agrupar'
 
     for gid, e in etiquetas.items():
         t = temas.get(gid)

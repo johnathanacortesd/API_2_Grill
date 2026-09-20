@@ -200,13 +200,23 @@ El análisis se adapta por cliente sin tocar código, mediante `perfil_cliente.p
   clientes consumen la API. Lee `SMTP_HOST/PORT/USER/PASSWORD/FROM` y
   `USAGE_NOTIFY_EMAIL` de los Secrets (fallback a entorno); best-effort, nunca
   interrumpe. Con Gmail, `SMTP_PASSWORD` debe ser una contraseña de aplicación.
-- Tema visual v4.3 (profesional claro): neutros sobrios (`#f4f4f2` fondo, `#ffffff`
-  tarjetas), primario carbón `#1c1917`, azul `#1d4ed8` solo para progreso y estados;
-  sin degradados, glows ni glassmorphism; tipografía Inter. Vista previa estática en
-  `tema_muse_preview.html`.
+- Tema visual v4.4 (edición Blade Runner): oscuro forzado con `color-scheme: dark`
+  (no depende del tema claro/oscuro del sistema del usuario); fondo `#060608` con
+  halo ámbar superior, tarjetas `#0d0d12`, neón ámbar `#ffb224` (botón primario,
+  progreso, estados activos) y cian `#3fd2e8` (insignia IA, enlaces); micro-etiquetas
+  en Roboto Mono con tracking amplio; tarjeta de procesamiento con línea de escaneo
+  animada. Vista previa estática en `tema_muse_preview.html`.
+- Sin agrupamiento forzado (`asignar_temas`): el tema de la familia solo se asigna a
+  los miembros que sí describe (verificado con `_tema_relevante_para_miembro`, que
+  acepta variantes morfológicas como suicidio/suicidología); el miembro ajeno se
+  nombra como singleton con tema propio desde su subtema/titular/contexto
+  (origen `tema_propio_sin_agrupar`). Evita casos como "Prevención del suicidio" en
+  una noticia de "Ascenso político de Gutiérrez".
 - UX de procesamiento: al enviar el formulario se marca `st.session_state["procesando"]`
-  y solo se muestra la tarjeta "Procesando dossier de noticias" (se ocultan encabezado
-  y formulario); al terminar o fallar se restablece con try/finally.
+  y toda la vista (encabezado + configuración + formulario + pie) vive dentro de un
+  contenedor raíz `ui = st.empty()` que queda vacío durante el proceso, de modo que
+  solo se ve la tarjeta "Procesando dossier de noticias"; al terminar o fallar se
+  restablece con try/finally.
 - Variable de entorno opcional `CLIENTES_DIR` para mover la carpeta de perfiles.
 
 ## 12. Estado conocido de las pruebas
@@ -220,4 +230,7 @@ cubre las mejoras de calidad 2026-09-20: clustering con stems distintivos (PISA/
 no se mezcla con criminología; juventud no se mezcla con suicidio), temas que no empiezan
 con preposición y son estrictamente más generales que el subtema, subtemas que no copian
 el titular ni quedan vagos, guarda positiva para vocero citado como fuente experta y
-unificación de tono por hecho. No hay llamadas a API.
+unificación de tono por hecho. `tests/test_tema_sin_agrupamiento_forzado.py` cubre que un
+miembro ajeno no hereda el tema de la familia (caso "Prevención del suicidio" en
+"Ascenso político de Gutiérrez") y que las familias legítimas no se fragmentan.
+No hay llamadas a API.

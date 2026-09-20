@@ -25,30 +25,29 @@ if not logging.getLogger().handlers:
 # ======================================
 # CSS Personalizado · Tema profesional claro
 # ======================================
-THEME_PROFESIONAL = """
+THEME_BLADE_RUNNER = """
 :root,[data-testid="stApp"]{
-    --bg:#f4f4f2;--s1:#ffffff;--s2:#f8f8f6;--s3:#e9e7e2;
-    --border:#e3e1da;--border2:#d3d0c6;--border-focus:#1d4ed8;
-    --text:#1b1a17;--text2:#44403a;--text3:#78716b;--text4:#a8a29a;--text-label:#1b1a17;
-    --accent:#1c1917;--accent2:#44403c;--accent3:#0c0a09;
-    --accent-bg:#f4f4f2;--accent-bg2:#e9e7e2;--accent-bdr:#d3d0c6;
-    --info:#1d4ed8;--info-bg:#eff4ff;--info-bdr:#c9d8fa;
-    --green:#15803d;--green2:#166534;--green-bg:#f0f9f2;--green-bdr:#bfe3c9;
-    --red:#b91c1c;--amber:#b45309;--blue:#1d4ed8;
-    --success-bg:#f0f9f2;
-    --success-title:#166534;
-    --icon-dossier-bg:#f4f4f2;
-    --r:6px;--r2:8px;--r3:12px;--r4:16px;
-    --shadow-sm:0 1px 2px rgba(16,24,40,0.06);
-    --shadow-md:0 1px 3px rgba(16,24,40,0.10);
-    --shadow-lg:0 4px 12px rgba(16,24,40,0.12);
+    color-scheme:dark;
+    --bg:#060608;--s1:#0d0d12;--s2:#121219;--s3:#1a1a24;
+    --border:#20202c;--border2:#2e2e3d;--border-focus:#ffb224;
+    --text:#ece9e1;--text2:#a9a9b6;--text3:#71717e;--text4:#4c4c59;--text-label:#ece9e1;
+    --neon:#ffb224;--neon-soft:rgba(255,178,36,0.13);--neon-line:rgba(255,178,36,0.55);
+    --cyan:#3fd2e8;--cyan-soft:rgba(63,210,232,0.10);
+    --green:#3ddc97;--green-bg:rgba(61,220,151,0.07);--green-bdr:rgba(61,220,151,0.28);
+    --red:#f87171;--amber:#fbbf24;--blue:#3fd2e8;
+    --success-bg:rgba(61,220,151,0.06);
+    --success-title:#3ddc97;
+    --r:6px;--r2:8px;--r3:12px;
+    --shadow-sm:0 1px 2px rgba(0,0,0,0.55);
+    --shadow-md:0 6px 20px rgba(0,0,0,0.6);
+    --glow:0 0 14px rgba(255,178,36,0.35);
     --transition:all 0.15s ease-out;
 }
 """
 
 
 def load_custom_css():
-    theme_vars = THEME_PROFESIONAL
+    theme_vars = THEME_BLADE_RUNNER
     dark_extra = ""
     st.markdown("""
 <style>
@@ -60,97 +59,118 @@ html,body,[data-testid="stApp"]{
     font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
     font-size:14px;-webkit-font-smoothing:antialiased;letter-spacing:0.002em;
 }
-::selection{background:#dbe4f5;}
+[data-testid="stApp"]{
+    background:
+        radial-gradient(1000px 340px at 50% -90px, rgba(255,178,36,0.075), transparent 70%),
+        radial-gradient(700px 260px at 85% 110%, rgba(63,210,232,0.045), transparent 70%),
+        var(--bg)!important;
+}
+::selection{background:rgba(255,178,36,0.28);color:#fff;}
 #MainMenu,footer,header{visibility:hidden}.stDeployButton{display:none}
 .block-container{padding-top:1.25rem!important;padding-bottom:0!important;max-width:1100px!important}
 [data-testid="stAppViewBlockContainer"]{padding-top:1.25rem!important}
-.app-header{background:var(--s1);border:1px solid var(--border);border-radius:var(--r3);padding:1rem 1.4rem;margin-bottom:1.1rem;display:flex;align-items:center;gap:0.9rem;box-shadow:var(--shadow-sm);}
-.app-header-icon{width:38px;height:38px;background:var(--accent);border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:1.1rem;color:#fff;flex-shrink:0;}
+[data-testid="stStatusWidget"]{background:var(--s2)!important;color:var(--text2)!important;border:1px solid var(--border)!important;}
+.app-header{background:linear-gradient(180deg,#101016,#0c0c11);border:1px solid var(--border);border-radius:var(--r3);padding:1rem 1.4rem;margin-bottom:1.1rem;display:flex;align-items:center;gap:0.9rem;box-shadow:var(--shadow-md);position:relative;overflow:hidden;}
+.app-header::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,var(--neon-line),transparent);}
+.app-header-icon{width:38px;height:38px;background:#0a0a0d;border:1px solid var(--neon-line);border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:1.1rem;color:var(--neon);flex-shrink:0;box-shadow:var(--glow);}
 .app-header-text{flex:1}
 .app-header-title{font-family:'Inter',sans-serif;font-size:1.2rem;font-weight:700;color:var(--text);letter-spacing:-0.015em;line-height:1.3}
-.app-header-version{font-family:'Roboto Mono',monospace;font-size:0.66rem;color:var(--text3);letter-spacing:0.02em;margin-top:0.15rem}
-.app-header-badge{background:var(--s2);border:1px solid var(--border);color:var(--text2);font-family:'Roboto Mono',monospace;font-size:0.62rem;font-weight:500;padding:0.28rem 0.75rem;border-radius:6px;letter-spacing:0.04em;text-transform:uppercase;white-space:nowrap;}
+.app-header-version{font-family:'Roboto Mono',monospace;font-size:0.64rem;color:var(--text3);letter-spacing:0.14em;margin-top:0.2rem;text-transform:uppercase}
+.app-header-badge{background:var(--cyan-soft);border:1px solid rgba(63,210,232,0.35);color:var(--cyan);font-family:'Roboto Mono',monospace;font-size:0.62rem;font-weight:500;padding:0.28rem 0.75rem;border-radius:6px;letter-spacing:0.12em;text-transform:uppercase;white-space:nowrap;}
 .metrics-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:0.75rem;margin:0.9rem 0}
 .metric-card{background:var(--s1);border:1px solid var(--border);border-radius:var(--r2);padding:0.85rem 0.6rem;text-align:center;box-shadow:var(--shadow-sm);position:relative;overflow:hidden;}
-.metric-card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px;border-radius:var(--r2) var(--r2) 0 0}
-.metric-card.m-total::before{background:#78716c}
+.metric-card::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;border-radius:var(--r2) var(--r2) 0 0}
+.metric-card.m-total::before{background:#6d6d7a}
 .metric-card.m-unique::before{background:var(--green)}
 .metric-card.m-dup::before{background:var(--amber)}
-.metric-card.m-time::before{background:var(--blue)}
-.metric-val{font-family:'Inter',sans-serif;font-size:1.55rem;font-weight:700;line-height:1;margin-bottom:0.3rem;letter-spacing:-0.02em}
-.metric-lbl{font-family:'Roboto Mono',monospace;font-size:0.62rem;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em;font-weight:500}
-[data-testid="stForm"]{background:var(--s1)!important;border:1px solid var(--border)!important;border-radius:var(--r3)!important;padding:1.25rem 1.5rem!important;box-shadow:var(--shadow-sm)!important;}
-.sec-label{font-family:'Inter',sans-serif;font-size:0.72rem;font-weight:700;color:var(--text2);letter-spacing:0.09em;text-transform:uppercase;padding-bottom:0.35rem;border-bottom:1px solid var(--s3);margin:0.9rem 0 0.6rem;display:flex;align-items:center;gap:0.55rem;}
-.sec-label::before{content:'';display:inline-block;width:3px;height:13px;background:var(--accent);border-radius:1px}
+.metric-card.m-time::before{background:var(--cyan)}
+.metric-val{font-family:'Inter',sans-serif;font-size:1.55rem;font-weight:700;line-height:1;margin-bottom:0.3rem;letter-spacing:-0.02em;color:var(--text)}
+.metric-lbl{font-family:'Roboto Mono',monospace;font-size:0.6rem;color:var(--text3);text-transform:uppercase;letter-spacing:0.12em;font-weight:500}
+[data-testid="stForm"]{background:var(--s1)!important;border:1px solid var(--border)!important;border-radius:var(--r3)!important;padding:1.25rem 1.5rem!important;box-shadow:var(--shadow-md)!important;}
+.sec-label{font-family:'Roboto Mono',monospace;font-size:0.68rem;font-weight:500;color:var(--text2);letter-spacing:0.16em;text-transform:uppercase;padding-bottom:0.35rem;border-bottom:1px solid var(--border);margin:0.9rem 0 0.6rem;display:flex;align-items:center;gap:0.55rem;}
+.sec-label::before{content:'';display:inline-block;width:3px;height:13px;background:var(--neon);border-radius:1px;box-shadow:var(--glow)}
 .upload-zone{display:grid;grid-template-columns:1fr;gap:0.6rem;margin:0.3rem 0}
 .upload-zone-card{background:var(--s2);border:1px dashed var(--border2);border-radius:var(--r2);padding:0.65rem 0.85rem;display:flex;align-items:center;gap:0.65rem;transition:var(--transition);}
-.upload-zone-card:hover{border-color:var(--accent2);background:#fff}
-.upload-zone-icon{width:34px;height:34px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:1rem;flex-shrink:0;background:#fff;border:1px solid var(--border);color:var(--text2)}
+.upload-zone-card:hover{border-color:var(--neon-line);background:#14141b}
+.upload-zone-icon{width:34px;height:34px;border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:1rem;flex-shrink:0;background:var(--s1);border:1px solid var(--border);color:var(--text2)}
 .upload-zone-text{flex:1;min-width:0}
 .upload-zone-title{font-family:'Inter',sans-serif;font-size:0.84rem;font-weight:600;color:var(--text);line-height:1.2}
 .upload-zone-desc{font-size:0.72rem;color:var(--text3);line-height:1.35}
 [data-testid="stFileUploader"]{background:var(--s2)!important;border:1px dashed var(--border2)!important;border-radius:var(--r)!important;padding:0.45rem 0.65rem!important;transition:var(--transition)!important;min-height:auto!important;}
-[data-testid="stFileUploader"]:hover{border-color:var(--accent2)!important;background:#fff!important;}
+[data-testid="stFileUploader"]:hover{border-color:var(--neon-line)!important;background:#14141b!important;}
 [data-testid="stFileUploader"] section{padding:0.2rem!important}
 [data-testid="stFileUploader"] section>div{font-size:0.78rem!important;color:var(--text2)!important}
 [data-testid="stFileUploader"] section small{font-size:0.7rem!important;color:var(--text3)!important}
-[data-testid="stFileUploader"] button{background:#fff!important;border:1px solid var(--border2)!important;color:var(--text)!important;font-weight:500!important;font-size:0.75rem!important;border-radius:6px!important;padding:0.3rem 0.85rem!important;font-family:'Inter',sans-serif!important;transition:var(--transition)!important;}
-[data-testid="stFileUploader"] button:hover{background:var(--accent)!important;color:#fff!important;border-color:var(--accent)!important}
-[data-testid="stTextInput"] input,[data-testid="stNumberInput"] input{background:#fff!important;border:1px solid var(--border2)!important;color:var(--text)!important;border-radius:var(--r)!important;font-family:'Inter',sans-serif!important;font-size:0.9rem!important;padding:0.5rem 0.75rem!important;transition:var(--transition)!important;}
-[data-testid="stTextInput"] input:focus,[data-testid="stNumberInput"] input:focus{border-color:var(--info)!important;box-shadow:0 0 0 3px rgba(29,78,216,0.12)!important;outline:none!important;}
+[data-testid="stFileUploader"] button{background:var(--s1)!important;border:1px solid var(--border2)!important;color:var(--text)!important;font-weight:500!important;font-size:0.75rem!important;border-radius:6px!important;padding:0.3rem 0.85rem!important;font-family:'Inter',sans-serif!important;transition:var(--transition)!important;}
+[data-testid="stFileUploader"] button:hover{background:var(--neon)!important;color:#161006!important;border-color:var(--neon)!important}
+[data-testid="stTextInput"] input,[data-testid="stNumberInput"] input{background:#0a0a0e!important;border:1px solid var(--border2)!important;color:var(--text)!important;border-radius:var(--r)!important;font-family:'Inter',sans-serif!important;font-size:0.9rem!important;padding:0.5rem 0.75rem!important;transition:var(--transition)!important;}
+[data-testid="stTextInput"] input:focus,[data-testid="stNumberInput"] input:focus{border-color:var(--neon)!important;box-shadow:0 0 0 3px rgba(255,178,36,0.15)!important;outline:none!important;}
 label[data-testid="stWidgetLabel"] p{font-family:'Inter',sans-serif!important;color:var(--text-label)!important;font-size:0.82rem!important;font-weight:600!important;margin-bottom:0.15rem!important;}
 [data-testid="stTextInput"] input::placeholder,[data-baseweb="input"]::placeholder{color:var(--text4)!important;opacity:1!important;}
-.stButton>button,[data-testid="stDownloadButton"]>button{background:#fff!important;border:1px solid var(--border2)!important;color:var(--text)!important;border-radius:8px!important;font-family:'Inter',sans-serif!important;font-weight:500!important;font-size:0.88rem!important;transition:var(--transition)!important;padding:0.5rem 1.2rem!important;box-shadow:var(--shadow-sm)!important;}
-.stButton>button:hover,[data-testid="stDownloadButton"]>button:hover{border-color:var(--accent2)!important;background:var(--s2)!important;}
-.stButton>button[kind="primary"],[data-testid="stDownloadButton"]>button[kind="primary"]{background:var(--accent)!important;border:1px solid var(--accent)!important;color:#fff!important;font-weight:600!important;font-size:0.9rem!important;padding:0.55rem 1.4rem!important;border-radius:8px!important;box-shadow:var(--shadow-sm)!important;}
-.stButton>button[kind="primary"]:hover,[data-testid="stDownloadButton"]>button[kind="primary"]:hover{background:var(--accent2)!important;border-color:var(--accent2)!important;color:#fff!important;box-shadow:var(--shadow-md)!important;}
+.stButton>button,[data-testid="stDownloadButton"]>button{background:var(--s2)!important;border:1px solid var(--border2)!important;color:var(--text)!important;border-radius:8px!important;font-family:'Inter',sans-serif!important;font-weight:500!important;font-size:0.88rem!important;transition:var(--transition)!important;padding:0.5rem 1.2rem!important;box-shadow:var(--shadow-sm)!important;}
+.stButton>button:hover,[data-testid="stDownloadButton"]>button:hover{border-color:var(--neon-line)!important;background:#16161d!important;color:var(--text)!important;}
+.stButton>button[kind="primary"],[data-testid="stDownloadButton"]>button[kind="primary"]{background:var(--neon)!important;border:1px solid var(--neon)!important;color:#171106!important;font-weight:700!important;font-size:0.9rem!important;padding:0.55rem 1.4rem!important;border-radius:8px!important;box-shadow:var(--glow)!important;letter-spacing:0.02em}
+.stButton>button[kind="primary"]:hover,[data-testid="stDownloadButton"]>button[kind="primary"]:hover{background:#ffc14d!important;border-color:#ffc14d!important;color:#171106!important;box-shadow:0 0 20px rgba(255,178,36,0.5)!important;}
 .success-banner{background:var(--success-bg);border:1px solid var(--green-bdr);border-left:3px solid var(--green);border-radius:var(--r2);padding:0.8rem 1.1rem;margin:0.5rem 0 0.8rem;display:flex;align-items:center;gap:0.8rem;}
-.success-icon{width:32px;height:32px;background:var(--green);border-radius:50%;display:flex;align-items:center;justify-content:center;color:#fff;font-size:0.95rem;flex-shrink:0;}
+.success-icon{width:32px;height:32px;background:rgba(61,220,151,0.15);border:1px solid var(--green-bdr);border-radius:50%;display:flex;align-items:center;justify-content:center;color:var(--green);font-size:0.95rem;flex-shrink:0;}
 .success-title{font-family:'Inter',sans-serif;font-size:0.95rem;font-weight:700;color:var(--success-title);margin-bottom:0.1rem}
 .success-sub{font-size:0.8rem;color:var(--text2)}
 .auth-wrap{max-width:380px;margin:10vh auto 0;text-align:center}
-.auth-icon{width:56px;height:56px;background:var(--accent);border-radius:12px;display:inline-flex;align-items:center;justify-content:center;font-size:1.5rem;color:#fff;margin-bottom:1rem;}
+.auth-icon{width:56px;height:56px;background:#0a0a0d;border:1px solid var(--neon-line);border-radius:12px;display:inline-flex;align-items:center;justify-content:center;font-size:1.5rem;color:var(--neon);margin-bottom:1rem;box-shadow:var(--glow);}
 .auth-title{font-family:'Inter',sans-serif;font-size:1.35rem;font-weight:700;color:var(--text);margin-bottom:0.3rem;letter-spacing:-0.01em}
 .auth-sub{font-size:0.85rem;color:var(--text3);margin-bottom:2rem}
-[data-testid="stProgressBar"]>div>div{background:var(--info)!important;border-radius:4px!important;height:6px!important;}
+[data-testid="stProgressBar"]>div>div{background:linear-gradient(90deg,#c77f0a,var(--neon))!important;border-radius:4px!important;height:6px!important;box-shadow:var(--glow)!important;}
 [data-testid="stDataFrame"]{border:1px solid var(--border)!important;border-radius:var(--r2)!important;box-shadow:var(--shadow-sm)!important;overflow:hidden!important;}
 ::-webkit-scrollbar{width:10px;height:10px}
 ::-webkit-scrollbar-track{background:transparent}
-::-webkit-scrollbar-thumb{background:#d3d0c6;border-radius:5px;border:2px solid var(--bg)}
-::-webkit-scrollbar-thumb:hover{background:#a8a29a}
-.footer{font-family:'Roboto Mono',monospace;font-size:0.62rem;color:var(--text4);text-align:center;padding:0.9rem 0 0.6rem;letter-spacing:0.03em;border-top:1px solid var(--s3);margin-top:1.2rem;}
+::-webkit-scrollbar-thumb{background:#2b2b38;border-radius:5px;border:2px solid var(--bg)}
+::-webkit-scrollbar-thumb:hover{background:#3a3a4a}
+.footer{font-family:'Roboto Mono',monospace;font-size:0.6rem;color:var(--text4);text-align:center;padding:0.9rem 0 0.6rem;letter-spacing:0.14em;text-transform:uppercase;border-top:1px solid var(--border);margin-top:1.2rem;}
 .stElementContainer{margin-bottom:0!important}
 [data-testid="stVerticalBlock"]>div{gap:0.35rem!important}
 [data-testid="stHorizontalBlock"]>div{gap:0.5rem!important}
-hr{border-color:var(--s3)!important;margin:0.6rem 0!important}
-.config-badge{display:inline-flex;align-items:center;gap:0.4rem;background:var(--s2);border:1px solid var(--border);border-radius:6px;padding:0.25rem 0.7rem;font-family:'Roboto Mono',monospace;font-size:0.62rem;color:var(--text3);margin-bottom:0.6rem;}
-.live-panel{background:var(--s1);border:1px solid var(--border);border-radius:var(--r3);padding:1.2rem 1.4rem;margin:1.5rem auto;max-width:720px;box-shadow:var(--shadow-md);position:relative;}
+hr{border-color:var(--border)!important;margin:0.6rem 0!important}
+.config-badge{display:inline-flex;align-items:center;gap:0.4rem;background:var(--s2);border:1px solid var(--border);border-radius:6px;padding:0.25rem 0.7rem;font-family:'Roboto Mono',monospace;font-size:0.6rem;color:var(--text3);margin-bottom:0.6rem;letter-spacing:0.08em;}
+.live-panel{background:linear-gradient(180deg,#101016,#0b0b10);border:1px solid var(--border2);border-radius:var(--r3);padding:1.2rem 1.4rem;margin:1.5rem auto;max-width:720px;box-shadow:var(--shadow-md);position:relative;overflow:hidden;}
+.live-panel::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,var(--neon-line),transparent);}
+.live-panel::after{content:'';position:absolute;left:0;right:0;height:46px;top:-60px;background:linear-gradient(180deg,transparent,rgba(255,178,36,0.06),transparent);animation:scanMove 3.2s ease-in-out infinite;pointer-events:none;}
+@keyframes scanMove{0%{top:-60px}55%{top:110%}100%{top:110%}}
 .live-head{display:flex;align-items:center;gap:0.75rem;margin-bottom:0.8rem;}
-.live-pulse{width:10px;height:10px;border-radius:50%;background:var(--info);animation:livePulse 1.6s ease-out infinite;flex-shrink:0;}
-@keyframes livePulse{0%{box-shadow:0 0 0 0 rgba(29,78,216,0.35)}70%{box-shadow:0 0 0 10px rgba(29,78,216,0)}100%{box-shadow:0 0 0 0 rgba(29,78,216,0)}}
-.live-title{font-family:'Inter',sans-serif;font-size:1.05rem;font-weight:700;color:var(--text);line-height:1.25;letter-spacing:-0.01em}
-.live-sub{font-size:0.78rem;color:var(--text3);margin-top:0.15rem}
+.live-pulse{width:10px;height:10px;border-radius:50%;background:var(--neon);box-shadow:var(--glow);animation:livePulse 1.6s ease-out infinite;flex-shrink:0;}
+@keyframes livePulse{0%{box-shadow:0 0 0 0 rgba(255,178,36,0.45)}70%{box-shadow:0 0 0 10px rgba(255,178,36,0)}100%{box-shadow:0 0 0 0 rgba(255,178,36,0)}}
+.live-title{font-family:'Roboto Mono',monospace;font-size:0.95rem;font-weight:500;color:var(--text);line-height:1.25;letter-spacing:0.18em;text-transform:uppercase}
+.live-sub{font-size:0.78rem;color:var(--text3);margin-top:0.25rem}
 .live-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:0.6rem;margin:0.5rem 0 0.8rem}
 .live-metric{background:var(--s2);border:1px solid var(--border);border-radius:var(--r);padding:0.6rem 0.5rem;text-align:center}
-.live-metric-val{font-family:'Inter',sans-serif;font-size:1.15rem;font-weight:700;color:var(--text);line-height:1.1}
-.live-metric-lbl{font-family:'Roboto Mono',monospace;font-size:0.58rem;color:var(--text3);text-transform:uppercase;letter-spacing:0.07em;margin-top:0.2rem}
+.live-metric-val{font-family:'Inter',sans-serif;font-size:1.15rem;font-weight:700;color:var(--neon);line-height:1.1}
+.live-metric-lbl{font-family:'Roboto Mono',monospace;font-size:0.56rem;color:var(--text3);text-transform:uppercase;letter-spacing:0.12em;margin-top:0.2rem}
 .step-list{display:flex;flex-direction:column;gap:0.3rem;margin:0.2rem 0 0.7rem}
 .step-item{display:flex;align-items:center;gap:0.55rem;font-size:0.82rem;color:var(--text3);padding:0.22rem 0.1rem}
-.step-item .dot{width:18px;height:18px;border-radius:50%;border:1.5px solid var(--border2);display:flex;align-items:center;justify-content:center;font-size:0.62rem;flex-shrink:0;background:#fff;color:transparent}
+.step-item .dot{width:18px;height:18px;border-radius:50%;border:1.5px solid var(--border2);display:flex;align-items:center;justify-content:center;font-size:0.62rem;flex-shrink:0;background:var(--s1);color:transparent}
 .step-item.is-done{color:var(--text2)}
-.step-item.is-done .dot{background:var(--green);border-color:var(--green);color:#fff}
+.step-item.is-done .dot{background:rgba(61,220,151,0.18);border-color:var(--green);color:var(--green)}
 .step-item.is-active{color:var(--text);font-weight:600}
-.step-item.is-active .dot{border-color:var(--info);color:var(--info);animation:livePulse 1.6s ease-out infinite}
-.live-hint{background:var(--info-bg);border:1px solid var(--info-bdr);color:#1e3a8a;border-radius:var(--r);padding:0.55rem 0.75rem;font-size:0.78rem;line-height:1.4}
+.step-item.is-active .dot{border-color:var(--neon);color:var(--neon);box-shadow:var(--glow);animation:livePulse 1.6s ease-out infinite}
+.live-hint{background:var(--cyan-soft);border:1px solid rgba(63,210,232,0.28);color:#9fdbe8;border-radius:var(--r);padding:0.55rem 0.75rem;font-size:0.78rem;line-height:1.4}
 .live-detail{font-size:0.8rem;color:var(--text2);margin-top:0.5rem;font-family:'Inter',sans-serif}
 .pkl-hint{font-size:0.78rem;color:var(--text3);margin:0.15rem 0 0.55rem;line-height:1.4}
 div[data-testid="stAlert"]{border-radius:var(--r2)!important}
+[data-testid="stAlert"]>div{background:var(--s2)!important;color:var(--text2)!important;}
 [data-testid="stCheckbox"] p,[data-testid="stToggle"] p{color:var(--text-label)!important}
 [role="radiogroup"] label p,[data-testid="stRadio"] label p{color:var(--text-label)!important;font-size:0.85rem!important;}
-[data-baseweb="select"]>div{background:#fff!important;color:var(--text)!important;border-color:var(--border2)!important;border-radius:6px!important;}
-[data-baseweb="input"]{background:#fff!important;color:var(--text)!important}
+[data-baseweb="select"]>div{background:#0a0a0e!important;color:var(--text)!important;border-color:var(--border2)!important;border-radius:6px!important;}
+[data-baseweb="select"]>div:focus-within{border-color:var(--neon)!important;box-shadow:0 0 0 3px rgba(255,178,36,0.15)!important;}
+div[data-baseweb="popover"] div[role="listbox"],ul[data-baseweb="menu"]{background:#121219!important;border:1px solid var(--border2)!important;}
+ul[data-baseweb="menu"] li{color:var(--text2)!important;}
+ul[data-baseweb="menu"] li:hover,ul[data-baseweb="menu"] li[aria-selected="true"]{background:var(--neon-soft)!important;color:var(--text)!important;}
+[data-baseweb="input"]{background:#0a0a0e!important;color:var(--text)!important}
+[data-baseweb="textarea"]{background:#0a0a0e!important;color:var(--text)!important;border-color:var(--border2)!important;border-radius:6px!important;}
+[data-baseweb="textarea"]:focus-within{border-color:var(--neon)!important;box-shadow:0 0 0 3px rgba(255,178,36,0.15)!important;}
 .stMarkdown,.stCaption{color:var(--text2)}
-[data-testid="stExpander"]{background:#fff!important;border:1px solid var(--border)!important;border-radius:var(--r2)!important;}
+.stMarkdown a{color:var(--cyan)!important;}
+[data-testid="stExpander"]{background:var(--s1)!important;border:1px solid var(--border)!important;border-radius:var(--r2)!important;}
+[data-testid="stExpander"] summary{color:var(--text2)!important;}
+code{color:var(--neon)!important;background:var(--neon-soft)!important;}
 @media(max-width:768px){
     .metrics-grid{grid-template-columns:repeat(2,1fr)}
     .live-metrics{grid-template-columns:1fr 1fr 1fr}
@@ -375,18 +395,458 @@ def main():
 
     _procesando = bool(st.session_state.get("procesando"))
 
-    # Durante el procesamiento solo se muestra la tarjeta 'Procesando dossier
-    # de noticias': se ocultan el encabezado y el formulario hasta terminar.
-    if not _procesando:
-        st.markdown("""
-        <div class="app-header">
-            <div class="app-header-icon">◈</div>
-            <div class="app-header-text">
-                <div class="app-header-title">Limpieza y Análisis de Noticias</div>
-                <div class="app-header-version">v4.3 · Tono/Tema/Subtema por reglas + IA · tema profesional claro · Realizado por Johnathan Cortés</div>
-            </div>
-            <div class="app-header-badge">Estructurador + IA</div>
-        </div>""", unsafe_allow_html=True)
+    # `ui` es el contenedor raíz de la vista. Durante el procesamiento queda
+    # vacío a propósito: al crearse en la misma posición del script reemplaza
+    # de inmediato el contenido anterior (encabezado + formulario), sin depender
+    # de que el frontend limpie los elementos de la vista previa.
+    ui = st.empty()
+
+    if _procesando:
+        # Solo se muestra la tarjeta "Procesando dossier de noticias", que se
+        # dibuja más abajo junto a la barra de progreso. Nada más.
+        pass
+    elif not st.session_state.get("processing_complete", False):
+        with ui.container():
+            st.markdown("""
+            <div class="app-header">
+                <div class="app-header-icon">◈</div>
+                <div class="app-header-text">
+                    <div class="app-header-title">Limpieza y Análisis de Noticias</div>
+                    <div class="app-header-version">v4.4 · Tono/Tema/Subtema por reglas + IA · edición Blade Runner · Realizado por Johnathan Cortés</div>
+                </div>
+                <div class="app-header-badge">Estructurador + IA</div>
+            </div>""", unsafe_allow_html=True)
+            col_cfg1, col_cfg2 = st.columns([4, 1])
+            with col_cfg1:
+                st.markdown(
+                    '<span class="config-badge">⚙ Configuración: Google Sheets (Regiones / Internet)</span>',
+                    unsafe_allow_html=True
+                )
+            with col_cfg2:
+                if st.button("↻ Refrescar config", use_container_width=True):
+                    refresh_config_cache()
+                    st.success("Config recargada")
+
+            # --- Perfil de cliente (multicliente): precarga marca, alias, voceros,
+            #     criterio de tono y lista de Temas guardados para cada cliente. ---
+            _SIN_PERFIL = "Sin perfil (configuración manual)"
+            try:
+                _perfiles = listar_perfiles()
+            except Exception:
+                _perfiles = []
+            _opciones_perfil = [_SIN_PERFIL] + [p["nombre"] for p in _perfiles]
+            sel_perfil = st.selectbox(
+                "Perfil de cliente",
+                _opciones_perfil,
+                help="Carga la configuración guardada del cliente. Puedes editar los campos "
+                     "abajo antes de procesar; también puedes guardar la configuración actual "
+                     "como un perfil nuevo desde 'Ajustes finos'.",
+            )
+            _perfil_actual = None
+            if sel_perfil != _SIN_PERFIL:
+                _pid = next((p["id"] for p in _perfiles if p["nombre"] == sel_perfil), None)
+                if _pid:
+                    _perfil_actual = cargar_perfil(_pid)
+                    if st.session_state.get("_perfil_aplicado") != sel_perfil:
+                        st.session_state["brand_input"] = _perfil_actual.get("brand", "")
+                        st.session_state["alias_input"] = "; ".join(_perfil_actual.get("aliases", []))
+                        st.session_state["voceros_input"] = "; ".join(_perfil_actual.get("voceros", []))
+                        st.session_state["criterio_input"] = (
+                            _perfil_actual.get("criterio") or list(CRITERIOS_TONO)[0])
+                        st.session_state["criterio_custom_input"] = _perfil_actual.get("criterio_custom", "")
+                        st.session_state["_perfil_taxonomia"] = _perfil_actual.get("taxonomia")
+                        st.session_state["_perfil_aplicado"] = sel_perfil
+                        st.rerun()
+                    st.caption("📋 " + perfil_a_resumen(_perfil_actual))
+            else:
+                st.session_state["_perfil_aplicado"] = None
+                st.session_state["_perfil_taxonomia"] = None
+
+            with st.form("main_form"):
+                st.markdown('<div class="sec-label">1. Sube el archivo de entrada</div>', unsafe_allow_html=True)
+                st.markdown("""
+                <div class="upload-zone">
+                    <div class="upload-zone-card">
+                        <div class="upload-zone-icon uz-dossier">📋</div>
+                        <div class="upload-zone-text">
+                            <div class="upload-zone-title">Dossier de Noticias</div>
+                            <div class="upload-zone-desc">Sube el .xlsx con las columnas Título y Resumen - Aclaracion.</div>
+                        </div>
+                    </div>
+                </div>""", unsafe_allow_html=True)
+            
+                f1 = st.file_uploader("Dossier", type=["xlsx"], label_visibility="collapsed", key="f1")
+
+                st.markdown('<div class="sec-label">2. Configuración de Análisis IA (Tono, Tema, Subtema)</div>', unsafe_allow_html=True)
+                enable_ai = st.checkbox("Activar análisis reputacional con IA + Jev para el tono", value=True)
+            
+                c_brand, c_alias = st.columns(2)
+                with c_brand:
+                    brand_input = st.text_input(
+                        "Marca o Cliente Principal*",
+                        placeholder="Ej: Universidad de Antioquia, Ecopetrol, Bancolombia",
+                        help="El tono se mide solo sobre esta marca, sus voceros y sus alias.",
+                        key="brand_input",
+                    )
+                with c_alias:
+                    alias_input = st.text_input(
+                        "Alias o términos relacionados (separados por coma o punto y coma)",
+                        placeholder="Ej: UdeA; Alma Mater; rectoría; la universidad",
+                        help="Variantes del nombre que deban atribuirse al cliente.",
+                        key="alias_input",
+                    )
+
+                c_crit, c_voc = st.columns([3, 2])
+                with c_crit:
+                    criterio = st.radio(
+                        "Criterio del tono",
+                        list(CRITERIOS_TONO.keys()),
+                        index=0,
+                        horizontal=False,
+                        key="criterio_input",
+                        help=("Aspectual estricto: la crítica dirigida a la marca es lo único Negativo "
+                              "(gobiernos, alcaldías, entidades públicas). Favorabilidad del sector: "
+                              "cuenta cómo queda parado el sector aunque la marca no sea el actor (gremios, "
+                              "cámaras, empresas de un sector)."),
+                    )
+                with c_voc:
+                    voceros_input = st.text_input(
+                        "Vocero(s) de la marca (opcional)",
+                        placeholder="Ej: Gonzalo Moreno; el rector",
+                        help="Personas cuyo nombre se atribuye a la marca para el tono.",
+                        key="voceros_input",
+                    )
+                    tax_nombre = st.selectbox(
+                        "Lista de Temas",
+                        ["Automática según el archivo (recomendada)",
+                         "Gobierno territorial (21 cubos)",
+                         "Gremio o sector (16 cubos)"],
+                        index=0,
+                        help="Por defecto los Temas se arman bottom-up en ESTE lote: se agrupan subtemas "
+                             "afines y se nombra cada familia. Si subes un PKL de tema, se usan las clases "
+                             "de ese modelo y no se inventan temas del lote. No hay memoria entre corridas. "
+                             "Las listas fijas o un JSON solo se usan como nombres candidatos cuando no hay PKL.",
+                    )
+
+                with st.expander("⚙ Ajustes finos del análisis (opcional)"):
+                    ca, cb, cc, cd = st.columns(4)
+                    with ca:
+                        tam_lote_input = st.slider("Grupos por llamada", 5, 30, 10, 1,
+                                                   help="Con gpt-4.1-nano 10 funciona mejor.")
+                    with cb:
+                        workers_input = st.slider("Llamadas en paralelo", 1, 8, 4, 1,
+                                                  help="Sube para dossiers grandes; más hilos, más velocidad.")
+                    with cc:
+                        umbral_titulo_input = st.slider("Similitud de titulares (%)", 75, 100, 92, 1,
+                                                        help="Bájalo para fusionar la misma noticia publicada por "
+                                                             "muchos medios con titulares distintos.")
+                    with cd:
+                        umbral_cuerpo_input = st.slider("Similitud de resúmenes (%)", 70, 100, 85, 1)
+                    tax_file = st.file_uploader(
+                        "Reutilizar la lista de Temas de un cliente (JSON, opcional)",
+                        type=["json"], key="tax_json",
+                        help="Si subes la lista que descargaste de un período anterior del mismo cliente, "
+                             "los Temas se mantienen idénticos entre meses (mejor para comparar).",
+                    )
+                    cubos_objetivo_input = st.slider("Cubos objetivo cuando la lista es automática", 8, 25, 16, 1)
+                    votos_input = st.slider(
+                        "Verificaciones del tono por grupo", 1, 3, 2, 1,
+                        help="Cada grupo se etiqueta N veces y gana la mayoría; un empate cae a Neutro. "
+                             "Con 2 se reducen los vaivenes de los modelos pequeños; con 3 sube el costo "
+                             "una vez más.")
+                    st.markdown("**💾 Perfil de cliente**")
+                    guardar_chk = st.checkbox(
+                        "Guardar esta configuración como perfil al procesar",
+                        help="Crea o actualiza el JSON del cliente (marca, alias, voceros, criterio y "
+                             "lista de Temas si subiste un JSON) para reutilizarlo en próximas corridas.",
+                    )
+                    sobrescribir_chk = st.checkbox(
+                        "Sobrescribir el perfil si ya existe uno con ese nombre",
+                        help="Por seguridad, si el perfil ya existe y no marcas esta casilla, "
+                             "el proceso se detiene con un aviso en lugar de reemplazarlo.",
+                    )
+                    nombre_perfil = st.text_input(
+                        "Nombre del perfil",
+                        key="nombre_perfil_input",
+                        placeholder="Por defecto se usa la marca",
+                    )
+                    criterio_custom = st.text_area(
+                        "Criterio de tono personalizado (opcional)",
+                        key="criterio_custom_input",
+                        height=80,
+                        placeholder="Si lo llenas, este texto reemplaza al criterio del catálogo para este cliente.",
+                        help="Texto libre con la regla de tono propia del cliente. Tiene prioridad sobre "
+                             "el criterio seleccionado arriba.",
+                    )
+
+                st.markdown('<div class="sec-label">3. Modelos PKL del cliente (opcional)</div>', unsafe_allow_html=True)
+                st.markdown(
+                    '<div class="pkl-hint">Puedes subir el PKL de tono, el de tema, ambos o ninguno. '
+                    "Si un eje no tiene PKL, se mantiene el análisis actual (IA). "
+                    "El subtema nunca se reemplaza por PKL.</div>",
+                    unsafe_allow_html=True,
+                )
+                st.markdown("""
+                <div class="upload-zone">
+                    <div class="upload-zone-card">
+                        <div class="upload-zone-icon uz-pkl">◆</div>
+                        <div class="upload-zone-text">
+                            <div class="upload-zone-title">Clasificadores sklearn (joblib)</div>
+                            <div class="upload-zone-desc">Archivos .pkl con pipeline de texto (pasos tfidf + clf). No son obligatorios.</div>
+                        </div>
+                    </div>
+                </div>""", unsafe_allow_html=True)
+                c_tono, c_tema = st.columns(2)
+                with c_tono:
+                    f_tono = st.file_uploader(
+                        "PKL de tono",
+                        type=["pkl"],
+                        key="pkl_tono",
+                        help="Modelo opcional de scikit-learn para tono. Si no se sube, se usa la IA existente.",
+                    )
+                with c_tema:
+                    f_tema = st.file_uploader(
+                        "PKL de tema",
+                        type=["pkl"],
+                        key="pkl_tema",
+                        help="Modelo opcional de scikit-learn para tema. Si no se sube, se usa la IA existente.",
+                    )
+
+                if st.form_submit_button("▶ Iniciar Limpieza y Análisis", use_container_width=True, type="primary"):
+                    if not f1:
+                        st.error("Por favor, sube un archivo Excel.")
+                    elif enable_ai and not brand_input.strip():
+                        st.error("Por favor indica la Marca o Cliente Principal para realizar el análisis enfocado.")
+                    else:
+                        api_key = st.secrets.get("OPENAI_API_KEY")
+                        typesafe_api_key = st.secrets.get("TYPESAFE_API_KEY")
+                        if enable_ai and not api_key:
+                            st.error("❌ Falta configurar OPENAI_API_KEY en los Secrets de Streamlit: se usa para subtema y tema.")
+                            st.stop()
+                        if enable_ai and not typesafe_api_key:
+                            st.warning("Sin TYPESAFE_API_KEY la verificación de temas con Jev queda desactivada "
+                                       "(es opcional); el tono, el subtema y el tema se generan igual con la API de OpenAI.")
+                    
+                        aliases_parsed = [
+                            a.strip() for a in re.split(r"[,;]", alias_input) if a.strip()
+                        ]
+                        tax_cargada = None
+                        if tax_file is not None:
+                            try:
+                                tax_cargada = json.loads(tax_file.getvalue().decode("utf-8"))
+                                if not isinstance(tax_cargada, dict) or not tax_cargada.get("temas"):
+                                    raise ValueError("el JSON debe traer la clave 'temas' con la lista de cubos")
+                                tax_cargada.setdefault("reglas", [])
+                            except Exception as exc:
+                                st.error(f"La lista de Temas (JSON) no es válida: {exc}")
+                                st.stop()
+                        tone_bytes = f_tono.getvalue() if f_tono else None
+                        theme_bytes = f_tema.getvalue() if f_tema else None
+                        try:
+                            if tone_bytes:
+                                load_sklearn_estimator(tone_bytes, "tono")
+                            if theme_bytes:
+                                load_sklearn_estimator(theme_bytes, "tema")
+                        except PklClassifierError as exc:
+                            st.error(str(exc))
+                            st.stop()
+
+                        st.session_state["pending_dossier"] = f1.getvalue()
+                        st.session_state["pending_meta"] = {
+                            "name": f1.name,
+                            "size": int(getattr(f1, "size", 0) or len(st.session_state["pending_dossier"])),
+                        }
+                        criterio_texto = (criterio_custom or "").strip()
+                        if guardar_chk:
+                            _nombre_final = (nombre_perfil or "").strip() or brand_input.strip()
+                            _pid_cand = slugify(_nombre_final)
+                            _existe = any(p["id"] == _pid_cand for p in listar_perfiles())
+                            if _existe and not sobrescribir_chk:
+                                st.warning(
+                                    "Ya existe un perfil llamado '%s'. Si quieres actualizarlo, "
+                                    "marca 'Sobrescribir el perfil si ya existe' y procesa de nuevo; "
+                                    "si es otro cliente, cambia el nombre del perfil." % _nombre_final
+                                )
+                                st.stop()
+                            try:
+                                _pid = guardar_perfil({
+                                    "nombre": _nombre_final,
+                                    "brand": brand_input.strip(),
+                                    "aliases": aliases_parsed,
+                                    "voceros": [v.strip() for v in re.split(r"[,;]", voceros_input) if v.strip()],
+                                    "criterio": criterio,
+                                    "criterio_custom": criterio_texto,
+                                    "taxonomia": tax_cargada,
+                                    "notas": "",
+                                })
+                                st.toast(f"Perfil de cliente guardado: {_pid}")
+                            except ValueError as exc:
+                                st.error(str(exc))
+                                st.stop()
+                        # Precedencia de la lista de Temas: JSON subido > opción elegida >
+                        # taxonomía del perfil > automática del lote.
+                        _TAX_AUTO = "Automática según el archivo (recomendada)"
+                        _perfil_tax = st.session_state.get("_perfil_taxonomia")
+                        if tax_cargada:
+                            tax_eff = tax_cargada
+                        elif tax_nombre != _TAX_AUTO:
+                            tax_eff = tax_nombre
+                        elif _perfil_tax:
+                            tax_eff = _perfil_tax
+                        else:
+                            tax_eff = tax_nombre
+                        if enable_ai or tone_bytes or theme_bytes:
+                            st.session_state["pending_ai_config"] = {
+                                "enabled": bool(enable_ai),
+                                "brand": brand_input.strip(),
+                                "aliases": aliases_parsed,
+                                "voceros": [v.strip() for v in re.split(r"[,;]", voceros_input) if v.strip()],
+                                "criterio": criterio,
+                                "criterio_texto": criterio_texto,
+                                "taxonomia": tax_eff,
+                                "cubos_objetivo": int(cubos_objetivo_input),
+                                "votos": int(votos_input),
+                                "permitir_cubos_nuevos": True,
+                                "tam_lote": int(tam_lote_input),
+                                "workers": int(workers_input),
+                                "umbral_titulo": int(umbral_titulo_input),
+                                "umbral_cuerpo": int(umbral_cuerpo_input),
+                                "api_key": api_key if enable_ai else None,
+                                "typesafe_api_key": typesafe_api_key if enable_ai else None,
+                                "typesafe_model": "jev-latest",
+                                "model": "gpt-4.1-nano-2025-04-14",
+                                "historial_dir": st.secrets.get("HISTORIAL_DIR"),
+                                "tone_pkl_bytes": tone_bytes,
+                                "theme_pkl_bytes": theme_bytes,
+                            }
+                        else:
+                            st.session_state["pending_ai_config"] = None
+
+                        st.session_state["procesando"] = True
+                        st.session_state["processing_complete"] = False
+                        st.rerun()
+    else:
+        with ui.container():
+            total = st.session_state.total_rows
+            uniq  = st.session_state.unique_rows
+            dups  = st.session_state.duplicates
+            dur   = st.session_state.process_duration
+        
+            st.markdown(
+                '<div class="success-banner"><div class="success-icon">✓</div>'
+                '<div><div class="success-title">Proceso completado</div>'
+                '<div class="success-sub">El archivo estructurado y analizado con IA se encuentra listo para descargar</div></div></div>',
+                unsafe_allow_html=True
+            )
+
+            medios_sin_mapear = st.session_state.get("medios_sin_mapear")
+            if medios_sin_mapear:
+                st.warning(
+                    "⚠️ Medios sin región asignada en Sheets (quedaron N/A): "
+                    f"{', '.join(medios_sin_mapear)}."
+                )
+
+            analisis = st.session_state.get("analisis") or {}
+            if analisis:
+                grupos = analisis.get("grupos")
+                cubos_nuevos = analisis.get("cubos_nuevos") or []
+                reglas = analisis.get("temas_por_regla")
+                por_llm = analisis.get("temas_por_llm")
+                por_pkl = analisis.get("temas_por_pkl")
+                tonos_pkl = analisis.get("tonos_por_pkl")
+                fallback = len(analisis.get("grupos_con_fallback") or [])
+                errores = analisis.get("errores_api") or []
+                guarda = len(analisis.get("tono_corregido_por_guarda") or [])
+                votos = analisis.get("votos_tono")
+                piezas = []
+                if grupos:
+                    piezas.append(f"{grupos} hechos únicos agrupados")
+                if tonos_pkl:
+                    piezas.append(f"tono clasificado con PKL del cliente ({tonos_pkl} grupos)")
+                elif votos:
+                    piezas.append(f"tono verificado {votos}× por grupo")
+                if guarda:
+                    piezas.append(f"guarda del tono: {guarda} Negativos sin señalamiento pasaron a Neutro")
+                if por_pkl:
+                    piezas.append(f"Tema por PKL del cliente: {por_pkl}")
+                elif reglas is not None:
+                    piezas.append(f"Tema por reglas: {reglas} · por IA: {por_llm or 0}")
+                if cubos_nuevos:
+                    piezas.append("Cubos nuevos específicos: " + ", ".join(cubos_nuevos[:4]))
+                if fallback:
+                    piezas.append(f"⚠️ {fallback} etiquetas con respaldo determinista")
+                if piezas:
+                    st.info("Análisis de Tono/Tema/Sub-tema · " + " · ".join(piezas))
+                if errores:
+                    st.caption("Avisos del modelo: " + " | ".join(map(str, errores[:2])))
+                temas_gen = analisis.get("taxonomia") or []
+                detalle_tax = analisis.get("taxonomia_detalle") or {}
+                if temas_gen:
+                    modo = analisis.get("modo_taxonomia")
+                    if modo == "pkl":
+                        etiqueta = "clases del PKL del cliente"
+                    elif modo in ("lote", "automatica"):
+                        etiqueta = "de este lote"
+                    else:
+                        etiqueta = "nombres candidatos del cliente"
+                    titulo_exp = ("Temas del PKL (%d, %s)" % (len(temas_gen), etiqueta)
+                                  if modo == "pkl"
+                                  else "Temas de este lote (%d, %s)" % (len(temas_gen), etiqueta))
+                    with st.expander(titulo_exp, expanded=(modo in ("lote", "automatica", "pkl"))):
+                        st.markdown(" · ".join("`%s`" % t for t in temas_gen))
+                        if detalle_tax:
+                            st.download_button(
+                                "⬇ Descargar Temas de este lote (JSON)",
+                                data=json.dumps(detalle_tax, ensure_ascii=False, indent=1),
+                                file_name="temas_%s.json" % str(
+                                    st.session_state.get("output_filename", "cliente")).replace(".xlsx", ""),
+                                mime="application/json",
+                            )
+                            if modo == "pkl":
+                                st.caption("Son las clases del PKL de tema del cliente. No se inventan "
+                                           "nombres bottom-up ni se reescriben con el quality-gate del lote.")
+                            else:
+                                st.caption("Son los Temas armados bottom-up en esta corrida. El próximo lote "
+                                           "vuelve a agrupar sus propios subtemas; no se reutiliza el vocabulario.")
+        
+            st.markdown(f"""
+            <div class="metrics-grid">
+              <div class="metric-card m-total"><div class="metric-val" style="color:var(--text)">{total}</div><div class="metric-lbl">Total Registros</div></div>
+              <div class="metric-card m-unique"><div class="metric-val" style="color:var(--green)">{uniq}</div><div class="metric-lbl">Únicos</div></div>
+              <div class="metric-card m-dup"><div class="metric-val" style="color:var(--amber)">{dups}</div><div class="metric-lbl">Duplicados</div></div>
+              <div class="metric-card m-time"><div class="metric-val" style="color:var(--blue)">{dur}</div><div class="metric-lbl">Tiempo de Ejecución</div></div>
+            </div>""", unsafe_allow_html=True)
+        
+            _historial = []
+            try:
+                from historial_cliente import listar_historial
+                _sl = (st.session_state.get("ai_config") or {}).get("brand", "") or \
+                    (st.session_state.get("pending_ai_config") or {}).get("brand", "")
+                if _sl:
+                    _historial = listar_historial(_sl, extra=st.session_state.get("ai_config_extra") or {})
+            except Exception:
+                _historial = []
+            if _historial:
+                with st.expander(f"Historial del cliente ({len(_historial)} corridas previas)"):
+                    for h in _historial[:10]:
+                        st.markdown(f"- **{h.get('fecha','')}** · {h.get('unique_rows','')} únicas"
+                                    f" · {h.get('total_rows','')} filas · {h.get('process_duration','')}s"
+                                    f" · {len(h.get('taxonomia') or [])} temas · `{h.get('archivo','')}`")
+
+            c1, c2 = st.columns(2)
+            c1.download_button(
+                "⬇ Descargar Xlsx Estructurado con IA",
+                data=st.session_state.output_data,
+                file_name=st.session_state.output_filename,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                type="primary"
+            )
+            if c2.button("Nuevo análisis", use_container_width=True):
+                pwd = st.session_state.get("password_correct")
+                st.session_state.clear()
+                st.session_state.password_correct = pwd
+                st.rerun()
 
     if st.session_state.get("pending_dossier"):
         blob = st.session_state.pop("pending_dossier")
@@ -398,442 +858,12 @@ def main():
             st.session_state["procesando"] = False
         st.rerun()
 
-    if not _procesando and not st.session_state.get("processing_complete", False):
-        col_cfg1, col_cfg2 = st.columns([4, 1])
-        with col_cfg1:
-            st.markdown(
-                '<span class="config-badge">⚙ Configuración: Google Sheets (Regiones / Internet)</span>',
-                unsafe_allow_html=True
-            )
-        with col_cfg2:
-            if st.button("↻ Refrescar config", use_container_width=True):
-                refresh_config_cache()
-                st.success("Config recargada")
-
-        # --- Perfil de cliente (multicliente): precarga marca, alias, voceros,
-        #     criterio de tono y lista de Temas guardados para cada cliente. ---
-        _SIN_PERFIL = "Sin perfil (configuración manual)"
-        try:
-            _perfiles = listar_perfiles()
-        except Exception:
-            _perfiles = []
-        _opciones_perfil = [_SIN_PERFIL] + [p["nombre"] for p in _perfiles]
-        sel_perfil = st.selectbox(
-            "Perfil de cliente",
-            _opciones_perfil,
-            help="Carga la configuración guardada del cliente. Puedes editar los campos "
-                 "abajo antes de procesar; también puedes guardar la configuración actual "
-                 "como un perfil nuevo desde 'Ajustes finos'.",
-        )
-        _perfil_actual = None
-        if sel_perfil != _SIN_PERFIL:
-            _pid = next((p["id"] for p in _perfiles if p["nombre"] == sel_perfil), None)
-            if _pid:
-                _perfil_actual = cargar_perfil(_pid)
-                if st.session_state.get("_perfil_aplicado") != sel_perfil:
-                    st.session_state["brand_input"] = _perfil_actual.get("brand", "")
-                    st.session_state["alias_input"] = "; ".join(_perfil_actual.get("aliases", []))
-                    st.session_state["voceros_input"] = "; ".join(_perfil_actual.get("voceros", []))
-                    st.session_state["criterio_input"] = (
-                        _perfil_actual.get("criterio") or list(CRITERIOS_TONO)[0])
-                    st.session_state["criterio_custom_input"] = _perfil_actual.get("criterio_custom", "")
-                    st.session_state["_perfil_taxonomia"] = _perfil_actual.get("taxonomia")
-                    st.session_state["_perfil_aplicado"] = sel_perfil
-                    st.rerun()
-                st.caption("📋 " + perfil_a_resumen(_perfil_actual))
-        else:
-            st.session_state["_perfil_aplicado"] = None
-            st.session_state["_perfil_taxonomia"] = None
-
-        with st.form("main_form"):
-            st.markdown('<div class="sec-label">1. Sube el archivo de entrada</div>', unsafe_allow_html=True)
-            st.markdown("""
-            <div class="upload-zone">
-                <div class="upload-zone-card">
-                    <div class="upload-zone-icon uz-dossier">📋</div>
-                    <div class="upload-zone-text">
-                        <div class="upload-zone-title">Dossier de Noticias</div>
-                        <div class="upload-zone-desc">Sube el .xlsx con las columnas Título y Resumen - Aclaracion.</div>
-                    </div>
-                </div>
-            </div>""", unsafe_allow_html=True)
-            
-            f1 = st.file_uploader("Dossier", type=["xlsx"], label_visibility="collapsed", key="f1")
-
-            st.markdown('<div class="sec-label">2. Configuración de Análisis IA (Tono, Tema, Subtema)</div>', unsafe_allow_html=True)
-            enable_ai = st.checkbox("Activar análisis reputacional con IA + Jev para el tono", value=True)
-            
-            c_brand, c_alias = st.columns(2)
-            with c_brand:
-                brand_input = st.text_input(
-                    "Marca o Cliente Principal*",
-                    placeholder="Ej: Universidad de Antioquia, Ecopetrol, Bancolombia",
-                    help="El tono se mide solo sobre esta marca, sus voceros y sus alias.",
-                    key="brand_input",
-                )
-            with c_alias:
-                alias_input = st.text_input(
-                    "Alias o términos relacionados (separados por coma o punto y coma)",
-                    placeholder="Ej: UdeA; Alma Mater; rectoría; la universidad",
-                    help="Variantes del nombre que deban atribuirse al cliente.",
-                    key="alias_input",
-                )
-
-            c_crit, c_voc = st.columns([3, 2])
-            with c_crit:
-                criterio = st.radio(
-                    "Criterio del tono",
-                    list(CRITERIOS_TONO.keys()),
-                    index=0,
-                    horizontal=False,
-                    key="criterio_input",
-                    help=("Aspectual estricto: la crítica dirigida a la marca es lo único Negativo "
-                          "(gobiernos, alcaldías, entidades públicas). Favorabilidad del sector: "
-                          "cuenta cómo queda parado el sector aunque la marca no sea el actor (gremios, "
-                          "cámaras, empresas de un sector)."),
-                )
-            with c_voc:
-                voceros_input = st.text_input(
-                    "Vocero(s) de la marca (opcional)",
-                    placeholder="Ej: Gonzalo Moreno; el rector",
-                    help="Personas cuyo nombre se atribuye a la marca para el tono.",
-                    key="voceros_input",
-                )
-                tax_nombre = st.selectbox(
-                    "Lista de Temas",
-                    ["Automática según el archivo (recomendada)",
-                     "Gobierno territorial (21 cubos)",
-                     "Gremio o sector (16 cubos)"],
-                    index=0,
-                    help="Por defecto los Temas se arman bottom-up en ESTE lote: se agrupan subtemas "
-                         "afines y se nombra cada familia. Si subes un PKL de tema, se usan las clases "
-                         "de ese modelo y no se inventan temas del lote. No hay memoria entre corridas. "
-                         "Las listas fijas o un JSON solo se usan como nombres candidatos cuando no hay PKL.",
-                )
-
-            with st.expander("⚙ Ajustes finos del análisis (opcional)"):
-                ca, cb, cc, cd = st.columns(4)
-                with ca:
-                    tam_lote_input = st.slider("Grupos por llamada", 5, 30, 10, 1,
-                                               help="Con gpt-4.1-nano 10 funciona mejor.")
-                with cb:
-                    workers_input = st.slider("Llamadas en paralelo", 1, 8, 4, 1,
-                                              help="Sube para dossiers grandes; más hilos, más velocidad.")
-                with cc:
-                    umbral_titulo_input = st.slider("Similitud de titulares (%)", 75, 100, 92, 1,
-                                                    help="Bájalo para fusionar la misma noticia publicada por "
-                                                         "muchos medios con titulares distintos.")
-                with cd:
-                    umbral_cuerpo_input = st.slider("Similitud de resúmenes (%)", 70, 100, 85, 1)
-                tax_file = st.file_uploader(
-                    "Reutilizar la lista de Temas de un cliente (JSON, opcional)",
-                    type=["json"], key="tax_json",
-                    help="Si subes la lista que descargaste de un período anterior del mismo cliente, "
-                         "los Temas se mantienen idénticos entre meses (mejor para comparar).",
-                )
-                cubos_objetivo_input = st.slider("Cubos objetivo cuando la lista es automática", 8, 25, 16, 1)
-                votos_input = st.slider(
-                    "Verificaciones del tono por grupo", 1, 3, 2, 1,
-                    help="Cada grupo se etiqueta N veces y gana la mayoría; un empate cae a Neutro. "
-                         "Con 2 se reducen los vaivenes de los modelos pequeños; con 3 sube el costo "
-                         "una vez más.")
-                st.markdown("**💾 Perfil de cliente**")
-                guardar_chk = st.checkbox(
-                    "Guardar esta configuración como perfil al procesar",
-                    help="Crea o actualiza el JSON del cliente (marca, alias, voceros, criterio y "
-                         "lista de Temas si subiste un JSON) para reutilizarlo en próximas corridas.",
-                )
-                sobrescribir_chk = st.checkbox(
-                    "Sobrescribir el perfil si ya existe uno con ese nombre",
-                    help="Por seguridad, si el perfil ya existe y no marcas esta casilla, "
-                         "el proceso se detiene con un aviso en lugar de reemplazarlo.",
-                )
-                nombre_perfil = st.text_input(
-                    "Nombre del perfil",
-                    key="nombre_perfil_input",
-                    placeholder="Por defecto se usa la marca",
-                )
-                criterio_custom = st.text_area(
-                    "Criterio de tono personalizado (opcional)",
-                    key="criterio_custom_input",
-                    height=80,
-                    placeholder="Si lo llenas, este texto reemplaza al criterio del catálogo para este cliente.",
-                    help="Texto libre con la regla de tono propia del cliente. Tiene prioridad sobre "
-                         "el criterio seleccionado arriba.",
-                )
-
-            st.markdown('<div class="sec-label">3. Modelos PKL del cliente (opcional)</div>', unsafe_allow_html=True)
-            st.markdown(
-                '<div class="pkl-hint">Puedes subir el PKL de tono, el de tema, ambos o ninguno. '
-                "Si un eje no tiene PKL, se mantiene el análisis actual (IA). "
-                "El subtema nunca se reemplaza por PKL.</div>",
-                unsafe_allow_html=True,
-            )
-            st.markdown("""
-            <div class="upload-zone">
-                <div class="upload-zone-card">
-                    <div class="upload-zone-icon uz-pkl">◆</div>
-                    <div class="upload-zone-text">
-                        <div class="upload-zone-title">Clasificadores sklearn (joblib)</div>
-                        <div class="upload-zone-desc">Archivos .pkl con pipeline de texto (pasos tfidf + clf). No son obligatorios.</div>
-                    </div>
-                </div>
-            </div>""", unsafe_allow_html=True)
-            c_tono, c_tema = st.columns(2)
-            with c_tono:
-                f_tono = st.file_uploader(
-                    "PKL de tono",
-                    type=["pkl"],
-                    key="pkl_tono",
-                    help="Modelo opcional de scikit-learn para tono. Si no se sube, se usa la IA existente.",
-                )
-            with c_tema:
-                f_tema = st.file_uploader(
-                    "PKL de tema",
-                    type=["pkl"],
-                    key="pkl_tema",
-                    help="Modelo opcional de scikit-learn para tema. Si no se sube, se usa la IA existente.",
-                )
-
-            if st.form_submit_button("▶ Iniciar Limpieza y Análisis", use_container_width=True, type="primary"):
-                if not f1:
-                    st.error("Por favor, sube un archivo Excel.")
-                elif enable_ai and not brand_input.strip():
-                    st.error("Por favor indica la Marca o Cliente Principal para realizar el análisis enfocado.")
-                else:
-                    api_key = st.secrets.get("OPENAI_API_KEY")
-                    typesafe_api_key = st.secrets.get("TYPESAFE_API_KEY")
-                    if enable_ai and not api_key:
-                        st.error("❌ Falta configurar OPENAI_API_KEY en los Secrets de Streamlit: se usa para subtema y tema.")
-                        st.stop()
-                    if enable_ai and not typesafe_api_key:
-                        st.warning("Sin TYPESAFE_API_KEY la verificación de temas con Jev queda desactivada "
-                                   "(es opcional); el tono, el subtema y el tema se generan igual con la API de OpenAI.")
-                    
-                    aliases_parsed = [
-                        a.strip() for a in re.split(r"[,;]", alias_input) if a.strip()
-                    ]
-                    tax_cargada = None
-                    if tax_file is not None:
-                        try:
-                            tax_cargada = json.loads(tax_file.getvalue().decode("utf-8"))
-                            if not isinstance(tax_cargada, dict) or not tax_cargada.get("temas"):
-                                raise ValueError("el JSON debe traer la clave 'temas' con la lista de cubos")
-                            tax_cargada.setdefault("reglas", [])
-                        except Exception as exc:
-                            st.error(f"La lista de Temas (JSON) no es válida: {exc}")
-                            st.stop()
-                    tone_bytes = f_tono.getvalue() if f_tono else None
-                    theme_bytes = f_tema.getvalue() if f_tema else None
-                    try:
-                        if tone_bytes:
-                            load_sklearn_estimator(tone_bytes, "tono")
-                        if theme_bytes:
-                            load_sklearn_estimator(theme_bytes, "tema")
-                    except PklClassifierError as exc:
-                        st.error(str(exc))
-                        st.stop()
-
-                    st.session_state["pending_dossier"] = f1.getvalue()
-                    st.session_state["pending_meta"] = {
-                        "name": f1.name,
-                        "size": int(getattr(f1, "size", 0) or len(st.session_state["pending_dossier"])),
-                    }
-                    criterio_texto = (criterio_custom or "").strip()
-                    if guardar_chk:
-                        _nombre_final = (nombre_perfil or "").strip() or brand_input.strip()
-                        _pid_cand = slugify(_nombre_final)
-                        _existe = any(p["id"] == _pid_cand for p in listar_perfiles())
-                        if _existe and not sobrescribir_chk:
-                            st.warning(
-                                "Ya existe un perfil llamado '%s'. Si quieres actualizarlo, "
-                                "marca 'Sobrescribir el perfil si ya existe' y procesa de nuevo; "
-                                "si es otro cliente, cambia el nombre del perfil." % _nombre_final
-                            )
-                            st.stop()
-                        try:
-                            _pid = guardar_perfil({
-                                "nombre": _nombre_final,
-                                "brand": brand_input.strip(),
-                                "aliases": aliases_parsed,
-                                "voceros": [v.strip() for v in re.split(r"[,;]", voceros_input) if v.strip()],
-                                "criterio": criterio,
-                                "criterio_custom": criterio_texto,
-                                "taxonomia": tax_cargada,
-                                "notas": "",
-                            })
-                            st.toast(f"Perfil de cliente guardado: {_pid}")
-                        except ValueError as exc:
-                            st.error(str(exc))
-                            st.stop()
-                    # Precedencia de la lista de Temas: JSON subido > opción elegida >
-                    # taxonomía del perfil > automática del lote.
-                    _TAX_AUTO = "Automática según el archivo (recomendada)"
-                    _perfil_tax = st.session_state.get("_perfil_taxonomia")
-                    if tax_cargada:
-                        tax_eff = tax_cargada
-                    elif tax_nombre != _TAX_AUTO:
-                        tax_eff = tax_nombre
-                    elif _perfil_tax:
-                        tax_eff = _perfil_tax
-                    else:
-                        tax_eff = tax_nombre
-                    if enable_ai or tone_bytes or theme_bytes:
-                        st.session_state["pending_ai_config"] = {
-                            "enabled": bool(enable_ai),
-                            "brand": brand_input.strip(),
-                            "aliases": aliases_parsed,
-                            "voceros": [v.strip() for v in re.split(r"[,;]", voceros_input) if v.strip()],
-                            "criterio": criterio,
-                            "criterio_texto": criterio_texto,
-                            "taxonomia": tax_eff,
-                            "cubos_objetivo": int(cubos_objetivo_input),
-                            "votos": int(votos_input),
-                            "permitir_cubos_nuevos": True,
-                            "tam_lote": int(tam_lote_input),
-                            "workers": int(workers_input),
-                            "umbral_titulo": int(umbral_titulo_input),
-                            "umbral_cuerpo": int(umbral_cuerpo_input),
-                            "api_key": api_key if enable_ai else None,
-                            "typesafe_api_key": typesafe_api_key if enable_ai else None,
-                            "typesafe_model": "jev-latest",
-                            "model": "gpt-4.1-nano-2025-04-14",
-                            "historial_dir": st.secrets.get("HISTORIAL_DIR"),
-                            "tone_pkl_bytes": tone_bytes,
-                            "theme_pkl_bytes": theme_bytes,
-                        }
-                    else:
-                        st.session_state["pending_ai_config"] = None
-
-                    st.session_state["procesando"] = True
-                    st.session_state["processing_complete"] = False
-                    st.rerun()
-    else:
-        total = st.session_state.total_rows
-        uniq  = st.session_state.unique_rows
-        dups  = st.session_state.duplicates
-        dur   = st.session_state.process_duration
-        
+    # El pie solo se muestra fuera del procesamiento.
+    if not _procesando:
         st.markdown(
-            '<div class="success-banner"><div class="success-icon">✓</div>'
-            '<div><div class="success-title">Proceso completado</div>'
-            '<div class="success-sub">El archivo estructurado y analizado con IA se encuentra listo para descargar</div></div></div>',
+            '<div class="footer">Estructuración y Limpieza · Johnathan Cortés ©</div>',
             unsafe_allow_html=True
         )
-
-        medios_sin_mapear = st.session_state.get("medios_sin_mapear")
-        if medios_sin_mapear:
-            st.warning(
-                "⚠️ Medios sin región asignada en Sheets (quedaron N/A): "
-                f"{', '.join(medios_sin_mapear)}."
-            )
-
-        analisis = st.session_state.get("analisis") or {}
-        if analisis:
-            grupos = analisis.get("grupos")
-            cubos_nuevos = analisis.get("cubos_nuevos") or []
-            reglas = analisis.get("temas_por_regla")
-            por_llm = analisis.get("temas_por_llm")
-            por_pkl = analisis.get("temas_por_pkl")
-            tonos_pkl = analisis.get("tonos_por_pkl")
-            fallback = len(analisis.get("grupos_con_fallback") or [])
-            errores = analisis.get("errores_api") or []
-            guarda = len(analisis.get("tono_corregido_por_guarda") or [])
-            votos = analisis.get("votos_tono")
-            piezas = []
-            if grupos:
-                piezas.append(f"{grupos} hechos únicos agrupados")
-            if tonos_pkl:
-                piezas.append(f"tono clasificado con PKL del cliente ({tonos_pkl} grupos)")
-            elif votos:
-                piezas.append(f"tono verificado {votos}× por grupo")
-            if guarda:
-                piezas.append(f"guarda del tono: {guarda} Negativos sin señalamiento pasaron a Neutro")
-            if por_pkl:
-                piezas.append(f"Tema por PKL del cliente: {por_pkl}")
-            elif reglas is not None:
-                piezas.append(f"Tema por reglas: {reglas} · por IA: {por_llm or 0}")
-            if cubos_nuevos:
-                piezas.append("Cubos nuevos específicos: " + ", ".join(cubos_nuevos[:4]))
-            if fallback:
-                piezas.append(f"⚠️ {fallback} etiquetas con respaldo determinista")
-            if piezas:
-                st.info("Análisis de Tono/Tema/Sub-tema · " + " · ".join(piezas))
-            if errores:
-                st.caption("Avisos del modelo: " + " | ".join(map(str, errores[:2])))
-            temas_gen = analisis.get("taxonomia") or []
-            detalle_tax = analisis.get("taxonomia_detalle") or {}
-            if temas_gen:
-                modo = analisis.get("modo_taxonomia")
-                if modo == "pkl":
-                    etiqueta = "clases del PKL del cliente"
-                elif modo in ("lote", "automatica"):
-                    etiqueta = "de este lote"
-                else:
-                    etiqueta = "nombres candidatos del cliente"
-                titulo_exp = ("Temas del PKL (%d, %s)" % (len(temas_gen), etiqueta)
-                              if modo == "pkl"
-                              else "Temas de este lote (%d, %s)" % (len(temas_gen), etiqueta))
-                with st.expander(titulo_exp, expanded=(modo in ("lote", "automatica", "pkl"))):
-                    st.markdown(" · ".join("`%s`" % t for t in temas_gen))
-                    if detalle_tax:
-                        st.download_button(
-                            "⬇ Descargar Temas de este lote (JSON)",
-                            data=json.dumps(detalle_tax, ensure_ascii=False, indent=1),
-                            file_name="temas_%s.json" % str(
-                                st.session_state.get("output_filename", "cliente")).replace(".xlsx", ""),
-                            mime="application/json",
-                        )
-                        if modo == "pkl":
-                            st.caption("Son las clases del PKL de tema del cliente. No se inventan "
-                                       "nombres bottom-up ni se reescriben con el quality-gate del lote.")
-                        else:
-                            st.caption("Son los Temas armados bottom-up en esta corrida. El próximo lote "
-                                       "vuelve a agrupar sus propios subtemas; no se reutiliza el vocabulario.")
-        
-        st.markdown(f"""
-        <div class="metrics-grid">
-          <div class="metric-card m-total"><div class="metric-val" style="color:var(--text)">{total}</div><div class="metric-lbl">Total Registros</div></div>
-          <div class="metric-card m-unique"><div class="metric-val" style="color:var(--green)">{uniq}</div><div class="metric-lbl">Únicos</div></div>
-          <div class="metric-card m-dup"><div class="metric-val" style="color:var(--amber)">{dups}</div><div class="metric-lbl">Duplicados</div></div>
-          <div class="metric-card m-time"><div class="metric-val" style="color:var(--blue)">{dur}</div><div class="metric-lbl">Tiempo de Ejecución</div></div>
-        </div>""", unsafe_allow_html=True)
-        
-        _historial = []
-        try:
-            from historial_cliente import listar_historial
-            _sl = (st.session_state.get("ai_config") or {}).get("brand", "") or \
-                (st.session_state.get("pending_ai_config") or {}).get("brand", "")
-            if _sl:
-                _historial = listar_historial(_sl, extra=st.session_state.get("ai_config_extra") or {})
-        except Exception:
-            _historial = []
-        if _historial:
-            with st.expander(f"Historial del cliente ({len(_historial)} corridas previas)"):
-                for h in _historial[:10]:
-                    st.markdown(f"- **{h.get('fecha','')}** · {h.get('unique_rows','')} únicas"
-                                f" · {h.get('total_rows','')} filas · {h.get('process_duration','')}s"
-                                f" · {len(h.get('taxonomia') or [])} temas · `{h.get('archivo','')}`")
-
-        c1, c2 = st.columns(2)
-        c1.download_button(
-            "⬇ Descargar Xlsx Estructurado con IA",
-            data=st.session_state.output_data,
-            file_name=st.session_state.output_filename,
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            use_container_width=True,
-            type="primary"
-        )
-        if c2.button("Nuevo análisis", use_container_width=True):
-            pwd = st.session_state.get("password_correct")
-            st.session_state.clear()
-            st.session_state.password_correct = pwd
-            st.rerun()
-
-    st.markdown(
-        '<div class="footer">Estructuración y Limpieza · Johnathan Cortés ©</div>',
-        unsafe_allow_html=True
-    )
 
 if __name__ == "__main__":
     main()
