@@ -273,5 +273,18 @@ class TestReglaTragedia(unittest.TestCase):
         self.assertEqual(etiquetas[3]['tono'], 'Negativo')
 
 
+class TestEstiloMuse(unittest.TestCase):
+    def test_ejemplos_buenos_pasan_el_gate(self):
+        # Los ejemplos que le mostramos al modelo deben ser impecables.
+        from catalogo_tono_tema import TEMAS_EJEMPLO_BUENOS
+        malos = [t for t in TEMAS_EJEMPLO_BUENOS
+                 if not az.tema_frase_natural(t)]
+        self.assertEqual(malos, [])
+
+    def test_ejemplos_buenos_son_unicos(self):
+        from catalogo_tono_tema import TEMAS_EJEMPLO_BUENOS
+        self.assertEqual(len(set(TEMAS_EJEMPLO_BUENOS)), len(TEMAS_EJEMPLO_BUENOS))
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -617,6 +617,9 @@ _RE_ADJETIVO = re.compile(
     r'(ales|iles|icos|icas|ivos|ivas|osos|osas|entes|antes|bles|al|il|ico|ica|ivo|iva|'
     r'oso|osa|ente|ante|ble)$'
 )
+# Terminaciones adjetivales que _RE_ADJETIVO no cubre; solo se usan para no
+# marcar como "mash" un sustantivo seguido de adjetivos ("urbana", "costeña").
+_RE_ADJ_EXTRA = re.compile(r'(ano|ana|ense|ensa|eño|eña|ino|ina)$')
 _MARCO_HEAD = MARCO | {'estudio', 'estudios', 'reporte', 'reportes', 'cifra', 'cifras',
                        'balance', 'balances'}
 
@@ -628,8 +631,19 @@ def _capitalizar_etiqueta(s: str) -> str:
     return s[0].upper() + s[1:]
 
 
+# Sustantivos que el regex de adjetivos confunde por su terminación
+# ("carnaval" termina en -al). Como cabeza de tema son sustantivos plenos:
+# "Carnaval de Barranquilla", "Festival de cine".
+_SUSTANTIVOS_NO_ADJETIVO = frozenset({
+    'carnaval', 'carnavales', 'festival', 'festivales', 'hospital', 'hospitales',
+    'canal', 'canales', 'animal', 'animales', 'portal', 'portales',
+})
+
+
 def _es_adjetivo_tematico(tok: str) -> bool:
     t = nz(tok)
+    if t in _SUSTANTIVOS_NO_ADJETIVO:
+        return False
     if t in ADJ_PRENOMINAL or t in ADJETIVOS_TEMA:
         return True
     return bool(t) and len(t) >= 5 and _RE_ADJETIVO.search(t)
@@ -960,7 +974,12 @@ def problemas_calidad_tema(nombre: str, permitir_vago: bool = False,
     if contenido and _es_adjetivo_tematico(w[0]) and toks[0] not in ADJ_PRENOMINAL:
         p.append('empieza_por_adjetivo')
     if len(contenido) >= 3 and not nexos:
-        p.append('mash_keywords')
+        # Sustantivo + adjetivos ("Movilidad urbana sostenible") es sintaxis,
+        # no un mash de keywords: se acepta si lo que sigue al núcleo son
+        # adjetivos (el regex no cubre -ano/-ana, -ense ni -eño/-eña).
+        resto = [w[i] for i in contenido_i[1:]]
+        if not all(_es_adjetivo_tematico(x) or _RE_ADJ_EXTRA.search(x) for x in resto):
+            p.append('mash_keywords')
     if len(contenido) == 2 and not nexos:
         w0, w1 = w[contenido_i[0]], w[contenido_i[1]]
         # "Carnaval 2027", "Elecciones 2026": sustantivo + año no es mash.
@@ -2313,6 +2332,10 @@ def prompt_temas_familias(familias: Sequence[dict]) -> str:
         'abstrae el asunto común, no repitas ni parafrasees un subtema. '
         'Si la familia tiene un solo subtema, nombra su gran asunto '
         '(p. ej. subtema "Conversatorio sobre Alzheimer" → tema "Salud y bienestar").\n'
+        'ESTILO: escribe como un analista senior, no como un robot: español natural, '
+        'sobrio y preciso. Prefiere lo concreto ("Empleo juvenil") a lo abstracto '
+        '("Fortalecimiento de la empleabilidad juvenil"). Si dudas entre dos opciones, '
+        'elige la más corta y clara.\n'
         '%s\n'
         'BIEN (imita esta calidad): %s.\n'
         'MAL (se rechaza siempre): %s.\n'
@@ -2339,7 +2362,8 @@ def prompt_reparacion_tema(fallos: Sequence[dict]) -> str:
     buenos = ', '.join('"%s"' % x for x in TEMAS_EJEMPLO_BUENOS[:6])
     return (
         'Reescribe SOLO estos temas. El resultado debe ser una frase nominal española COMPLETA,\n'
-        'un nivel más general que los subtemas, lista para Power BI.\n'
+        'un nivel más general que los subtemas, lista para Power BI, con estilo de analista senior:\n'
+        'español natural, sobrio y preciso; lo concreto antes que lo abstracto.\n'
         'Ejemplos válidos: %s.\n'
         'No reutilices el texto rechazado. No recortes el núcleo ni el objeto.\n'
         'No copies el titular ni uses las primeras palabras del titular como tema.\n'
@@ -2396,8 +2420,10 @@ def nombrar_familias_tema(cfg: dict, familias: Sequence[dict],
     if not familias:
         return out
     sys_tema = (
-        'Eres analista de medios en Colombia. Escribes UN tema por familia: '
-        'frase nominal española COMPLETA (nunca fragmento, verbo, sigla suelta ni collage). JSON.'
+        'Eres un analista senior de medios en Colombia con excelente redacción. '
+        'Escribes UN tema por familia: una frase nominal española clara, sobria y '
+        'COMPLETA — la que pondrías en un dashboard ejecutivo. Nada de jerga, '
+        'nada de fragmentos, nada de adornos burocráticos. JSON.'
     )
     if cfg.get('api_key'):
         crudos: Dict[int, str] = {}

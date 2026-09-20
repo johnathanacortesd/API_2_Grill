@@ -84,8 +84,18 @@ por `analyzer_tono_tema.ultimo_resumen()` en `resultado["analisis"]`.
    (solo evento genérico + sujeto genérico, sin objeto: `Reunión de expertos en crimen`).
    El prompt de reparación exige reformular el primero y concretar el segundo.
 7. **Nunca "Otros"** — `CUBO_PROHIBIDO`, `cubo_valido`. Jev (TypeSafe) es opcional y **solo**
-   corrige temas mal clasificados (boolean/choice, alta confianza). No genera subtemas ni reemplaza
-   el pipeline de tono.
+   audita temas ya nombrados (boolean/choice, alta confianza): nunca genera subtemas ni
+   decide el tono. El tono siempre sale de la API de OpenAI + las guardas deterministas,
+   que codifican el criterio del cliente (crítica dirigida, vocero experto, tragedia).
+   Sin `TYPESAFE_API_KEY` el pipeline funciona igual; la app lo avisa sin bloquear.
+
+Estilo de los temas ("estilo Muse", v4.1): el prompt de nombrado (`sys_tema`,
+`prompt_temas_familias`, `prompt_reparacion_tema`) pide español natural, sobrio y preciso —
+lo concreto antes que lo abstracto ("Empleo juvenil", no "Fortalecimiento de la
+empleabilidad juvenil")— y `TEMAS_EJEMPLO_BUENOS` se curó con 16 ejemplos impecables
+(todos pasan `tema_frase_natural`, verificado por test). El gate también se calibró:
+sustantivos como "carnaval"/"festival" ya no se confunden con adjetivos, y
+sustantivo + adjetivos ("Movilidad urbana sostenible") no cuenta como `mash_keywords`.
 
 Estabilizadores porque el modelo es pequeño (sesgo sistemático, no ruido):
 

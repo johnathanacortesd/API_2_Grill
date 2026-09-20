@@ -381,7 +381,7 @@ def main():
         <div class="app-header-icon">◈</div>
         <div class="app-header-text">
             <div class="app-header-title">Limpieza y Análisis de Noticias</div>
-            <div class="app-header-version">v4.0 · Tono/Tema/Subtema por reglas + IA · Realizado por Johnathan Cortés</div>
+            <div class="app-header-version">v4.1 · Tono/Tema/Subtema por reglas + IA · estilo Muse · Realizado por Johnathan Cortés</div>
         </div>
         <div class="app-header-badge">Estructurador + IA</div>
     </div>""", unsafe_allow_html=True)
@@ -602,8 +602,8 @@ def main():
                         st.error("❌ Falta configurar OPENAI_API_KEY en los Secrets de Streamlit: se usa para subtema y tema.")
                         st.stop()
                     if enable_ai and not typesafe_api_key:
-                        st.error("❌ Falta configurar TYPESAFE_API_KEY en los Secrets de Streamlit: se usa para el tono con Jev.")
-                        st.stop()
+                        st.warning("Sin TYPESAFE_API_KEY la verificación de temas con Jev queda desactivada "
+                                   "(es opcional); el tono, el subtema y el tema se generan igual con la API de OpenAI.")
                     
                     aliases_parsed = [
                         a.strip() for a in re.split(r"[,;]", alias_input) if a.strip()
