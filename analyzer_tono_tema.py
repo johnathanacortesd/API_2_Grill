@@ -971,7 +971,9 @@ def _cubo_mas_cercano(sub_tema: str, titulo: str, tax: dict) -> Optional[str]:
 # ============================================================================
 def prompt_sistema(cfg: dict) -> str:
     crit = cfg.get('criterio') or list(CRITERIOS_TONO)[0]
-    regla = CRITERIOS_TONO.get(crit) or list(CRITERIOS_TONO.values())[0]
+    # Criterio personalizado del perfil de cliente: gana sobre el catálogo.
+    regla = (cfg.get('criterio_texto') or '').strip() or CRITERIOS_TONO.get(crit) \
+        or list(CRITERIOS_TONO.values())[0]
     lineas = [
         'Eres analista senior de monitoreo de medios en Colombia. Etiquetas cada GRUPO de notas',
         '(una nota publicada por varios medios = un grupo) y devuelves JSON.',
@@ -2651,6 +2653,7 @@ def enrich_rows_with_ai(
         'aliases': list(aliases or []),
         'voceros': list(extra.get('voceros') or []),
         'criterio': extra.get('criterio') or list(CRITERIOS_TONO)[0],
+        'criterio_texto': (extra.get('criterio_texto') or '').strip(),
         'api_key': api_key,
         'typesafe_api_key': extra.get('typesafe_api_key') or '',
         'typesafe_model': extra.get('typesafe_model') or 'jev-latest',

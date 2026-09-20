@@ -48,6 +48,15 @@ Los subtemas se limpian y limitan a un máximo de seis palabras, como frases nom
 
 Las validaciones no contienen nombres ni reglas especiales para clientes concretos. El mecanismo es reutilizable: separa los tokens de cualquier `Marca principal`, identifica el tipo de acontecimiento y conserva las palabras que describen su objeto. Por ejemplo, puede formar etiquetas como `Lanzamiento de carrera deportiva`, `Convenio de formación profesional` o `Investigación por fallas operativas`, según el contenido de cada noticia.
 
+### 👥 Perfiles de cliente (multicliente)
+
+El tono, los alias, los voceros y la lista de Temas se adaptan por cliente sin tocar código:
+
+- **Selector "Perfil de cliente"** en la interfaz: carga marca, alias, voceros, criterio de tono y lista de Temas guardados. Los campos se pueden editar antes de procesar.
+- **Guardar perfil**: en *Ajustes finos* puedes guardar la configuración actual como un JSON en `clientes/` para reutilizarla en próximas corridas.
+- **Criterio de tono personalizado**: cada perfil puede traer su propia regla de tono en texto libre (`criterio_custom`), que reemplaza a las del catálogo para ese cliente.
+- **Historial por cliente**: cada corrida queda registrada y se muestra en "Historial del cliente".
+
 - **Ingesta Multi-fuente:** Captura y normalización de artículos desde RSS, sitios web y conectores de API.
 - **Análisis de Sentimientos:** Clasificación automatizada de titulares y contenido en espectros positivo, neutro y negativo.
 - **Extracción de Entidades y Palabras Clave:** Detección de organizaciones, personajes públicos y términos recurrentes.

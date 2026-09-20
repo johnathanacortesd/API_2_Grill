@@ -19,6 +19,9 @@ quedan **iguales**: son las mismas de Grill-API.
 | `app.py` | Interfaz Streamlit. Tema claro/oscuro, `APP_PASSWORD`, panel de progreso, descarga. |
 | `pipeline.py` | **Limpieza y estructuración (NO TOCAR)** + el hook al motor (`process_dossier`). |
 | `analyzer_tono_tema.py` | **Motor nuevo** de Tono/Tema/Sub-tema. |
+| `perfil_cliente.py` | **Perfiles de cliente (multicliente)**: CRUD de JSON en `clientes/` con marca, alias, voceros, criterio de tono (catálogo o texto libre `criterio_custom`) y lista fija de Temas opcional. |
+| `historial_cliente.py` | Historial de corridas por cliente (JSONL). `pipeline` lo alimenta, `app.py` lo muestra. |
+| `clientes/` | Perfiles de ejemplo (`universidad_simon_bolivar.json`, `fenavi.json`). |
 | `catalogo_tono_tema.py` | **Rúbrica del motor**: `CRITERIOS_TONO`, `TONOS`, `REGLAS_SUBTEMA`, `EJEMPLOS`, `CUBO_PROHIBIDO`, `MIN_PAL`/`MAX_PAL`. Las taxonomías nombradas son solo **nombres candidatos** opcionales; el tema del lote no se clasifica contra una lista cerrada. |
 | `ai_analyzer.py` | Legado. Solo se usan `extract_brand_context`, `generate_brand_variants`, `ensure_subtema_distinct_from_tema`. Su `enrich_rows_with_ai` ya **no se ejecuta**. |
 | `pkl_classifier.py` | Clasificadores PKL del cliente (opcionales) que **ganan** sobre el motor de lote/LLM en tono y/o tema. El quality-gate de frases del lote **no** reescribe las clases del PKL. El subtema nunca usa PKL. |
@@ -132,9 +135,30 @@ Este repo tiene **dos motores de análisis**, y el port solo cambia el de Grill:
 `ai_analyzer.py` **no se toca**: sigue alimentando `Contexto analizado`, la variante Sucre y el
 camino PKL. Si algún día se unifica el motor, hay que migrar Sucre en el mismo cambio; no antes.
 
-## 10. Estado conocido de las pruebas
+## 11. Perfiles de cliente (multicliente)
+
+El análisis se adapta por cliente sin tocar código, mediante `perfil_cliente.py`:
+
+- Cada perfil (`clientes/<slug>.json`) guarda: `brand`, `aliases`, `voceros`,
+  `criterio` (clave de `CRITERIOS_TONO`), `criterio_custom` (texto libre que, si
+  existe, **reemplaza** la regla del catálogo en `prompt_sistema` vía
+  `cfg['criterio_texto']`) y `taxonomia` opcional (`{"temas": [...]}`).
+- En `app.py`, el selector "Perfil de cliente" precarga los campos del formulario;
+  el usuario puede editarlos antes de procesar. Desde "Ajustes finos" puede guardar
+  la configuración actual como perfil nuevo. Si el perfil ya existe, el guardado se
+  detiene con un aviso salvo que se marque "Sobrescribir".
+- El modo manual (digitar marca, alias y voceros en cada corrida) sigue siendo el
+  valor por defecto del selector: los perfiles son un atajo opcional, no un requisito.
+- Precedencia de la lista de Temas: JSON subido en el formulario > opción elegida
+  en "Lista de Temas" > `taxonomia` del perfil > automática bottom-up del lote.
+- `historial_cliente.py` registra cada corrida por marca (JSONL en `HISTORIAL_DIR`
+  o `./historial/`); es best-effort y nunca interrumpe el pipeline.
+- Variable de entorno opcional `CLIENTES_DIR` para mover la carpeta de perfiles.
+
+## 12. Estado conocido de las pruebas
 
 `python -m unittest discover -s tests` cubre las invariantes de tema/subtema del lote
-(clustering, canonización, un tema por subtema, tema ≠ subtema, sin memoria entre corridas)
-y el camino PKL (el predict del PKL se invoca y gana sobre el nombrado libre/LLM del lote).
-No hay llamadas a API.
+(clustering, canonización, un tema por subtema, tema ≠ subtema, sin memoria entre corridas),
+el camino PKL (el predict del PKL se invoca y gana sobre el nombrado libre/LLM del lote)
+y los perfiles de cliente (`tests/test_perfil_cliente.py`: validación, roundtrip de
+guardado/carga, historial y `criterio_texto` en el prompt). No hay llamadas a API.

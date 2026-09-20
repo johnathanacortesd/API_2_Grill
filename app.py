@@ -11,6 +11,7 @@ import streamlit as st
 import pandas as pd
 
 from catalogo_tono_tema import CRITERIOS_TONO
+from perfil_cliente import cargar_perfil, guardar_perfil, listar_perfiles, perfil_a_resumen, slugify
 from pipeline import process_dossier
 from pkl_classifier import PklClassifierError, load_sklearn_estimator
 
@@ -404,6 +405,41 @@ def main():
                 refresh_config_cache()
                 st.success("Config recargada")
 
+        # --- Perfil de cliente (multicliente): precarga marca, alias, voceros,
+        #     criterio de tono y lista de Temas guardados para cada cliente. ---
+        _SIN_PERFIL = "Sin perfil (configuración manual)"
+        try:
+            _perfiles = listar_perfiles()
+        except Exception:
+            _perfiles = []
+        _opciones_perfil = [_SIN_PERFIL] + [p["nombre"] for p in _perfiles]
+        sel_perfil = st.selectbox(
+            "Perfil de cliente",
+            _opciones_perfil,
+            help="Carga la configuración guardada del cliente. Puedes editar los campos "
+                 "abajo antes de procesar; también puedes guardar la configuración actual "
+                 "como un perfil nuevo desde 'Ajustes finos'.",
+        )
+        _perfil_actual = None
+        if sel_perfil != _SIN_PERFIL:
+            _pid = next((p["id"] for p in _perfiles if p["nombre"] == sel_perfil), None)
+            if _pid:
+                _perfil_actual = cargar_perfil(_pid)
+                if st.session_state.get("_perfil_aplicado") != sel_perfil:
+                    st.session_state["brand_input"] = _perfil_actual.get("brand", "")
+                    st.session_state["alias_input"] = "; ".join(_perfil_actual.get("aliases", []))
+                    st.session_state["voceros_input"] = "; ".join(_perfil_actual.get("voceros", []))
+                    st.session_state["criterio_input"] = (
+                        _perfil_actual.get("criterio") or list(CRITERIOS_TONO)[0])
+                    st.session_state["criterio_custom_input"] = _perfil_actual.get("criterio_custom", "")
+                    st.session_state["_perfil_taxonomia"] = _perfil_actual.get("taxonomia")
+                    st.session_state["_perfil_aplicado"] = sel_perfil
+                    st.rerun()
+                st.caption("📋 " + perfil_a_resumen(_perfil_actual))
+        else:
+            st.session_state["_perfil_aplicado"] = None
+            st.session_state["_perfil_taxonomia"] = None
+
         with st.form("main_form"):
             st.markdown('<div class="sec-label">1. Sube el archivo de entrada</div>', unsafe_allow_html=True)
             st.markdown("""
@@ -427,13 +463,15 @@ def main():
                 brand_input = st.text_input(
                     "Marca o Cliente Principal*",
                     placeholder="Ej: Universidad de Antioquia, Ecopetrol, Bancolombia",
-                    help="El tono se mide solo sobre esta marca, sus voceros y sus alias."
+                    help="El tono se mide solo sobre esta marca, sus voceros y sus alias.",
+                    key="brand_input",
                 )
             with c_alias:
                 alias_input = st.text_input(
                     "Alias o términos relacionados (separados por coma o punto y coma)",
                     placeholder="Ej: UdeA; Alma Mater; rectoría; la universidad",
-                    help="Variantes del nombre que deban atribuirse al cliente."
+                    help="Variantes del nombre que deban atribuirse al cliente.",
+                    key="alias_input",
                 )
 
             c_crit, c_voc = st.columns([3, 2])
@@ -443,6 +481,7 @@ def main():
                     list(CRITERIOS_TONO.keys()),
                     index=0,
                     horizontal=False,
+                    key="criterio_input",
                     help=("Aspectual estricto: la crítica dirigida a la marca es lo único Negativo "
                           "(gobiernos, alcaldías, entidades públicas). Favorabilidad del sector: "
                           "cuenta cómo queda parado el sector aunque la marca no sea el actor (gremios, "
@@ -452,7 +491,8 @@ def main():
                 voceros_input = st.text_input(
                     "Vocero(s) de la marca (opcional)",
                     placeholder="Ej: Gonzalo Moreno; el rector",
-                    help="Personas cuyo nombre se atribuye a la marca para el tono."
+                    help="Personas cuyo nombre se atribuye a la marca para el tono.",
+                    key="voceros_input",
                 )
                 tax_nombre = st.selectbox(
                     "Lista de Temas",
@@ -492,6 +532,30 @@ def main():
                     help="Cada grupo se etiqueta N veces y gana la mayoría; un empate cae a Neutro. "
                          "Con 2 se reducen los vaivenes de los modelos pequeños; con 3 sube el costo "
                          "una vez más.")
+                st.markdown("**💾 Perfil de cliente**")
+                guardar_chk = st.checkbox(
+                    "Guardar esta configuración como perfil al procesar",
+                    help="Crea o actualiza el JSON del cliente (marca, alias, voceros, criterio y "
+                         "lista de Temas si subiste un JSON) para reutilizarlo en próximas corridas.",
+                )
+                sobrescribir_chk = st.checkbox(
+                    "Sobrescribir el perfil si ya existe uno con ese nombre",
+                    help="Por seguridad, si el perfil ya existe y no marcas esta casilla, "
+                         "el proceso se detiene con un aviso en lugar de reemplazarlo.",
+                )
+                nombre_perfil = st.text_input(
+                    "Nombre del perfil",
+                    key="nombre_perfil_input",
+                    placeholder="Por defecto se usa la marca",
+                )
+                criterio_custom = st.text_area(
+                    "Criterio de tono personalizado (opcional)",
+                    key="criterio_custom_input",
+                    height=80,
+                    placeholder="Si lo llenas, este texto reemplaza al criterio del catálogo para este cliente.",
+                    help="Texto libre con la regla de tono propia del cliente. Tiene prioridad sobre "
+                         "el criterio seleccionado arriba.",
+                )
 
             st.markdown('<div class="sec-label">3. Modelos PKL del cliente (opcional)</div>', unsafe_allow_html=True)
             st.markdown(
@@ -570,6 +634,45 @@ def main():
                         "name": f1.name,
                         "size": int(getattr(f1, "size", 0) or len(st.session_state["pending_dossier"])),
                     }
+                    criterio_texto = (criterio_custom or "").strip()
+                    if guardar_chk:
+                        _nombre_final = (nombre_perfil or "").strip() or brand_input.strip()
+                        _pid_cand = slugify(_nombre_final)
+                        _existe = any(p["id"] == _pid_cand for p in listar_perfiles())
+                        if _existe and not sobrescribir_chk:
+                            st.warning(
+                                "Ya existe un perfil llamado '%s'. Si quieres actualizarlo, "
+                                "marca 'Sobrescribir el perfil si ya existe' y procesa de nuevo; "
+                                "si es otro cliente, cambia el nombre del perfil." % _nombre_final
+                            )
+                            st.stop()
+                        try:
+                            _pid = guardar_perfil({
+                                "nombre": _nombre_final,
+                                "brand": brand_input.strip(),
+                                "aliases": aliases_parsed,
+                                "voceros": [v.strip() for v in re.split(r"[,;]", voceros_input) if v.strip()],
+                                "criterio": criterio,
+                                "criterio_custom": criterio_texto,
+                                "taxonomia": tax_cargada,
+                                "notas": "",
+                            })
+                            st.toast(f"Perfil de cliente guardado: {_pid}")
+                        except ValueError as exc:
+                            st.error(str(exc))
+                            st.stop()
+                    # Precedencia de la lista de Temas: JSON subido > opción elegida >
+                    # taxonomía del perfil > automática del lote.
+                    _TAX_AUTO = "Automática según el archivo (recomendada)"
+                    _perfil_tax = st.session_state.get("_perfil_taxonomia")
+                    if tax_cargada:
+                        tax_eff = tax_cargada
+                    elif tax_nombre != _TAX_AUTO:
+                        tax_eff = tax_nombre
+                    elif _perfil_tax:
+                        tax_eff = _perfil_tax
+                    else:
+                        tax_eff = tax_nombre
                     if enable_ai or tone_bytes or theme_bytes:
                         st.session_state["pending_ai_config"] = {
                             "enabled": bool(enable_ai),
@@ -577,7 +680,8 @@ def main():
                             "aliases": aliases_parsed,
                             "voceros": [v.strip() for v in re.split(r"[,;]", voceros_input) if v.strip()],
                             "criterio": criterio,
-                            "taxonomia": tax_cargada if tax_cargada else tax_nombre,
+                            "criterio_texto": criterio_texto,
+                            "taxonomia": tax_eff,
                             "cubos_objetivo": int(cubos_objetivo_input),
                             "votos": int(votos_input),
                             "permitir_cubos_nuevos": True,
