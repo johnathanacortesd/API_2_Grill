@@ -200,9 +200,13 @@ El análisis se adapta por cliente sin tocar código, mediante `perfil_cliente.p
   clientes consumen la API. Lee `SMTP_HOST/PORT/USER/PASSWORD/FROM` y
   `USAGE_NOTIFY_EMAIL` de los Secrets (fallback a entorno); best-effort, nunca
   interrumpe. Con Gmail, `SMTP_PASSWORD` debe ser una contraseña de aplicación.
-- Tema visual: paleta clara cálida estilo Muse (fondo charcoal cálido `#12100d` con auroras coral, tarjetas de vidrio
-  (glassmorphism, blur), título en serif editorial Instrument Serif, acento coral
-  `#e8937c` con glow; vista previa estática en `tema_muse_preview.html`.
+- Tema visual v4.3 (profesional claro): neutros sobrios (`#f4f4f2` fondo, `#ffffff`
+  tarjetas), primario carbón `#1c1917`, azul `#1d4ed8` solo para progreso y estados;
+  sin degradados, glows ni glassmorphism; tipografía Inter. Vista previa estática en
+  `tema_muse_preview.html`.
+- UX de procesamiento: al enviar el formulario se marca `st.session_state["procesando"]`
+  y solo se muestra la tarjeta "Procesando dossier de noticias" (se ocultan encabezado
+  y formulario); al terminar o fallar se restablece con try/finally.
 - Variable de entorno opcional `CLIENTES_DIR` para mover la carpeta de perfiles.
 
 ## 12. Estado conocido de las pruebas
