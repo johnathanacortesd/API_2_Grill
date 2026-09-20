@@ -194,6 +194,14 @@ El análisis se adapta por cliente sin tocar código, mediante `perfil_cliente.p
   en "Lista de Temas" > `taxonomia` del perfil > automática bottom-up del lote.
 - `historial_cliente.py` registra cada corrida por marca (JSONL en `HISTORIAL_DIR`
   o `./historial/`); es best-effort y nunca interrumpe el pipeline.
+- `auditoria_mail.py` envía un correo de auditoría de uso tras cada corrida con IA
+  (`enviar_auditoria_desde_resultado`, invocado desde `pipeline.process_dossier`):
+  marca/cliente, alias, voceros, criterio, filas, tonos y duración, para saber qué
+  clientes consumen la API. Lee `SMTP_HOST/PORT/USER/PASSWORD/FROM` y
+  `USAGE_NOTIFY_EMAIL` de los Secrets (fallback a entorno); best-effort, nunca
+  interrumpe. Con Gmail, `SMTP_PASSWORD` debe ser una contraseña de aplicación.
+- Tema visual: paleta clara cálida estilo Muse (fondo papel `#faf9f6`, acento coral
+  `#d97757`/`#bd5c39`); vista previa estática en `tema_muse_preview.html`.
 - Variable de entorno opcional `CLIENTES_DIR` para mover la carpeta de perfiles.
 
 ## 12. Estado conocido de las pruebas

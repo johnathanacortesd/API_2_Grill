@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Grill-API v4.1 · Tema estilo Muse (vista previa)</title>
+<style>
+:root{
+    --bg:#faf9f6;--s1:#ffffff;--s2:#f3f0e8;--s3:#e9e3d6;
+    --border:#e2dccf;--border2:#d3c9b4;
+    --text:#1f1e1c;--text2:#4a453d;--text3:#7b7468;--text4:#a89f90;
+    --accent:#d97757;--accent2:#bd5c39;--accent3:#9e4a2c;
+    --accent-bg:#fbf3ea;--accent-bg2:#f6e4d2;--accent-bdr:#eecfae;
+    --green:#059669;--green-bg:#ecfdf5;
+    --r:8px;--r2:12px;--r3:16px;
+    --shadow-sm:0 1px 2px rgba(60,64,67,0.1),0 1px 3px rgba(60,64,67,0.08);
+    --shadow-md:0 1px 3px rgba(60,64,67,0.12),0 4px 8px rgba(60,64,67,0.08);
+}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--text);font-family:'Google Sans Text','Inter',-apple-system,'Segoe UI',sans-serif;font-size:14px;margin:0;padding:24px;-webkit-font-smoothing:antialiased}
+.wrap{max-width:880px;margin:0 auto}
+.app-header{background:var(--s1);border:1px solid var(--border);border-radius:var(--r3);padding:1rem 1.5rem;margin-bottom:1rem;display:flex;align-items:center;gap:1rem;box-shadow:var(--shadow-sm);position:relative;overflow:hidden}
+.app-header::after{content:'';position:absolute;top:0;left:0;right:0;height:3px;background:linear-gradient(90deg,#d97757,#df8a5c,#ecb78d)}
+.app-header-icon{width:40px;height:40px;background:linear-gradient(135deg,#d97757,#bd5c39);border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:1.2rem;color:#fff;box-shadow:0 2px 8px rgba(217,119,87,0.3)}
+.app-header-title{font-size:1.25rem;font-weight:700;letter-spacing:-0.01em}
+.app-header-version{font-family:monospace;font-size:0.65rem;color:var(--text3);letter-spacing:0.03em;margin-top:0.15rem}
+.badge{background:var(--accent-bg);border:1px solid var(--accent-bdr);color:var(--accent2);font-family:monospace;font-size:0.6rem;padding:0.25rem 0.75rem;border-radius:100px;letter-spacing:0.04em;text-transform:uppercase;white-space:nowrap}
+.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:0.6rem;margin:0.8rem 0}
+.card{background:var(--s1);border:1px solid var(--border);border-radius:var(--r2);padding:0.8rem 0.6rem;text-align:center;box-shadow:var(--shadow-sm);position:relative;overflow:hidden}
+.card::before{content:'';position:absolute;top:0;left:0;right:0;height:3px}
+.c1::before{background:linear-gradient(90deg,#7b7468,#a89f90)}
+.c2::before{background:linear-gradient(90deg,#059669,#34d399)}
+.c3::before{background:linear-gradient(90deg,#d97757,#ecb78d)}
+.c4::before{background:linear-gradient(90deg,#1a73e8,#4285f4)}
+.val{font-size:1.5rem;font-weight:700}
+.lbl{font-family:monospace;font-size:0.62rem;color:var(--text3);text-transform:uppercase;letter-spacing:0.08em}
+.form{background:var(--s1);border:1px solid var(--border);border-radius:var(--r3);padding:1.2rem 1.5rem;box-shadow:var(--shadow-md);margin-top:1rem}
+.sec{font-size:0.72rem;font-weight:700;color:var(--text2);letter-spacing:0.08em;text-transform:uppercase;padding-bottom:0.3rem;border-bottom:2px solid var(--s3);margin:0.8rem 0 0.5rem;display:flex;align-items:center;gap:0.5rem}
+.sec::before{content:'';width:3px;height:12px;background:linear-gradient(180deg,#d97757,#bd5c39);border-radius:2px}
+input{width:100%;background:var(--s1);border:1.5px solid var(--border);color:var(--text);border-radius:var(--r);font-size:0.9rem;padding:0.5rem 0.75rem;margin:0.3rem 0}
+input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(217,119,87,0.12)}
+.btn{display:inline-block;background:var(--accent);color:#fff;border:none;border-radius:100px;font-weight:500;font-size:0.92rem;padding:0.6rem 1.5rem;margin-top:0.6rem;box-shadow:0 1px 3px rgba(217,119,87,0.3),0 4px 12px rgba(217,119,87,0.15)}
+.btn2{display:inline-block;background:var(--s1);border:1.5px solid var(--border);color:var(--text);border-radius:100px;font-size:0.88rem;padding:0.5rem 1.2rem;margin-top:0.6rem;margin-left:0.5rem}
+.ok{background:linear-gradient(135deg,#ecfdf5,#d1fae5);border:1px solid #a7f3d0;border-left:4px solid #059669;border-radius:var(--r2);padding:0.8rem 1.2rem;margin-top:1rem;display:flex;gap:0.8rem;align-items:center}
+.palette{display:flex;gap:0.5rem;margin-top:1rem;flex-wrap:wrap}
+.sw{flex:1;min-width:90px;border-radius:var(--r2);border:1px solid var(--border);overflow:hidden;background:#fff}
+.sw div:first-child{height:44px}
+.sw div:last-child{font-family:monospace;font-size:0.62rem;padding:0.3rem 0.5rem;color:var(--text2)}
+.note{color:var(--text3);font-size:0.8rem;margin-top:1rem}
+</style>
+</head>
+<body>
+<div class="wrap">
+    <div class="app-header">
+        <div class="app-header-icon">🔥</div>
+        <div style="flex:1">
+            <div class="app-header-title">Grill-API · Limpieza y análisis</div>
+            <div class="app-header-version">v4.1 · Tono/Tema/Subtema por reglas + IA · estilo Muse · Realizado por Johnathan Cortés</div>
+        </div>
+        <div class="badge">Multicliente</div>
+    </div>
+
+    <div class="metrics">
+        <div class="card c1"><div class="val">57</div><div class="lbl">Filas</div></div>
+        <div class="card c2"><div class="val">41</div><div class="lbl">Únicas</div></div>
+        <div class="card c3"><div class="val">30</div><div class="lbl">Positivas</div></div>
+        <div class="card c4"><div class="val">12.3s</div><div class="lbl">Duración</div></div>
+    </div>
+
+    <div class="form">
+        <div class="sec">Configuración de análisis IA</div>
+        <input value="Universidad Simón Bolívar" readonly>
+        <input value="Unisimón" readonly>
+        <span class="btn">▶ Iniciar Limpieza y Análisis</span>
+        <span class="btn2">Guardar perfil</span>
+    </div>
+
+    <div class="ok">✅ <span>Análisis completado. El correo de auditoría se envió al dueño.</span></div>
+
+    <div class="palette">
+        <div class="sw"><div style="background:#d97757"></div><div>#d97757 coral</div></div>
+        <div class="sw"><div style="background:#bd5c39"></div><div>#bd5c39 hover</div></div>
+        <div class="sw"><div style="background:#fbf3ea"></div><div>#fbf3ea fondo acento</div></div>
+        <div class="sw"><div style="background:#faf9f6"></div><div>#faf9f6 papel</div></div>
+        <div class="sw"><div style="background:#1f1e1c"></div><div>#1f1e1c texto</div></div>
+        <div class="sw"><div style="background:#e2dccf"></div><div>#e2dccf borde</div></div>
+    </div>
+    <p class="note">Vista previa estática del tema claro estilo Muse aplicado a la app. Los verdes/azules funcionales se conservan; solo cambió la paleta cálida.</p>
+</div>
+</body>
+</html>
