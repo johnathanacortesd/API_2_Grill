@@ -3,71 +3,65 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Vista previa · Edición Blade Runner v4.4</title>
+<title>Vista previa · Tema oscuro v4.5</title>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Roboto+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 :root{
     color-scheme:dark;
-    --bg:#060608;--s1:#0d0d12;--s2:#121219;--s3:#1a1a24;
-    --border:#20202c;--border2:#2e2e3d;
-    --text:#ece9e1;--text2:#a9a9b6;--text3:#71717e;--text4:#4c4c59;
-    --neon:#ffb224;--neon-line:rgba(255,178,36,0.55);
-    --cyan:#3fd2e8;--green:#3ddc97;
-    --glow:0 0 14px rgba(255,178,36,0.35);
+    --bg:#000000;--s1:#0b0b0c;--s2:#111113;--s3:#17171a;
+    --border:#1e1e22;--border2:#2b2b31;
+    --text:#f2f0eb;--text2:#a8a8b0;--text3:#6f6f78;--text4:#48484f;
+    --acento:#ff4d1c;--acento-hover:#ff6a3d;--acento-soft:rgba(255,77,28,0.10);--acento-line:rgba(255,77,28,0.45);
+    --green:#3ddc97;
     --r2:8px;--r3:12px;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 body{
-    background:
-        radial-gradient(1000px 340px at 50% -90px, rgba(255,178,36,0.075), transparent 70%),
-        radial-gradient(700px 260px at 85% 110%, rgba(63,210,232,0.045), transparent 70%),
-        var(--bg);
+    background:var(--bg);
     color:var(--text);font-family:'Inter',sans-serif;font-size:14px;min-height:100vh;
     padding:1.25rem;display:flex;justify-content:center;
 }
 .wrap{width:100%;max-width:1100px}
-.app-header{background:linear-gradient(180deg,#101016,#0c0c11);border:1px solid var(--border);border-radius:var(--r3);padding:1rem 1.4rem;margin-bottom:1.1rem;display:flex;align-items:center;gap:0.9rem;position:relative;overflow:hidden;box-shadow:0 6px 20px rgba(0,0,0,0.6);}
-.app-header::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,var(--neon-line),transparent);}
-.app-header-icon{width:38px;height:38px;background:#0a0a0d;border:1px solid var(--neon-line);border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:1.1rem;color:var(--neon);box-shadow:var(--glow);}
+.app-header{background:#0b0b0c;border:1px solid var(--border);border-radius:var(--r3);padding:1rem 1.4rem;margin-bottom:1.1rem;display:flex;align-items:center;gap:0.9rem;position:relative;overflow:hidden;box-shadow:0 6px 20px rgba(0,0,0,0.65);}
+.app-header::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,var(--acento-line),transparent);}
+.app-header-icon{width:38px;height:38px;background:#000000;border:1px solid var(--acento-line);border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:1.1rem;color:var(--acento);}
 .app-header-title{font-size:1.2rem;font-weight:700;letter-spacing:-0.015em}
 .app-header-version{font-family:'Roboto Mono',monospace;font-size:0.64rem;color:var(--text3);letter-spacing:0.14em;margin-top:0.2rem;text-transform:uppercase}
-.app-header-badge{margin-left:auto;background:rgba(63,210,232,0.10);border:1px solid rgba(63,210,232,0.35);color:var(--cyan);font-family:'Roboto Mono',monospace;font-size:0.62rem;padding:0.28rem 0.75rem;border-radius:6px;letter-spacing:0.12em;text-transform:uppercase;white-space:nowrap;}
-.card{background:var(--s1);border:1px solid var(--border);border-radius:var(--r3);padding:1.25rem 1.5rem;margin-bottom:1rem;box-shadow:0 6px 20px rgba(0,0,0,0.6);}
+.app-header-badge{margin-left:auto;background:var(--acento-soft);border:1px solid var(--acento-line);color:var(--acento);font-family:'Roboto Mono',monospace;font-size:0.62rem;padding:0.28rem 0.75rem;border-radius:6px;letter-spacing:0.12em;text-transform:uppercase;white-space:nowrap;}
+.card{background:var(--s1);border:1px solid var(--border);border-radius:var(--r3);padding:1.25rem 1.5rem;margin-bottom:1rem;box-shadow:0 6px 20px rgba(0,0,0,0.65);}
 .sec-label{font-family:'Roboto Mono',monospace;font-size:0.68rem;color:var(--text2);letter-spacing:0.16em;text-transform:uppercase;padding-bottom:0.35rem;border-bottom:1px solid var(--border);margin:0.2rem 0 0.9rem;display:flex;align-items:center;gap:0.55rem;}
-.sec-label::before{content:'';display:inline-block;width:3px;height:13px;background:var(--neon);border-radius:1px;box-shadow:var(--glow)}
-.fake-input{background:#0a0a0e;border:1px solid var(--border2);border-radius:6px;padding:0.55rem 0.75rem;color:var(--text4);font-size:0.85rem;margin-bottom:0.6rem;}
-.btn{background:var(--neon);border:1px solid var(--neon);color:#171106;font-weight:700;font-size:0.9rem;padding:0.6rem 1.4rem;border-radius:8px;box-shadow:var(--glow);display:inline-block;margin-top:0.4rem;letter-spacing:0.02em}
-.live-panel{background:linear-gradient(180deg,#101016,#0b0b10);border:1px solid var(--border2);border-radius:var(--r3);padding:1.2rem 1.4rem;margin:1.5rem auto;max-width:720px;position:relative;overflow:hidden;box-shadow:0 6px 20px rgba(0,0,0,0.6);}
-.live-panel::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,var(--neon-line),transparent);}
-.live-panel::after{content:'';position:absolute;left:0;right:0;height:46px;top:-60px;background:linear-gradient(180deg,transparent,rgba(255,178,36,0.06),transparent);animation:scanMove 3.2s ease-in-out infinite;pointer-events:none;}
-@keyframes scanMove{0%{top:-60px}55%{top:110%}100%{top:110%}}
+.sec-label::before{content:'';display:inline-block;width:3px;height:13px;background:var(--acento);border-radius:1px}
+.fake-input{background:#000000;border:1px solid var(--border2);border-radius:6px;padding:0.55rem 0.75rem;color:var(--text4);font-size:0.85rem;margin-bottom:0.6rem;}
+.btn{background:var(--acento);border:1px solid var(--acento);color:#1c0b06;font-weight:700;font-size:0.9rem;padding:0.6rem 1.4rem;border-radius:8px;display:inline-block;margin-top:0.4rem;letter-spacing:0.02em}
+.live-panel{background:#0b0b0c;border:1px solid var(--border2);border-radius:var(--r3);padding:1.2rem 1.4rem;margin:1.5rem auto;max-width:720px;position:relative;overflow:hidden;box-shadow:0 6px 20px rgba(0,0,0,0.65);}
+.live-panel::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:linear-gradient(90deg,transparent,var(--acento-line),transparent);}
 .live-head{display:flex;align-items:center;gap:0.75rem;margin-bottom:0.8rem;}
-.live-pulse{width:10px;height:10px;border-radius:50%;background:var(--neon);box-shadow:var(--glow);animation:livePulse 1.6s ease-out infinite;}
-@keyframes livePulse{0%{box-shadow:0 0 0 0 rgba(255,178,36,0.45)}70%{box-shadow:0 0 0 10px rgba(255,178,36,0)}100%{box-shadow:0 0 0 0 rgba(255,178,36,0)}}
+.live-pulse{width:10px;height:10px;border-radius:50%;background:var(--acento);animation:livePulse 1.6s ease-out infinite;}
+@keyframes livePulse{0%{box-shadow:0 0 0 0 rgba(255,77,28,0.45)}70%{box-shadow:0 0 0 10px rgba(255,77,28,0)}100%{box-shadow:0 0 0 0 rgba(255,77,28,0)}}
 .live-title{font-family:'Roboto Mono',monospace;font-size:0.95rem;letter-spacing:0.18em;text-transform:uppercase}
 .live-sub{font-size:0.78rem;color:var(--text3);margin-top:0.25rem}
 .live-metrics{display:grid;grid-template-columns:repeat(3,1fr);gap:0.6rem;margin:0.5rem 0 0.8rem}
 .live-metric{background:var(--s2);border:1px solid var(--border);border-radius:6px;padding:0.6rem 0.5rem;text-align:center}
-.live-metric-val{font-size:1.15rem;font-weight:700;color:var(--neon);}
+.live-metric-val{font-size:1.15rem;font-weight:700;color:var(--acento);}
 .live-metric-lbl{font-family:'Roboto Mono',monospace;font-size:0.56rem;color:var(--text3);text-transform:uppercase;letter-spacing:0.12em;margin-top:0.2rem}
-.bar{height:6px;border-radius:4px;background:#1c1c26;margin:0.4rem 0 0.9rem;overflow:hidden}
-.bar>div{height:100%;width:64%;background:linear-gradient(90deg,#c77f0a,var(--neon));border-radius:4px;box-shadow:var(--glow)}
+.bar{height:6px;border-radius:4px;background:#1c1c20;margin:0.4rem 0 0.9rem;overflow:hidden}
+.bar>div{height:100%;width:64%;background:var(--acento);border-radius:4px}
 .step{display:flex;align-items:center;gap:0.55rem;font-size:0.82rem;color:var(--text3);padding:0.22rem 0.1rem}
 .step .dot{width:18px;height:18px;border-radius:50%;border:1.5px solid var(--border2);display:flex;align-items:center;justify-content:center;font-size:0.62rem;background:var(--s1);}
 .step.done{color:var(--text2)}.step.done .dot{background:rgba(61,220,151,0.18);border-color:var(--green);color:var(--green)}
-.step.active{color:var(--text);font-weight:600}.step.active .dot{border-color:var(--neon);color:var(--neon);box-shadow:var(--glow)}
+.step.active{color:var(--text);font-weight:600}.step.active .dot{border-color:var(--acento);color:var(--acento)}
 .footer{font-family:'Roboto Mono',monospace;font-size:0.6rem;color:var(--text4);text-align:center;padding:0.9rem 0;letter-spacing:0.14em;text-transform:uppercase;border-top:1px solid var(--border);margin-top:1.2rem;}
 .note{font-family:'Roboto Mono',monospace;font-size:0.62rem;color:var(--text4);letter-spacing:0.1em;text-transform:uppercase;margin-bottom:0.8rem}
 </style>
 </head>
 <body>
 <div class="wrap">
-    <div class="note">Vista previa estática · v4.4 · edición Blade Runner (oscuro forzado)</div>
+    <div class="note">Vista previa estática · v4.5 · tema oscuro (negro + rojo-naranja)</div>
     <div class="app-header">
         <div class="app-header-icon">◈</div>
         <div>
             <div class="app-header-title">Limpieza y Análisis de Noticias</div>
-            <div class="app-header-version">v4.4 · Tono/Tema/Subtema por reglas + IA · edición Blade Runner · Realizado por Johnathan Cortés</div>
+            <div class="app-header-version">v4.5 · Tono/Tema/Subtema por reglas + IA · Realizado por Johnathan Cortés</div>
         </div>
         <div class="app-header-badge">Estructurador + IA</div>
     </div>

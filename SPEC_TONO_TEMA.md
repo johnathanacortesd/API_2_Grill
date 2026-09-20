@@ -200,18 +200,40 @@ El análisis se adapta por cliente sin tocar código, mediante `perfil_cliente.p
   clientes consumen la API. Lee `SMTP_HOST/PORT/USER/PASSWORD/FROM` y
   `USAGE_NOTIFY_EMAIL` de los Secrets (fallback a entorno); best-effort, nunca
   interrumpe. Con Gmail, `SMTP_PASSWORD` debe ser una contraseña de aplicación.
-- Tema visual v4.4 (edición Blade Runner): oscuro forzado con `color-scheme: dark`
-  (no depende del tema claro/oscuro del sistema del usuario); fondo `#060608` con
-  halo ámbar superior, tarjetas `#0d0d12`, neón ámbar `#ffb224` (botón primario,
-  progreso, estados activos) y cian `#3fd2e8` (insignia IA, enlaces); micro-etiquetas
-  en Roboto Mono con tracking amplio; tarjeta de procesamiento con línea de escaneo
-  animada. Vista previa estática en `tema_muse_preview.html`.
-- Sin agrupamiento forzado (`asignar_temas`): el tema de la familia solo se asigna a
-  los miembros que sí describe (verificado con `_tema_relevante_para_miembro`, que
-  acepta variantes morfológicas como suicidio/suicidología); el miembro ajeno se
-  nombra como singleton con tema propio desde su subtema/titular/contexto
-  (origen `tema_propio_sin_agrupar`). Evita casos como "Prevención del suicidio" en
-  una noticia de "Ascenso político de Gutiérrez".
+- Tema visual v4.5: oscuro forzado con `color-scheme: dark` (no depende del tema
+  claro/oscuro del sistema del usuario); fondo negro `#000000`, tarjetas `#0b0b0c`,
+  acento rojo-naranja `#ff4d1c` (botón primario, progreso, estados activos,
+  insignia IA, enlaces); sin degradados, glows ni animaciones decorativas. Vista
+  previa estática en `tema_muse_preview.html`.
+- Sin agrupamiento forzado (`asignar_temas`): el tema de la familia se asigna por
+  miembro, pero solo cuando la mayoría de la familia lo respalda léxicamente
+  (verificado con `_tema_relevante_para_miembro`, que acepta variantes
+  morfológicas como suicidio/suicidología). Si el nombre describe a la minoría,
+  se conserva para toda la familia — el LLM nombró por semántica y el guard
+  léxico probablemente se equivoca; noticias similares ⇒ un solo tema. Si
+  describe a la mayoría, el miembro ajeno se nombra como singleton con tema
+  propio desde su subtema/titular/contexto (origen `tema_propio_sin_agrupar`).
+  Evita casos como "Prevención del suicidio" en una noticia de "Ascenso político
+  de Gutiérrez" sin fragmentar familias legítimas.
+- Afinidad morfológica en clustering (`_stems_afines`, Regla A/B en
+  `cluster_familias_subtema`): variantes como suicidio/suicidología,
+  criminalidad/criminología o educativo/educación cuentan como evidencia de
+  unión cuando hay respaldo de ≥2 stems afines o respaldo afín + toque
+  topónimo/temporal, sin relajar el puente simple (que sigue exigiendo 2 stems
+  exactos). Corrige el caso del dossier donde "Congreso iberoamericano de
+  suicidología" quedaba fuera de "Prevención del suicidio".
+- Stems de entidad excluidos del clustering (`_stems_entidad`): marca, alias y
+  voceros no unen familias por sí solos (evita unir asuntos distintos solo
+  porque todos mencionan la marca).
+- Términos genéricos que no unen por sí solos (`MODIFICADOR_GENERICO_NO_UNE`:
+  prevención, desafío, impacto, debate, frente…; `ATRIBUTO_DEMOGRAFICO`: joven,
+  mujer, adolescente…): no unen suicidio juvenil con desempleo juvenil ni
+  criminología con juventud.
+- Post-pase `fusionar_temas_casi_identicos()`: tras `forzar_un_tema_por_subtema`,
+  fusiona nombres de tema casi idénticos (similitud ≥ 0.72 y mismo nucleo de
+  stems tras quitar genéricos), p. ej. "Impacto de educación" ~ "Impacto de
+  inteligencia artificial en educación". Es una renombradura, no una
+  reasignación: no toca los subtemas.
 - UX de procesamiento: al enviar el formulario se marca `st.session_state["procesando"]`
   y toda la vista (encabezado + configuración + formulario + pie) vive dentro de un
   contenedor raíz `ui = st.empty()` que queda vacío durante el proceso, de modo que
@@ -233,4 +255,10 @@ el titular ni quedan vagos, guarda positiva para vocero citado como fuente exper
 unificación de tono por hecho. `tests/test_tema_sin_agrupamiento_forzado.py` cubre que un
 miembro ajeno no hereda el tema de la familia (caso "Prevención del suicidio" en
 "Ascenso político de Gutiérrez") y que las familias legítimas no se fragmentan.
-No hay llamadas a API.
+`tests/test_tema_agrupacion_calidad.py` (v4.5) cubre con casos reales del dossier:
+agrupación con afinidad morfológica (suicidio/suicidología, criminalidad/criminología,
+educativo/educación), anti-agrupación (prevención/desafío genéricos, joven demográfico,
+marca no une familias, PISA no se mezcla con criminología),
+`fusionar_temas_casi_identicos` (fusiona casi-idénticos, no fusiona distintos) y la
+regla de mayoría en `asignar_temas` (minoría sin respaldo conserva el tema; mayoría
+respaldada separa al ajeno, caso Gutiérrez). No hay llamadas a API.

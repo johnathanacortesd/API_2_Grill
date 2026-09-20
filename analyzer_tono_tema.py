@@ -147,7 +147,8 @@ def _contexto_exacto_marca(texto: str, titulo: str, brand: str,
     Prioriza todos los párrafos que contienen la marca, alias o vocero. Si el
     archivo no conserva saltos de párrafo, devuelve las oraciones que contienen
     la mención y sus vecinas inmediatas. El resultado conserva literalmente la
-    ortografía, tildes y puntuación del texto fuente.
+    ortografía, tildes y puntuación del texto fuente, en un solo párrafo (sin
+    saltos de línea).
     """
     fuente = str(texto or '')
     nombres = [str(x).strip() for x in [brand, *(aliases or []), *(voceros or [])]
@@ -167,7 +168,8 @@ def _contexto_exacto_marca(texto: str, titulo: str, brand: str,
                                     flags=re.I) if p.strip()]
     encontrados = [p.strip() for p in parrafos if menciona(p)]
     if encontrados:
-        return '\n\n'.join(encontrados)[:6000]
+        # Un solo párrafo: se unen con espacio y se colapsan saltos internos.
+        return re.sub(r'\s+', ' ', ' '.join(encontrados)).strip()[:6000]
 
     # Respaldo para cuerpos guardados como un bloque único.
     partes = [p for p in re.split(r'(?<=[.!?…])\s+', fuente) if p.strip()]
@@ -1435,6 +1437,26 @@ GENERICO_NO_UNEN = {
 }
 
 
+# Modificadores tan genéricos que no prueban asunto común por sí solos
+# ("prevención" aparece en suicidio y en delitos tecnológicos; "desafío" en
+# criminología y en juventud; "impacto"/"debate" igual). Se excluyen del
+# núcleo que une familias; el asunto lo ponen los stems temáticos.
+MODIFICADOR_GENERICO_NO_UNE = {
+    'prevencion', 'prevenir', 'desafio', 'impacto', 'debate', 'reto',
+    'perspectiva', 'analisis', 'balance', 'panorama', 'frente',
+}
+
+
+# Atributos demográficos: describen A QUIÉN, no el asunto. No bastan para unir
+# familias en la regla combinada (1 núcleo + 1 evidencia): "jóvenes" une
+# desempleo juvenil con suicidio juvenil, que son asuntos distintos.
+# Siguen contando en las reglas clásicas de 2+ pares.
+ATRIBUTO_DEMOGRAFICO = {
+    'joven', 'mujer', 'hombre', 'nino', 'nina', 'adulto', 'adulta',
+    'adolescente', 'infantil', 'ninez', 'juventud',
+}
+
+
 def _subtemas_mismo_hecho(a: str, b: str, umbral: float = 0.82) -> bool:
     """True si dos subtemas describen el mismo hecho (no solo el mismo asunto)."""
     from rapidfuzz import fuzz
@@ -1815,6 +1837,51 @@ def _tokens_afines_guard(a: str, b: str) -> bool:
     return _tokens_relacionados(a, b) or _prefijo_comun_largo(raiz(a), raiz(b))
 
 
+def _stems_entidad(cfg: dict) -> set:
+    """Stems de la marca, sus alias y voceros: dicen QUIÉN, no el asunto.
+
+    En un dossier de Unisimón, 'unisimon' aparece en titulares de asuntos
+    distintos y no puede usarse para unir familias de temas.
+    """
+    partes = [str(cfg.get('brand') or '')]
+    partes += [str(a) for a in (cfg.get('aliases') or [])]
+    partes += [str(v) for v in (cfg.get('voceros') or [])]
+    return {raiz(w) for w in words(' '.join(partes)) if len(w) >= 3}
+
+
+def _stems_afines(a: str, b: str, minimo: int = 5) -> bool:
+    """Afinidad entre stems ya normalizados para el clustering de temas.
+
+    Une variantes morfológicas que el stemmer simple no une
+    ('suicidio' ~ 'suicidología', 'prevenir' ~ 'prevención',
+    'educativo' ~ 'educación') sin necesidad de igualdad exacta.
+    El umbral de prefijo (5) deja fuera pares no relacionados
+    ('nación'/'nacional' comparten 4, 'política'/'policía' comparten 4).
+    """
+    a, b = nz(a), nz(b)
+    if not a or not b:
+        return False
+    if a == b:
+        return True
+    return _prefijo_comun_largo(a, b, minimo)
+
+
+def _emparejar_afines(conj_a: set, conj_b: set, minimo: int = 5) -> list:
+    """Emparejamiento greedy de stems afines entre dos conjuntos.
+
+    Devuelve la lista de pares (x, y); cada stem se usa una sola vez.
+    """
+    rest = set(conj_b)
+    pares = []
+    for x in sorted(conj_a):
+        for y in sorted(rest):
+            if _stems_afines(x, y, minimo):
+                pares.append((x, y))
+                rest.discard(y)
+                break
+    return pares
+
+
 def _tema_relevante_para_miembro(tema: str, sub_tema: str, evidencia: str = '') -> bool:
     """Como `_tema_es_relevante` pero con afinidad morfológica relajada.
 
@@ -1838,18 +1905,22 @@ def _tema_relevante_para_miembro(tema: str, sub_tema: str, evidencia: str = '') 
     return hay_afines(evi_tokens)
 
 
-def cluster_familias_subtema(items: Sequence[dict]) -> List[List[dict]]:
+def cluster_familias_subtema(items: Sequence[dict],
+                           excluir_stems: Optional[set] = None) -> List[List[dict]]:
     """Une subtemas afines de ESTE lote (asunto compartido, hechos distintos).
 
-    Dos defensas contra familias espurias:
+    Tres defensas contra familias espurias:
     - los stems que aparecen en gran parte del lote (p. ej. "inteligencia
       artificial" cuando todo el dossier habla de IA) NO cuentan para unir;
+    - los stems de la marca/alias/voceros (`excluir_stems`) dicen QUIÉN, no el
+      asunto, y tampoco unen;
     - anti-encadenamiento: la unión transitiva A~B~C se divide si A y C no
       comparten materia distintiva entre sí.
     """
     items = [it for it in items if it and it.get('sub_tema')]
     if not items:
         return []
+    excluir_stems = set(excluir_stems or [])
     n = len(items)
     disc_sub, disc_evi = [], []
     df = Counter()
@@ -1864,7 +1935,11 @@ def cluster_familias_subtema(items: Sequence[dict]) -> List[List[dict]]:
     limite_df = max(3, int(n * 0.15))
 
     def dist(s: set) -> set:
-        return {t for t in s if df[t] <= limite_df and t not in GENERICO_NO_UNEN}
+        return {t for t in s
+                if df[t] <= limite_df
+                and t not in GENERICO_NO_UNEN
+                and t not in MODIFICADOR_GENERICO_NO_UNE
+                and t not in excluir_stems}
 
     par = list(range(n))
 
@@ -1880,29 +1955,46 @@ def cluster_familias_subtema(items: Sequence[dict]) -> List[List[dict]]:
             par[max(ra, rb)] = min(ra, rb)
 
     def misma_familia(i: int, j: int) -> bool:
-        """Regla A: los subtemas comparten el núcleo del asunto (2+ stems)."""
+        """Regla A: los subtemas comparten el núcleo del asunto (2+ stems afines).
+
+        La afinidad es morfológica, no igualdad exacta: 'suicidología' une
+        con 'suicidio' y 'criminalidad' con 'criminología'.
+        """
         a, b = items[i]['sub_tema'], items[j]['sub_tema']
         if _subtemas_mismo_hecho(a, b):
             return True
         ca, cb = dist(disc_sub[i]), dist(disc_sub[j])
-        return len(ca & cb) >= 2
+        return len(_emparejar_afines(ca, cb)) >= 2
+
+    def _toca_nucleo(par, ni: set, nj: set) -> bool:
+        x, y = par
+        return (any(_stems_afines(x, t) for t in ni)
+                or any(_stems_afines(y, t) for t in nj))
 
     def evidencia_comun(i: int, j: int) -> bool:
-        """Regla B: los titulares comparten 2+ stems y el puente toca el
-        núcleo de AMBOS subtemas.
+        """Regla B: los titulares comparten 2+ stems afines y el puente toca el
+        núcleo de al menos un subtema... o confirmación cruzada: 1 par afín en
+        el núcleo de los subtemas + 1 par afín en la evidencia que toca un
+        núcleo.
 
-        Sin esa segunda condición, una mención al pasar ("inteligencia
+        Sin la condición del núcleo, una mención al pasar ("inteligencia
         artificial" en una nota de PISA) uniría familias de asuntos distintos.
         """
-        inter = dist(disc_evi[i]) & dist(disc_evi[j])
-        if len(inter) < 2:
-            return False
+        ni, nj = dist(disc_sub[i]), dist(disc_sub[j])
+        pares_evi = _emparejar_afines(dist(disc_evi[i]), dist(disc_evi[j]))
         # El puente debe tocar el núcleo de al menos un subtema: sin esa
         # condición, una mención al pasar ("inteligencia artificial" en una
         # nota de PISA) uniría familias de asuntos distintos.
-        if not (dist(disc_sub[i]) & inter) and not (dist(disc_sub[j]) & inter):
-            return False
-        return True
+        if len(pares_evi) >= 2 and any(_toca_nucleo(p, ni, nj)
+                                       for p in pares_evi):
+            return True
+        # Confirmación cruzada: 1 par afín en el núcleo + 1 en la evidencia.
+        # El par del núcleo debe ser temático (no un atributo demográfico):
+        # "joven" no une desempleo juvenil con suicidio juvenil.
+        pares_nucleo = [p for p in _emparejar_afines(ni, nj)
+                        if not ({p[0], p[1]} & ATRIBUTO_DEMOGRAFICO)]
+        return (len(pares_nucleo) >= 1
+                and any(_toca_nucleo(p, ni, nj) for p in pares_evi))
 
     for i in range(n):
         for j in range(i + 1, n):
@@ -2548,6 +2640,68 @@ def forzar_un_tema_por_subtema(temas: Dict[int, str], etiquetas: Dict[int, dict]
     return cambios
 
 
+def fusionar_temas_casi_identicos(temas: Dict[int, str], origen: Dict[int, str],
+                                  etiquetas: Dict[int, dict],
+                                  umbral: int = 90) -> int:
+    """Fusiona temas con nombre casi idéntico ('Impacto de educación' ~
+    'Impacto de inteligencia artificial en educación').
+
+    El clustering agrupa por asunto; cuando dos familias vecinas quedaron
+    separadas pero el LLM les dio el mismo nombre con otra redacción, se
+    unifican. Gana el nombre de la familia más grande; en empate, el más
+    corto (más general). Conservador: no toca CUBO_PROHIBIDO ni fusiones
+    que violen que el tema sea más general que los subtemas absorbidos.
+    """
+    from rapidfuzz import fuzz
+    nombres = sorted({nz(t) for t in temas.values() if nz(t) and nz(t) not in CUBO_PROHIBIDO})
+    if len(nombres) < 2:
+        return 0
+    par = {t: t for t in nombres}
+
+    def find(x):
+        while par[x] != x:
+            par[x] = par[par[x]]
+            x = par[x]
+        return x
+
+    for i in range(len(nombres)):
+        for j in range(i + 1, len(nombres)):
+            a, b = nombres[i], nombres[j]
+            if a == b:
+                continue
+            if fuzz.token_set_ratio(a, b) >= umbral:
+                ra, rb = find(a), find(b)
+                if ra != rb:
+                    par[max(ra, rb)] = min(ra, rb)
+    buckets = defaultdict(list)
+    for t in nombres:
+        buckets[find(t)].append(t)
+    cambios = 0
+    for grupo in buckets.values():
+        if len(grupo) < 2:
+            continue
+        miembros = [g for g in temas if nz(temas[g]) in set(grupo)]
+        conteo = Counter(nz(temas[g]) for g in miembros)
+        # Gana la familia más grande; empate → nombre más corto (más general).
+        ganador_nz = sorted(grupo, key=lambda t: (-conteo[t], len(t.split()), t))[0]
+        display = next(temas[g] for g in miembros if nz(temas[g]) == ganador_nz)
+        perdedores = [g for g in miembros if nz(temas[g]) != ganador_nz]
+        # No absorber si el ganador no es más general que algún subtema ajeno.
+        ok = True
+        for g in perdedores:
+            s = (etiquetas.get(g) or {}).get('sub_tema') or ''
+            if s and not _tema_distinto_de_subtema(display, s):
+                ok = False
+                break
+        if not ok:
+            continue
+        for g in perdedores:
+            temas[g] = display
+            origen[g] = 'fusion_tema:%s' % ganador_nz
+            cambios += 1
+    return cambios
+
+
 def _confianza_jev(answer: dict) -> float:
     if not isinstance(answer, dict):
         return 0.0
@@ -2743,7 +2897,8 @@ def asignar_temas(cfg: dict, grupos: List[dict], etiquetas: Dict[int, dict], tax
             'evidencia': ' '.join([meta['sub_tema']] + meta['titulos'][:4]),
             'clave': clave,
         })
-    familias_items = cluster_familias_subtema(items)
+    familias_items = cluster_familias_subtema(items,
+                                              excluir_stems=_stems_entidad(cfg or {}))
     familias = []
     for i, miembros in enumerate(familias_items, 1):
         subs, titulos, contextos, gids = [], [], [], []
@@ -2772,24 +2927,48 @@ def asignar_temas(cfg: dict, grupos: List[dict], etiquetas: Dict[int, dict], tax
         # Rechazo del gate ≠ vacío: nunca se descarta dejando la etiqueta en blanco.
         nombre = _asegurar_tema_texto(
             nombre, fam['subtemas'], fam['titulos'], fam['contextos'])
+        # Sin agrupamiento forzado, sin fragmentación ciega: el tema de la
+        # familia se asigna por miembro SOLO si la mayoría de la familia lo
+        # respalda léxicamente. Si el nombre describe a la minoría, el guard
+        # léxico probablemente se equivoca (el LLM nombró por semántica) y se
+        # conserva el nombre para toda la familia: noticias similares ⇒ un
+        # solo tema. Si describe a la mayoría, el miembro ajeno se separa con
+        # tema propio (caso Gutiérrez: 3/4 respaldan 'Prevención del
+        # suicidio', el 4º se nombra aparte).
+        if len(fam['gids']) > 1:
+            pasan = []
+            for gid in fam['gids']:
+                e = etiquetas.get(gid) or {}
+                g = grupo_por_id.get(gid) or {}
+                s = e.get('sub_tema') or ''
+                ev = ' '.join([s, g.get('titulo') or '', g.get('contexto') or '',
+                               g.get('texto') or ''])
+                if _tema_relevante_para_miembro(nombre, s, ev):
+                    pasan.append(gid)
+            if len(pasan) * 2 < len(fam['gids']):
+                for gid in fam['gids']:
+                    temas[gid] = nombre
+                    origen[gid] = 'familia:%d' % fam['id']
+                continue
+            _omitir = set(pasan)
+        else:
+            _omitir = set(fam['gids'])
         for gid in fam['gids']:
+            if gid in _omitir:
+                temas[gid] = nombre
+                origen[gid] = 'familia:%d' % fam['id']
+                continue
             e = etiquetas.get(gid) or {}
             s = e.get('sub_tema') or ''
             g = grupo_por_id.get(gid) or {}
-            evidencia = ' '.join([
-                s, g.get('titulo') or '', g.get('contexto') or '',
-                g.get('texto') or ''])
-            if _tema_relevante_para_miembro(nombre, s, evidencia):
-                temas[gid] = nombre
-                origen[gid] = 'familia:%d' % fam['id']
-            else:
-                sueltos.append({
-                    'id': 900000 + len(sueltos),
-                    'gid': gid,
-                    'subtemas': [s],
-                    'titulos': [g.get('titulo') or ''],
-                    'contextos': [g.get('contexto') or g.get('texto') or ''],
-                })
+            sueltos.append({
+                'id': 900000 + len(sueltos),
+                'gid': gid,
+                'subtemas': [s],
+                'titulos': [g.get('titulo') or ''],
+                'contextos': [g.get('contexto') or g.get('texto') or ''],
+            })
+        continue
     if sueltos:
         # Una sola pasada (un solo llamado LLM si hay api_key) para todos.
         nombres_sueltos = nombrar_familias_tema(cfg or {}, sueltos,
@@ -2857,6 +3036,7 @@ def asignar_temas(cfg: dict, grupos: List[dict], etiquetas: Dict[int, dict], tax
             pass
 
     cambios = forzar_un_tema_por_subtema(temas, etiquetas)
+    cambios += fusionar_temas_casi_identicos(temas, origen, etiquetas)
     _ULTIMO_RESUMEN['cubos_nuevos'] = sorted(set(temas.values()) - set(candidatos))
     _ULTIMO_RESUMEN['temas_por_llm'] = sum(1 for v in origen.values() if v == 'llm')
     _ULTIMO_RESUMEN['temas_por_regla'] = sum(1 for v in origen.values() if str(v).startswith('regla'))
