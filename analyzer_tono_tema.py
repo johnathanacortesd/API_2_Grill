@@ -425,6 +425,9 @@ def construir_grupos(
 PREP_FIN = {'de', 'del', 'la', 'el', 'los', 'las', 'un', 'una', 'unos', 'unas', 'para', 'en', 'con',
             'por', 'y', 'o', 'a', 'al', 'que', 'su', 'sus', 'sin', 'sobre', 'entre', 'tras', 'ni'}
 CONECT = PREP_FIN | {'se', 'lo', 'le', 'les', 'es', 'son', 'como', 'mas', 'más', 'muy'}
+# Preposiciones que nunca pueden abrir un TEMA ("Para Carnaval 2027").
+PREP_INICIO_TEMA = {'para', 'de', 'del', 'en', 'con', 'por', 'sobre', 'entre', 'tras',
+                    'desde', 'hacia', 'segun', 'según', 'sin', 'a', 'al', 'ante'}
 VERBOS1 = set("""entregan anuncian avanza avanzan instalan reconocen firman inauguran denuncian alertan
 piden exigen rechazan critican senalan señalan aseguran confirman advierten solicitan denunciaron
 anunciaron instalaron avanzaron reconocieron inauguraron entregaron logran obtienen reciben presentan
@@ -471,6 +474,16 @@ def validar(sub_tema, tono, fuentes, min_pal=MIN_PAL, max_pal=MAX_PAL) -> List[s
     toks = [nz(t) for t in w]
     if toks and toks[0] in MARCO and all(t in FILLER for t in toks[1:]):
         p.append('marco_vacio')
+    # El subtema no debe recortar el titular en el mismo orden: es reformulación,
+    # no copia ("Medicina multimodal y personalizada" ← "La medicina que viene
+    # será multimodal y personalizada…"). El titular es fuentes[0].
+    titulo = (fuentes or [''])[0] or ''
+    if _subtema_copia_titular(sub_tema, titulo):
+        p.append('copia_titular')
+    # Vago: solo evento genérico + sujeto genérico, sin objeto distintivo
+    # ("Reunión de expertos en crimen").
+    if _subtema_vago(sub_tema):
+        p.append('subtema_vago')
     if tono not in TONOS:
         p.append('tono_invalido(%s)' % tono)
     fuente = ' '.join(nz(f) for f in (fuentes or []))
@@ -480,6 +493,65 @@ def validar(sub_tema, tono, fuentes, min_pal=MIN_PAL, max_pal=MAX_PAL) -> List[s
     if len(faltan) > 1:
         p.append('revisar_anclaje(%s)' % ','.join(faltan[:4]))
     return p
+
+
+# ============================================================================
+# 3b. Calidad del subtema: anti-copia del titular y anti-vaguedad
+# ============================================================================
+_VAGO_SUBTEMA = {
+    'reunion', 'encuentro', 'evento', 'jornada', 'cita',           # evento genérico
+    'experto', 'especialista', 'lider', 'actor', 'representante',  # sujeto genérico
+}
+# Nombres de evento: el subtema puede (y suele) repetirlos tal cual.
+_EVENTO_NOMBRE = {
+    'congreso', 'cumbre', 'foro', 'seminario', 'encuentro', 'feria', 'festival',
+    'simposio', 'jornada', 'conversatorio', 'concurso', 'premio', 'asamblea',
+    'inauguracion', 'lanzamiento', 'presentacion',
+}
+
+
+def _subtema_vago(sub_tema: str) -> bool:
+    """True si el subtema es solo evento genérico + sujeto genérico.
+
+    "Reunión de expertos en crimen" no dice el asunto; "Cumbre internacional
+    de criminología" sí (tiene objeto distintivo).
+    """
+    toks = [raiz(w) for w in words(sub_tema) if nz(w) not in CONECT]
+    if len(toks) < 2:
+        return False
+    n = sum(1 for w in toks if w in _VAGO_SUBTEMA)
+    return n >= 2 and n / len(toks) >= 0.5
+
+
+def _subtema_copia_titular(sub_tema: str, titulo: str) -> bool:
+    """True si el subtema recorta el titular conservando el orden.
+
+    "Medicina multimodal y personalizada" ← "La medicina que viene será
+    multimodal y personalizada…" es copia; "Desafíos de la criminología con IA"
+    ← "Criminología frente a la IA: …nuevos desafíos…" es reformulación válida
+    (el orden cambia) y no se marca.
+    """
+    s, t = nz(sub_tema), nz(titulo or '')
+    if not s or not t:
+        return False
+    sw = [w for w in s.split() if w not in CONECT]
+    if any(w in _EVENTO_NOMBRE for w in sw):
+        # Los nombres de evento se repiten tal cual por naturaleza
+        # ("Cumbre internacional de criminología"); no es copia perezosa.
+        return False
+    if s in t:
+        return True
+    if len(sw) < 3:
+        return False
+    tw = t.split()
+    j = 0
+    for w in sw:
+        while j < len(tw) and tw[j] != w:
+            j += 1
+        if j >= len(tw):
+            return False
+        j += 1
+    return True
 
 
 # ============================================================================
@@ -837,6 +909,10 @@ def problemas_calidad_tema(nombre: str, permitir_vago: bool = False,
         p.append('sigla_o_fragmento')
     if toks[-1] in PREP_FIN:
         p.append('termina_preposicion')
+    if toks[0] in PREP_INICIO_TEMA:
+        # "Para Carnaval 2027", "De cuidado territorial": el tema no puede
+        # ser un sintagma preposicional truncado.
+        p.append('empieza_preposicion')
     if toks[0] in PRONOMBRES_BASURA or any(t in PRONOMBRES_BASURA for t in toks):
         p.append('pronombre_basura')
     if _es_verbo_clausula(w[0]) or _parece_infinitivo(w[0]):
@@ -887,7 +963,9 @@ def problemas_calidad_tema(nombre: str, permitir_vago: bool = False,
         p.append('mash_keywords')
     if len(contenido) == 2 and not nexos:
         w0, w1 = w[contenido_i[0]], w[contenido_i[1]]
-        if not (_es_adjetivo_tematico(w1) or nz(w0) in ADJ_PRENOMINAL):
+        # "Carnaval 2027", "Elecciones 2026": sustantivo + año no es mash.
+        es_ano = bool(re.fullmatch(r'(19|20)\d{2}', w1))
+        if not es_ano and not (_es_adjetivo_tematico(w1) or nz(w0) in ADJ_PRENOMINAL):
             p.append('mash_keywords')
     if titulos and _tema_copia_o_prefijo_titulo(nombre, titulos):
         if not _es_etiqueta_tematica_canonica(nombre):
@@ -1034,7 +1112,9 @@ def prompt_reparacion(fallos: Sequence[dict]) -> str:
     return ('Corrige SOLO estos sub-temas. Devuelve el mismo tono salvo que el tono no sea valido.\n'
             'Un sub-tema valido tiene 3 a 5 palabras (maximo 7) en frase nominal, no empieza con verbo\n'
             'conjugado, no termina en preposicion y no lleva marcadores ni rotulos vacios. Si el problema\n'
-            'dice largo(N), recorta a 5 palabras sin perder el hecho.\n\n'
+            'dice largo(N), recorta a 5 palabras sin perder el hecho. Si dice copia_titular, reformula\n'
+            'con tus palabras e incluye el actor o lugar distintivo. Si dice subtema_vago, agrega el\n'
+            'objeto o asunto concreto del que se trata.\n\n'
             + '\n\n'.join(detalle)
             + '\n\nResponde UNICAMENTE con {"resultados":[{"id":<grupo>,"sub_tema":"...","tono":"..."}]}')
 
@@ -1317,9 +1397,23 @@ def etiquetar_grupos(cfg: dict, grupos: List[dict], progress: Optional[Callable]
 
 def _contenido_discriminante(s: str) -> set:
     """Tokens de contenido (sin nexos, relleno ni geografía genérica)."""
-    return {raiz(w) for w in words(s)
+    base = {raiz(w) for w in words(s)
             if w not in CONECT and w not in FILLER and w not in MARCO
             and len(w) >= 3 and not _es_geografia(w)}
+    return {_EQUIV_STEMS.get(t, t) for t in base}
+
+
+# Familias morfológicas que el stemmer simple no une y sí comparten asunto.
+_EQUIV_STEMS = {
+    'juvenil': 'joven', 'juventud': 'joven', 'jovenes': 'joven',
+    'criminalidad': 'crimen', 'criminologia': 'crimen',
+}
+# Palabras de evento tan genéricas que no prueban asunto común
+# ("congreso" aparece en el de criminología, el de psicología y el de suicidología).
+GENERICO_NO_UNEN = {
+    'congreso', 'internacional', 'nacional', 'evento', 'encuentro', 'jornada',
+    'seminario', 'simposio', 'conferencia', 'feria', 'festival', 'reunion', 'cumbre',
+}
 
 
 def _subtemas_mismo_hecho(a: str, b: str, umbral: float = 0.82) -> bool:
@@ -1346,23 +1440,6 @@ def _subtemas_mismo_hecho(a: str, b: str, umbral: float = 0.82) -> bool:
     if jac >= 0.55 and len(inter) >= 2:
         return True
     if fuzz.token_set_ratio(na, nb) >= 88 and len(inter) >= 2:
-        return True
-    return False
-
-
-def _subtemas_misma_familia(a: str, b: str) -> bool:
-    """Hechos distintos pero del mismo asunto (comparten tema, no subtema)."""
-    if _subtemas_mismo_hecho(a, b):
-        return True
-    from rapidfuzz import fuzz
-    ca, cb = _contenido_discriminante(a), _contenido_discriminante(b)
-    if not ca or not cb:
-        return False
-    inter = ca & cb
-    jac = len(inter) / max(1, len(ca | cb))
-    if len(inter) >= 2 or jac >= 0.40:
-        return True
-    if len(inter) >= 1 and fuzz.token_set_ratio(nz(a), nz(b)) >= 78:
         return True
     return False
 
@@ -1700,11 +1777,34 @@ def _tema_es_relevante(tema: str, sub_tema: str, contexto: str = '') -> bool:
 
 
 def cluster_familias_subtema(items: Sequence[dict]) -> List[List[dict]]:
-    """Une subtemas afines de ESTE lote (asunto compartido, hechos distintos)."""
+    """Une subtemas afines de ESTE lote (asunto compartido, hechos distintos).
+
+    Dos defensas contra familias espurias:
+    - los stems que aparecen en gran parte del lote (p. ej. "inteligencia
+      artificial" cuando todo el dossier habla de IA) NO cuentan para unir;
+    - anti-encadenamiento: la unión transitiva A~B~C se divide si A y C no
+      comparten materia distintiva entre sí.
+    """
     items = [it for it in items if it and it.get('sub_tema')]
     if not items:
         return []
-    par = list(range(len(items)))
+    n = len(items)
+    disc_sub, disc_evi = [], []
+    df = Counter()
+    for it in items:
+        ds = _contenido_discriminante(it['sub_tema'])
+        de = _contenido_discriminante(it.get('evidencia') or it['sub_tema'])
+        disc_sub.append(ds)
+        disc_evi.append(de)
+        df.update(ds | de)
+    # Un stem que aparece en muchos items del lote no distingue asuntos
+    # (en un dossier de IA, "inteligencia artificial" no une nada).
+    limite_df = max(3, int(n * 0.15))
+
+    def dist(s: set) -> set:
+        return {t for t in s if df[t] <= limite_df and t not in GENERICO_NO_UNEN}
+
+    par = list(range(n))
 
     def find(x):
         while par[x] != x:
@@ -1717,20 +1817,62 @@ def cluster_familias_subtema(items: Sequence[dict]) -> List[List[dict]]:
         if ra != rb:
             par[max(ra, rb)] = min(ra, rb)
 
-    for i in range(len(items)):
-        for j in range(i + 1, len(items)):
-            if _subtemas_misma_familia(items[i]['sub_tema'], items[j]['sub_tema']):
-                uni(i, j)
-                continue
-            ea = _contenido_discriminante(items[i].get('evidencia') or items[i]['sub_tema'])
-            eb = _contenido_discriminante(items[j].get('evidencia') or items[j]['sub_tema'])
-            if len(ea & eb) >= 2:
+    def misma_familia(i: int, j: int) -> bool:
+        """Regla A: los subtemas comparten el núcleo del asunto (2+ stems)."""
+        a, b = items[i]['sub_tema'], items[j]['sub_tema']
+        if _subtemas_mismo_hecho(a, b):
+            return True
+        ca, cb = dist(disc_sub[i]), dist(disc_sub[j])
+        return len(ca & cb) >= 2
+
+    def evidencia_comun(i: int, j: int) -> bool:
+        """Regla B: los titulares comparten 2+ stems y el puente toca el
+        núcleo de AMBOS subtemas.
+
+        Sin esa segunda condición, una mención al pasar ("inteligencia
+        artificial" en una nota de PISA) uniría familias de asuntos distintos.
+        """
+        inter = dist(disc_evi[i]) & dist(disc_evi[j])
+        if len(inter) < 2:
+            return False
+        # El puente debe tocar el núcleo de al menos un subtema: sin esa
+        # condición, una mención al pasar ("inteligencia artificial" en una
+        # nota de PISA) uniría familias de asuntos distintos.
+        if not (dist(disc_sub[i]) & inter) and not (dist(disc_sub[j]) & inter):
+            return False
+        return True
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if misma_familia(i, j) or evidencia_comun(i, j):
                 uni(i, j)
 
+    # Anti-encadenamiento: dentro de cada bucket, conserva solo componentes
+    # conexas bajo las reglas estrictas (subtema o evidencia distintiva).
     buckets = defaultdict(list)
-    for i, it in enumerate(items):
-        buckets[find(i)].append(it)
-    return [buckets[k] for k in sorted(buckets)]
+    for i in range(n):
+        buckets[find(i)].append(i)
+
+    def componentes(idxs: List[int]) -> List[List[int]]:
+        vistos, comps = set(), []
+        for ini in idxs:
+            if ini in vistos:
+                continue
+            comp, pila = [], [ini]
+            vistos.add(ini)
+            while pila:
+                x = pila.pop()
+                comp.append(x)
+                for y in idxs:
+                    if y not in vistos and (misma_familia(x, y) or evidencia_comun(x, y)):
+                        vistos.add(y)
+                        pila.append(y)
+            comps.append(comp)
+        return comps
+
+    return [[items[k] for k in comp]
+            for idxs in buckets.values()
+            for comp in componentes(idxs)]
 
 
 def _sin_articulo_inicial(frase: str) -> str:
@@ -2066,10 +2208,45 @@ def generalizar_tema_desde_subtemas(subtemas: Sequence[str], titulos: Optional[S
     return _tema_minimo_no_vacio(subtemas, titulos, contextos)
 
 
+# Flags cosméticos que la reparación de inicio preposicional puede ignorar:
+# quitar "Para"/"De" del inicio no los introduce; suelen ser falsos positivos
+# del gate ("Carnaval 2027": el -al confunde al detector de adjetivos).
+_COSMETICOS_REPARACION = {'mash_keywords', 'empieza_por_adjetivo'}
+
+
+def _reparar_inicio_preposicional(tema: str, titulos: Optional[Sequence[str]] = None) -> str:
+    """"Para Carnaval 2027" → "Carnaval 2027"; "De cuidado territorial" → "Cuidado territorial".
+
+    Quita el sintagma preposicional inicial solo si lo que queda es un tema
+    válido por sí mismo. Si no, devuelve '' y el llamador sigue su ruta normal.
+    """
+    toks = sq(tema).split()
+    i = 0
+    while i < len(toks) and nz(toks[i]) in PREP_INICIO_TEMA:
+        i += 1
+    if i == 0 or i >= len(toks):
+        return ''
+    cand = _capitalizar_etiqueta(' '.join(toks[i:]))
+    if not _tema_util(cand):
+        return ''
+    problemas = problemas_calidad_tema(cand, titulos=titulos)
+    # Quitar el SP inicial no puede crear un "mash" ni un arranque adjetival
+    # nuevos: si solo quedan esos flags cosméticos (p. ej. "Carnaval 2027",
+    # donde el -al de "carnaval" confunde al detector de adjetivos), se acepta.
+    if any(p not in _COSMETICOS_REPARACION for p in problemas):
+        return ''
+    if _tema_copia_o_prefijo_titulo(cand, titulos or []):
+        return ''
+    return cand
+
+
 def _asegurar_tema_texto(tema, subtemas=None, titulos=None, contextos=None) -> str:
     """Nunca vacío ni prefijo del titular. Gate rechaza → repara o fallback de significado."""
     t = sq(tema)
     titulos = list(titulos or [])
+    reparado = _reparar_inicio_preposicional(t, titulos)
+    if reparado:
+        return reparado
     if (_tema_util(t) and tema_frase_natural(t, titulos=titulos)
             and not (_tema_copia_o_prefijo_titulo(t, titulos)
                      and not _es_etiqueta_tematica_canonica(t))):
@@ -2132,6 +2309,10 @@ def prompt_temas_familias(familias: Sequence[dict]) -> str:
     malos = ', '.join('"%s"' % x for x in TEMAS_EJEMPLO_MALOS)
     return (
         'Nombras UN TEMA por familia de SUBTEMAS del lote del día.\n'
+        'El TEMA debe ser estrictamente MÁS GENERAL que cada uno de los subtemas: '
+        'abstrae el asunto común, no repitas ni parafrasees un subtema. '
+        'Si la familia tiene un solo subtema, nombra su gran asunto '
+        '(p. ej. subtema "Conversatorio sobre Alzheimer" → tema "Salud y bienestar").\n'
         '%s\n'
         'BIEN (imita esta calidad): %s.\n'
         'MAL (se rechaza siempre): %s.\n'
@@ -2538,6 +2719,38 @@ def asignar_temas(cfg: dict, grupos: List[dict], etiquetas: Dict[int, dict], tax
                 t, [s], [g.get('titulo')], [g.get('contexto') or g.get('texto')])
             origen[gid] = 'fallback_lote'
 
+    # Último recurso: si el tema sigue sin ser más general que el subtema
+    # (p. ej. familia de un solo miembro donde el determinista se rinde y
+    # repite el subtema), se pide UNA generalización dirigida al LLM.
+    pendientes = []
+    for gid, e in etiquetas.items():
+        t = temas.get(gid)
+        s = e.get('sub_tema') or ''
+        if t and s and not _tema_distinto_de_subtema(t, s):
+            g = next((x for x in grupos if x['grupo'] == gid), {})
+            pendientes.append({
+                'id': gid, 'tema': t, 'subtemas': [s],
+                'titulos': [g.get('titulo') or ''],
+                'problemas': ['tema_igual_o_parafrasis_del_subtema'],
+            })
+    if pendientes and (cfg or {}).get('api_key'):
+        try:
+            txt = llamar_llm(cfg, [
+                {'role': 'system',
+                 'content': ('Eres analista de medios en Colombia. Generalizas etiquetas: '
+                             'el TEMA debe abarcar el subtema como categoría amplia, '
+                             'nunca repetirlo ni parafrasearlo. JSON.')},
+                {'role': 'user', 'content': prompt_reparacion_tema(pendientes)},
+            ])
+            fams = [{'id': p['id'], 'subtemas': p['subtemas'],
+                     'titulos': p['titulos']} for p in pendientes]
+            aceptados, _ = _propuestas_tema_llm(txt, fams)
+            for gid, nuevo in aceptados.items():
+                temas[gid] = nuevo
+                origen[gid] = 'llm_generaliza'
+        except Exception:
+            pass
+
     cambios = forzar_un_tema_por_subtema(temas, etiquetas)
     _ULTIMO_RESUMEN['cubos_nuevos'] = sorted(set(temas.values()) - set(candidatos))
     _ULTIMO_RESUMEN['temas_por_llm'] = sum(1 for v in origen.values() if v == 'llm')
@@ -2709,6 +2922,13 @@ def enrich_rows_with_ai(
         corregidos = aplicar_guarda_tono(grupos, etiquetas, brand, aliases)
         positivos = aplicar_guarda_positiva(grupos, etiquetas, brand, aliases,
                                             voceros=cfg.get('voceros') or [])
+        tragedia = aplicar_regla_tragedia(grupos, etiquetas, brand, aliases,
+                                          voceros=cfg.get('voceros') or [])
+        if tragedia:
+            _ULTIMO_RESUMEN['tono_tragedia_a_neutro'] = tragedia
+            if progress_callback:
+                progreso(93, 'Regla tragedia: %d Positivos con experto citado pasaron a Neutro'
+                         % len(tragedia))
         if positivos:
             _ULTIMO_RESUMEN['tono_corregido_positivo'] = positivos
             _ULTIMO_RESUMEN['tono_subido_por_guarda'] = positivos
@@ -2716,6 +2936,9 @@ def enrich_rows_with_ai(
             _ULTIMO_RESUMEN['tono_corregido_por_guarda'] = corregidos
             if progress_callback:
                 progreso(93, 'Guarda del tono: %d Negativos sin señalamiento pasaron a Neutro' % len(corregidos))
+        unificados = unificar_tono_mismo_hecho(grupos, etiquetas)
+        if unificados:
+            _ULTIMO_RESUMEN['tono_unificado_mismo_hecho'] = unificados
 
     # --- tema: PKL del cliente = clases del modelo; si no hay PKL, bottom-up de ESTE lote ---
     temas: Dict[int, str] = {}
@@ -2770,6 +2993,40 @@ def enrich_rows_with_ai(
     if progress_callback:
         progreso(93, 'Etiquetado listo: %d grupos, %d temas del lote' % (len(grupos), len(temas_lote)))
     return rows
+
+# ============================================================================
+# 9b. Un hecho = un tono: reconcilia el tono entre grupos que comparten
+# subtema canonizado (el mismo hecho contado por varios medios no puede
+# salir Positivo en uno y Neutro en otro).
+# ============================================================================
+def unificar_tono_mismo_hecho(grupos: Sequence[dict],
+                             etiquetas: Dict[int, dict]) -> int:
+    """Voto de tono por hecho. Empate → Neutro. Nunca crea un Negativo por
+    voto: si algún grupo marcó Negativo (señalamiento), no se toca el hecho."""
+    por_sub: Dict[str, List[int]] = defaultdict(list)
+    for g in grupos:
+        e = etiquetas.get(g.get('grupo')) or {}
+        s = nz(e.get('sub_tema') or '')
+        if s:
+            por_sub[s].append(g.get('grupo'))
+    cambios = 0
+    for gids in por_sub.values():
+        if len(gids) < 2:
+            continue
+        tonos = [(etiquetas.get(g) or {}).get('tono') for g in gids]
+        if any(t == 'Negativo' for t in tonos):
+            continue
+        c = Counter(t for t in tonos if t in TONOS)
+        if not c:
+            continue
+        top = c.most_common()
+        ganador = top[0][0] if len(top) == 1 or top[0][1] > top[1][1] else 'Neutro'
+        for g in gids:
+            if etiquetas[g].get('tono') != ganador:
+                etiquetas[g]['tono'] = ganador
+                cambios += 1
+    return cambios
+
 
 # ============================================================================
 # 9. Guarda determinista del tono: "el tema negativo no es tono negativo"
@@ -2830,6 +3087,59 @@ def aplicar_guarda_tono(grupos: Sequence[dict], etiquetas: Dict[int, dict],
     return corregidos
 
 
+# Verbos de habla que marcan cita como fuente ("dijo el rector…", "señaló la vocera…").
+# Se excluye "reveló": suele introducir hallazgos alarmantes, no voz experta.
+HABLA_PAT = re.compile(
+    r'\b(dijo|afirm[oó]|señal[oó]|advirti[oó]|consider[oó]|explic[oó]|asegur[oó]|'
+    r'indic[oó]|destac[oó]|manifest[oó]|sostu?vo|sostiene|precis[oó]|coment[oó]|'
+    r'expres[oó]|declar[oó]|puntualiz[oó])\b')
+
+
+# Regla del usuario (2026-09-20): "tragedia con experto de la casa = neutral".
+# Si la nota es una tragedia (muerte) y el experto/docente de la marca solo
+# aparece citado como fuente, el tono es Neutro aunque sea voz experta.
+# No aplica si la marca ACTÚA frente al problema (ayuda, dona, organiza,
+# propone solución): eso sigue siendo Positivo.
+_TRAGEDIA_PAT = re.compile(
+    r'\b(muertes?|muertos?|muertas?|fallec\w*|decesos?|asesinat\w*|homicidios?|'
+    r'feminicidios?|suicidios?|tragedias?|tr[áa]gic[oa]s?|v[íi]ctima mortal|'
+    r'accidente fatal|muri[óo]|perdi[óo] la vida)\b', re.I)
+_ROL_EXPERTO_PAT = re.compile(
+    r'\b(investigador(?:a|es)?|docente(?:s)?|profesor(?:a|es)?|expert[oa]s?|'
+    r'especialista(?:s)?|rector(?:a)?|decan[oa]s?|cient[íi]fic[oa]s?|'
+    r'acad[ée]mic[oa]s?)\b', re.I)
+# La marca actúa frente al problema o lidera la acción: no es "solo citada".
+_MARCA_ACTORA_PAT = re.compile(
+    r'\b(ayud\w*|don[óo]|apoy[óo]|atiend\w*|socorr\w*|bec[óo]as?|propuso|propone|'
+    r'articul[óo]|acompa[ñn]\w*|solidariz\w*|organiz\w*|convoc\w*|lider\w*|'
+    r'present[óo]|lanz[óo]|inaugur\w*|firm[óo]|anunci\w*|realiz[óo]|impuls\w*|'
+    r'entreg[óo])\b', re.I)
+
+
+def _experto_casa_citado(texto: str, actores: Sequence[str]) -> bool:
+    """True si un actor de la marca aparece cerca (~100 caracteres) de un rol experto."""
+    t = nz(texto)
+    if not t:
+        return False
+    for m in _ROL_EXPERTO_PAT.finditer(t):
+        ventana = t[max(0, m.start() - 100):m.end() + 100]
+        if any(a in ventana for a in actores):
+            return True
+    return False
+
+
+def _marca_actora(texto: str, actores: Sequence[str]) -> bool:
+    """True si un actor de la marca aparece cerca (~120 caracteres) de un verbo de acción."""
+    t = nz(texto)
+    if not t:
+        return False
+    for m in _MARCA_ACTORA_PAT.finditer(t):
+        ventana = t[max(0, m.start() - 120):m.end() + 120]
+        if any(a in ventana for a in actores):
+            return True
+    return False
+
+
 def aplicar_guarda_positiva(grupos: Sequence[dict], etiquetas: Dict[int, dict],
                             brand: str, aliases: Sequence[str],
                             voceros: Sequence[str] = ()) -> List[int]:
@@ -2862,6 +3172,10 @@ def aplicar_guarda_positiva(grupos: Sequence[dict], etiquetas: Dict[int, dict],
         if not e or e.get('tono') != 'Neutro':
             continue
         texto = '%s. %s' % (g.get('titulo', ''), g.get('contexto') or g.get('texto', ''))
+        # Excepción tragedia: experto de la casa solo citado como fuente en una
+        # tragedia = Neutro. No bloquea la marca que actúa (dona, organiza…).
+        tragedia_sin_accion = (bool(_TRAGEDIA_PAT.search(texto))
+                                and not _marca_actora(texto, actores))
         for oracion in re.split(r'(?<=[.!?;:])\s+|\n+', ctrl(texto)):
             n = nz(oracion)
             if (not n or peticion.search(oracion) or critica.search(oracion) or
@@ -2876,7 +3190,19 @@ def aplicar_guarda_positiva(grupos: Sequence[dict], etiquetas: Dict[int, dict],
                 e['tono'] = 'Positivo'
                 corregidos.append(g.get('grupo'))
                 break
-            if (re.search(r'(colaboraci[oó]n|colabor[oó]|participa|particip[oó]|coautor|coautora|'
+            # Vocero o marca citado como fuente experta: verbo de habla cerca
+            # del actor ("consideró el rector de la Universidad Simón Bolívar").
+            # No aplica si la oración trae petición o crítica (ya filtradas
+            # arriba): una declaración en contexto adverso no suma.
+            m_habla = HABLA_PAT.search(n)
+            if m_habla and not tragedia_sin_accion:
+                ventana = n[max(0, m_habla.start() - 90):m_habla.end() + 70]
+                if any(a in ventana for a in actores):
+                    e['tono'] = 'Positivo'
+                    corregidos.append(g.get('grupo'))
+                    break
+            if (not tragedia_sin_accion
+                    and re.search(r'(colaboraci[oó]n|colabor[oó]|participa|particip[oó]|coautor|coautora|'
                           r'elaborad[oa] por|realizad[oa] por|investigaci[oó]n de|estudio de|'
                           r'informe de|columna de opini[oó]n|intervenci[oó]n|vocero|vocera|'
                           r'fuente experta|ponencia|present[oó] una)', oracion, re.I)
@@ -2907,3 +3233,33 @@ def aplicar_guarda_positiva(grupos: Sequence[dict], etiquetas: Dict[int, dict],
             if e.get('tono') == 'Positivo':
                 break
     return corregidos
+
+
+def aplicar_regla_tragedia(grupos: Sequence[dict], etiquetas: Dict[int, dict],
+                           brand: str, aliases: Sequence[str],
+                           voceros: Sequence[str] = ()) -> List[int]:
+    """Tragedia con experto de la casa citado como fuente = Neutro.
+
+    Baja Positivo a Neutro cuando la nota es una tragedia (muerte) y el
+    experto/docente de la marca solo aparece citado como fuente, sin que la
+    marca actúe frente al problema (ayudar, donar, organizar, proponer).
+    No toca Negativos: un señalamiento dirigido se respeta.
+    """
+    actores = [nz(x) for x in [brand] + list(aliases or []) + list(voceros or [])
+               if x and len(nz(x)) >= 4]
+    if not actores:
+        return []
+    bajados = []
+    for g in grupos:
+        e = etiquetas.get(g.get('grupo'))
+        if not e or e.get('tono') != 'Positivo':
+            continue
+        texto = '%s. %s' % (g.get('titulo', ''), g.get('contexto') or g.get('texto', ''))
+        if not _TRAGEDIA_PAT.search(texto):
+            continue
+        if _marca_actora(texto, actores):
+            continue
+        if _experto_casa_citado(texto, actores):
+            e['tono'] = 'Neutro'
+            bajados.append(g.get('grupo'))
+    return bajados

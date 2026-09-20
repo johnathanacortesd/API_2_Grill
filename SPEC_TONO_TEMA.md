@@ -56,8 +56,12 @@ por `analyzer_tono_tema.ultimo_resumen()` en `resultado["analisis"]`.
 3. **Validador duro + reparación** — `validar` (3-7 palabras, sin verbo conjugado inicial, sin
    preposición final, sin rótulos vacíos, sin `:` `;` `|`) y `prompt_reparacion` en ciclo contra el
    propio modelo.
-4. **Tema bottom-up de ESTE LOTE** — `asignar_temas` agrupa subtemas canónicos afines y nombra cada
-   familia **una sola vez**. El nombre es una **frase nominal temática COMPLETA** (la que un
+4. **Tema bottom-up de ESTE LOTE** — `asignar_temas` agrupa subtemas canónicos afines
+   (`cluster_familias_subtema`: puentes solo con stems distintivos —descarta palabras
+   genéricas de evento como `congreso`/`internacional` y stems omnipresentes en el lote—,
+   equivalencias `criminalidad`/`criminología`→`crimen`, `juvenil`/`juventud`/`jóvenes`→`joven`,
+   y anti-encadenamiento: un puente de titular solo une si toca el núcleo temático)
+   y nombra cada familia **una sola vez**. El nombre es una **frase nominal temática COMPLETA** (la que un
    analista pondría en Power BI): LLM con few-shot buenos/malos → gate duro → una reparación →
    frase segura. Prohibido bag-of-words, unir stems y recortes que suelten el núcleo o el objeto.
    No hay lista cerrada ni memoria entre corridas. Un subtema canónico implica exactamente un tema.
@@ -67,12 +71,39 @@ por `analyzer_tono_tema.ultimo_resumen()` en `resultado["analisis"]`.
    no las sustituye. Si hay `tone_model`, `Tono_IA` son las clases de ese modelo (sin guarda LLM).
 5. **Guarda de generalidad y de lengua** — el tema es más general que el subtema
    (`_tema_distinto_de_subtema`) y pasa `problemas_calidad_tema` / `tema_frase_natural`:
-   frase completa, no verbo/cláusula, no PP truncado, no solo adjetivos, no persona, no sigla
-   suelta, no rótulo vacío, **no copia ni prefijo del titular**. El subtema sigue siendo el
+   frase completa, no verbo/cláusula, no PP truncado (ni **inicio** con preposición:
+   `Para Carnaval 2027` → `Carnaval 2027`, con reparación determinista
+   `_reparar_inicio_preposicional` que solo ignora los flags cosméticos
+   `mash_keywords`/`empieza_por_adjetivo`), no solo adjetivos, no persona, no sigla
+   suelta, no rótulo vacío, **no copia ni prefijo del titular** (sustantivo + año como
+   `Carnaval 2027` ya no cuenta como `mash_keywords`). El subtema sigue siendo el
    hecho concreto.
-6. **Nunca "Otros"** — `CUBO_PROHIBIDO`, `cubo_valido`. Jev (TypeSafe) es opcional y **solo**
+6. **Calidad del subtema** — `validar` detecta `copia_titular` (el subtema repite el
+   titular en el mismo orden de palabras, sin reformular; los nombres de evento como
+   `Cumbre internacional de criminología` están exentos) y `subtema_vago`
+   (solo evento genérico + sujeto genérico, sin objeto: `Reunión de expertos en crimen`).
+   El prompt de reparación exige reformular el primero y concretar el segundo.
+7. **Nunca "Otros"** — `CUBO_PROHIBIDO`, `cubo_valido`. Jev (TypeSafe) es opcional y **solo**
    corrige temas mal clasificados (boolean/choice, alta confianza). No genera subtemas ni reemplaza
    el pipeline de tono.
+
+Estabilizadores porque el modelo es pequeño (sesgo sistemático, no ruido):
+
+- **Votación de tono** — `_voto_mayoria` (N veces por grupo, empate → Neutro).
+- **Guarda determinista** — `aplicar_guarda_tono`: sin señalamiento **dirigido** (el blanco a ≤35
+  caracteres del verbo de crítica) no hay Negativo. El tema trágico no hace negativo al cliente.
+- **Guarda positiva de vocero** — `aplicar_guarda_positiva`: si la marca o un vocero del
+  perfil aparece citado como fuente experta (verbo de habla: `dijo`, `afirmó`, `señaló`,
+  `advirtió`, `consideró`…; `reveló` está excluido porque introduce hallazgos) y no hay
+  señalamiento ni petición, un Neutro sube a Positivo.
+- **Un hecho, un tono** — `unificar_tono_mismo_hecho`: los grupos con el mismo subtema
+  canónico votan su tono (empate → Neutro); si alguno es Negativo no se toca el grupo
+  (no se borra un posible señalamiento).
+- **Tragedia con experto de la casa** — `aplicar_regla_tragedia` (+ excepción en
+  `aplicar_guarda_positiva` y línea en el criterio `Aspectual estricto`): si la nota es
+  una tragedia (muerte) y el experto/docente de la marca solo aparece citado como
+  fuente, el tono es Neutro aunque sea voz experta. No aplica si la marca actúa frente
+  al problema (ayuda, dona, organiza, propone): eso sigue Positivo. No toca Negativos.
 
 Estabilizadores porque el modelo es pequeño (sesgo sistemático, no ruido):
 
@@ -161,4 +192,9 @@ El análisis se adapta por cliente sin tocar código, mediante `perfil_cliente.p
 (clustering, canonización, un tema por subtema, tema ≠ subtema, sin memoria entre corridas),
 el camino PKL (el predict del PKL se invoca y gana sobre el nombrado libre/LLM del lote)
 y los perfiles de cliente (`tests/test_perfil_cliente.py`: validación, roundtrip de
-guardado/carga, historial y `criterio_texto` en el prompt). No hay llamadas a API.
+guardado/carga, historial y `criterio_texto` en el prompt). `tests/test_calidad_tema_tono.py`
+cubre las mejoras de calidad 2026-09-20: clustering con stems distintivos (PISA/IA educativa
+no se mezcla con criminología; juventud no se mezcla con suicidio), temas que no empiezan
+con preposición y son estrictamente más generales que el subtema, subtemas que no copian
+el titular ni quedan vagos, guarda positiva para vocero citado como fuente experta y
+unificación de tono por hecho. No hay llamadas a API.
