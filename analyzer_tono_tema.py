@@ -295,12 +295,18 @@ def construir_grupos(
     for i in idx_validos:
         tit = _titulo_fila(rows[i], km)
         txt = _texto_fila(rows[i], km)
+        ctx = str(rows[i].get('Contexto analizado') or '')
+        ctx = '' if ctx.strip() in ('', '-') else ctx
         base.append({
             'idx': i,
             'titulo': sq(tit),
             'texto': sq(txt),
             'ctit': set(w for w in words(tit) if w not in GENERIC_TITULO),
             'g5': grams(words(txt), K_BODY),
+            # Contexto analizado de la marca: párrafos donde aparece la marca.
+            # Dos noticias del mismo hecho suelen compartir pasajes citados
+            # (declaraciones, cifras) aunque título y cuerpo difieran.
+            'g5ctx': grams(words(ctx), K_BODY),
         })
 
     par = list(range(len(base)))
@@ -398,6 +404,28 @@ def construir_grupos(
             same_g = len(b['g5'] & bj['g5']) / max(1, min(len(b['g5']), len(bj['g5'])))
             if same_g >= 0.70 and len(b['ctit'] & bj['ctit']) >= MIN_PALABRAS_TITULO:
                 uni(i, j)
+
+    # --- señal de CONTEXTO ANALIZADO: mismo hecho, título y cuerpo distintos ---
+    # Se fusionan si comparten >= 6 5-gramas del contexto de marca y el
+    # solapamiento sobre el menor supera 0.55. Conservador: boilerplates
+    # genéricos no alcanzan ese solapamiento porque los contextos son largos.
+    inv_c = defaultdict(set)
+    for j, b in enumerate(base):
+        for g in b['g5ctx']:
+            inv_c[g].add(j)
+    for i, b in enumerate(base):
+        if len(b['g5ctx']) < 6:
+            continue
+        hits = Counter()
+        for g in b['g5ctx']:
+            for j in inv_c.get(g, ()):
+                if j != i:
+                    hits[j] += 1
+        for j, inter in hits.items():
+            if j > i:
+                den = min(len(b['g5ctx']), len(base[j]['g5ctx']))
+                if den >= 6 and inter >= 6 and inter / den >= 0.55:
+                    uni(i, j)
 
     por_raiz = defaultdict(list)
     for k in range(len(base)):
@@ -1462,6 +1490,20 @@ ATRIBUTO_DEMOGRAFICO = {
 }
 
 
+def _contextos_mismo_hecho(a: str, b: str, umbral: float = 0.55,
+                           min_gramas: int = 6) -> bool:
+    """True si dos textos de contexto comparten pasajes del mismo hecho.
+
+    Comparación por solapamiento de 5-gramas (orden-sensible): confirma que es
+    el mismo hecho contado por dos notas, no solo palabras clave en común.
+    """
+    ga, gb = grams(words(nz(a or '')), 5), grams(words(nz(b or '')), 5)
+    if len(ga) < min_gramas or len(gb) < min_gramas:
+        return False
+    inter = len(ga & gb)
+    return inter >= min_gramas and inter / min(len(ga), len(gb)) >= umbral
+
+
 def _subtemas_mismo_hecho(a: str, b: str, umbral: float = 0.82) -> bool:
     """True si dos subtemas describen el mismo hecho (no solo el mismo asunto)."""
     from rapidfuzz import fuzz
@@ -1557,6 +1599,11 @@ def unificar_subtemas_noticias_similares(grupos: Sequence[dict], etiquetas: Dict
             if not ti or not tj:
                 continue
             if fuzz.token_set_ratio(ti, tj) < umbral:
+                # Mismo hecho con titular distinto: lo confirma el contexto de
+                # marca (pasajes citados compartidos), no palabras clave sueltas.
+                if _contextos_mismo_hecho(grupos[i].get('contexto_marca') or '',
+                                         grupos[j].get('contexto_marca') or ''):
+                    uni(i, j)
                 continue
             wi = set(w for w in words(ti) if w not in GENERIC_TITULO)
             wj = set(w for w in words(tj) if w not in GENERIC_TITULO)
@@ -2386,10 +2433,14 @@ def prompt_temas_familias(familias: Sequence[dict]) -> str:
     bloques = []
     for f in familias:
         bloques.append(
-            'FAMILIA id=%d\nSUBTEMAS:\n%s\nTITULARES:\n%s' % (
+            'FAMILIA id=%d\nSUBTEMAS:\n%s\nTITULARES:\n%s\nCONTEXTOS:\n%s' % (
                 f['id'],
                 '\n'.join('- %s' % s for s in f.get('subtemas') or []),
                 '\n'.join('- %s' % t for t in (f.get('titulos') or [])[:6]),
+                # El contexto (párrafos reales) desambigua mejor que los
+                # subtemas solos: el tema debe corresponder a la noticia.
+                '\n'.join('- %s' % sq(c)[:400]
+                          for c in (f.get('contextos') or [])[:2]),
             )
         )
     buenos = ', '.join('"%s"' % x for x in TEMAS_EJEMPLO_BUENOS)
@@ -3118,6 +3169,14 @@ def enrich_rows_with_ai(
     # guarda LLM (degradar Negativo / subir a Positivo) porque pisaría el PKL.
     if tone_model is None:
         corregidos = aplicar_guarda_tono(grupos, etiquetas, brand, aliases)
+        # Crítica con respuesta de la marca: la información se equilibra → Neutro.
+        equilibrio = aplicar_regla_critica_con_respuesta(
+            grupos, etiquetas, brand, aliases, voceros=cfg.get('voceros') or [])
+        if equilibrio:
+            _ULTIMO_RESUMEN['tono_critica_con_respuesta'] = equilibrio
+            if progress_callback:
+                progreso(93, 'Crítica con respuesta: %d Negativos pasaron a Neutro'
+                         % len(equilibrio))
         positivos = aplicar_guarda_positiva(grupos, etiquetas, brand, aliases,
                                             voceros=cfg.get('voceros') or [])
         tragedia = aplicar_regla_tragedia(grupos, etiquetas, brand, aliases,
@@ -3200,15 +3259,50 @@ def enrich_rows_with_ai(
 def unificar_tono_mismo_hecho(grupos: Sequence[dict],
                              etiquetas: Dict[int, dict]) -> int:
     """Voto de tono por hecho. Empate → Neutro. Nunca crea un Negativo por
-    voto: si algún grupo marcó Negativo (señalamiento), no se toca el hecho."""
+    voto: si algún grupo marcó Negativo (señalamiento), no se toca el hecho.
+
+    Dos grupos con subtemas distintos pero con el MISMO contexto de marca
+    (pasajes citados compartidos) votan juntos: es el mismo hecho contado
+    por varios medios aunque el subtema haya salido con otra redacción.
+    """
     por_sub: Dict[str, List[int]] = defaultdict(list)
     for g in grupos:
         e = etiquetas.get(g.get('grupo')) or {}
         s = nz(e.get('sub_tema') or '')
         if s:
             por_sub[s].append(g.get('grupo'))
+    hechos: List[List[int]] = [list(v) for v in por_sub.values()]
+    # Union-find sobre los buckets: unir hechos cuyo contexto de marca sea
+    # casi el mismo (bar estricto: 8+ 5-gramas compartidos, solapamiento 0.65).
+    ctx = {}
+    for g in grupos:
+        ctx[g.get('grupo')] = g.get('contexto_marca') or ''
+    par = list(range(len(hechos)))
+
+    def find(x):
+        while par[x] != x:
+            par[x] = par[par[x]]
+            x = par[x]
+        return x
+
+    def uni(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            par[max(ra, rb)] = min(ra, rb)
+
+    for i in range(len(hechos)):
+        for j in range(i + 1, len(hechos)):
+            if find(i) == find(j):
+                continue
+            ci = ' '.join(ctx.get(g, '') for g in hechos[i])
+            cj = ' '.join(ctx.get(g, '') for g in hechos[j])
+            if _contextos_mismo_hecho(ci, cj, umbral=0.65, min_gramas=10):
+                uni(i, j)
+    buckets = defaultdict(list)
+    for i, gids in enumerate(hechos):
+        buckets[find(i)].extend(gids)
     cambios = 0
-    for gids in por_sub.values():
+    for gids in buckets.values():
         if len(gids) < 2:
             continue
         tonos = [(etiquetas.get(g) or {}).get('tono') for g in gids]
@@ -3234,7 +3328,8 @@ def unificar_tono_mismo_hecho(grupos: Sequence[dict],
 # un señalamiento dirigido a la marca, a su vocero o a una empresa del sector.
 CRITICA_PAT = re.compile(
     r'(denunci|cuestion|sancion|critic|rechaz|exig|acusa|se[nñ]al|demand|investiga|irregular|'
-    r'sobrecosto|corrup|incumpl|multa|reclam|responsabiliz|se le atribuye)', re.I)
+    r'sobrecosto|corrup|incumpl|multa|reclam|responsabiliz|se le atribuye|'
+    r'atac|esc[áa]ndal|crisis|fraude|malvers|despilfarr)', re.I)
 VICTIMA_PAT = re.compile(
     r'(\brobo\b|roban|rob[oa]ron|hurto|atrac|asalt|accidente|\bmuert|fallec|herid|inundaci|'
     r'deslizamiento|incendio|sequ[ií]a|apag[oó]n|el ni[nñ]o|desempleo|suicid|\bprecio|alza|'
@@ -3242,6 +3337,62 @@ VICTIMA_PAT = re.compile(
 BLANCO_EMPRESA = re.compile(r'(una empresa|una compa[nñ][ií]a|una firma|una industria|un frigor[ií]fico|'
                             r'una planta|un matadero|una av[ií]cola|la empresa|la compa[nñ][ií]a)', re.I)
 NOMBRE_PROPIO = re.compile(r'(?<![.!?]\s)(?<![.!?])\b[A-ZÁÉÍÓÚÑ][a-záéíóúñ]{2,}')
+
+
+# Marcadores de respuesta/descargo de la marca ante un señalamiento.
+_RESPUESTA_PAT = re.compile(
+    r'\b(respondi[óo]|responde|respuesta|descargo|pronunciamiento|comunicado|'
+    r'versi[óo]n de|se defendi[óo]|defendi[óo]|neg[óo]|desminti[óo]|aclar[óo]|'
+    r'rechaz[óo]\s+(?:las|los)\s+(?:acusaciones|se[ñn]alamientos|denuncias|cr[íi]ticas|cargos)|'
+    r'cuestion[óo]\s+la\s+denuncia|en\s+respuesta\s+a)\b', re.I)
+
+
+def _respuesta_marca(texto: str, actores: Sequence[str]) -> bool:
+    """True si un actor de la marca aparece en una oración con marcadores de
+    respuesta/descargo (respondió, descargo, pronunciamiento, versión de...).
+
+    Se evalúa por oración para que un descargo al final de una frase no se
+    confunda con el sujeto de la siguiente.
+    """
+    t = ctrl(texto)
+    if not t:
+        return False
+    acts = [a for a in (actores or []) if a and len(a) >= 4]
+    if not acts:
+        return False
+    for oracion in re.split(r'(?<=[.!?;:])\s+|\n+', t):
+        n = nz(oracion)
+        if not n or not _RESPUESTA_PAT.search(oracion):
+            continue
+        if any(a in n for a in acts):
+            return True
+    return False
+
+
+def aplicar_regla_critica_con_respuesta(grupos: Sequence[dict],
+                                       etiquetas: Dict[int, dict],
+                                       brand: str, aliases: Sequence[str],
+                                       voceros: Sequence[str] = ()) -> List[int]:
+    """Crítica con respuesta de la marca = Neutro (la información se equilibra).
+
+    Baja Negativo a Neutro cuando la nota trae el señalamiento dirigido Y la
+    respuesta, descargo, pronunciamiento o versión de la marca/vocero. No toca
+    Positivos ni críticas sin respuesta.
+    """
+    actores = [nz(x) for x in [brand] + list(aliases or []) + list(voceros or [])
+               if x and len(nz(x)) >= 4]
+    if not actores:
+        return []
+    bajados = []
+    for g in grupos:
+        e = etiquetas.get(g.get('grupo'))
+        if not e or e.get('tono') != 'Negativo':
+            continue
+        texto = '%s. %s' % (g.get('titulo', ''), g.get('contexto') or g.get('texto', ''))
+        if _critica_dirigida(texto, brand, aliases) and _respuesta_marca(texto, actores):
+            e['tono'] = 'Neutro'
+            bajados.append(g.get('grupo'))
+    return bajados
 
 
 def _tema_negativo(texto: str) -> bool:
@@ -3338,6 +3489,15 @@ def _marca_actora(texto: str, actores: Sequence[str]) -> bool:
     return False
 
 
+# La marca como autora del conocimiento: estudio, informe, investigación,
+# encuesta, diagnóstico, documento, artículo o columna ELABORADO/PUBLICADO por
+# ella. Criterio del usuario: gestiones, estudios y acciones propias = Positivo.
+_AUTORIA_PROPIA_PAT = re.compile(
+    r'(elaborad[oa] por|realizad[oa] por|estudio de|informe de|investigaci[óo]n de|'
+    r'encuesta de|diagn[óo]stico de|documento de|art[íi]culo de|columna de|ponencia de|'
+    r'publicad[oa] por|liderad[oa] por|coordinad[oa] por)', re.I)
+
+
 def aplicar_guarda_positiva(grupos: Sequence[dict], etiquetas: Dict[int, dict],
                             brand: str, aliases: Sequence[str],
                             voceros: Sequence[str] = ()) -> List[int]:
@@ -3356,7 +3516,8 @@ def aplicar_guarda_positiva(grupos: Sequence[dict], etiquetas: Dict[int, dict],
               r'pone en marcha|puso en marcha|lanza|lanzó|impulsa|impulsó|aprueba|aprobó|'
               r'destina|destinó|invierte|invirtió|dona|donó|respalda|respaldó|apoya|apoyó|'
               r'capacita|capacitó|organiza|organizó|convoca|convocó|celebra|celebró|'
-              r'realiza|realizó|presenta|presentó|anuncia|anunció|'
+              r'realiza|realizó|presenta|presentó|anuncia|anunció|publica|publicó|'
+              r'socializa|socializó|'
               r'gan(?:a|ó|aron|ará|arán)|recib(?:e|ió|ieron|irá|irán)|ocup(?:a|ó|aron|ará|arán)|'
               r'abr(?:e|ió|irá|irán)|firm(?:a|ó|aron|ará|arán)|atend(?:e|ió|erá|erán)|'
               r'pone en servicio|habilita|habilitó')
@@ -3370,6 +3531,10 @@ def aplicar_guarda_positiva(grupos: Sequence[dict], etiquetas: Dict[int, dict],
         if not e or e.get('tono') != 'Neutro':
             continue
         texto = '%s. %s' % (g.get('titulo', ''), g.get('contexto') or g.get('texto', ''))
+        # Crítica con respuesta de la marca: queda Neutro (la información se
+        # equilibra). Esta guarda no la sube a Positivo aunque el vocero hable.
+        if _critica_dirigida(texto, brand, aliases) and _respuesta_marca(texto, actores):
+            continue
         # Excepción tragedia: experto de la casa solo citado como fuente en una
         # tragedia = Neutro. No bloquea la marca que actúa (dona, organiza…).
         tragedia_sin_accion = (bool(_TRAGEDIA_PAT.search(texto))
@@ -3378,7 +3543,7 @@ def aplicar_guarda_positiva(grupos: Sequence[dict], etiquetas: Dict[int, dict],
             n = nz(oracion)
             if (not n or peticion.search(oracion) or critica.search(oracion) or
                     (re.search(r'(informe|estudio|alerta|cifra|panorama|diagnóstico|diagnostico)', oracion, re.I)
-                     and not re.search(r'(obra|inversi|beca|premio|convenio|bloque|aula|colabor|particip|elabor|realiz|investig|intervenci|opini[oó]n|ponencia)', oracion, re.I))):
+                     and not re.search(r'(obra|inversi|beca|premio|convenio|bloque|aula|colabor|particip|elabor|realiz|investig|intervenci|opini[oó]n|ponencia|publica|publicó|socializa|socializ)', oracion, re.I))):
                 continue
             voceros_norm = [nz(v) for v in (voceros or []) if v]
             es_columna_vocero = bool(voceros_norm and any(v in n for v in voceros_norm)
@@ -3401,10 +3566,12 @@ def aplicar_guarda_positiva(grupos: Sequence[dict], etiquetas: Dict[int, dict],
                     break
             if (not tragedia_sin_accion
                     and re.search(r'(colaboraci[oó]n|colabor[oó]|participa|particip[oó]|coautor|coautora|'
-                          r'elaborad[oa] por|realizad[oa] por|investigaci[oó]n de|estudio de|'
-                          r'informe de|columna de opini[oó]n|intervenci[oó]n|vocero|vocera|'
+                          r'intervenci[oó]n|vocero|vocera|'
                           r'fuente experta|ponencia|present[oó] una)', oracion, re.I)
-                    and any(a in n for a in actores)):
+                    and any(a in n for a in actores)) \
+                    or (not tragedia_sin_accion
+                        and _AUTORIA_PROPIA_PAT.search(oracion)
+                        and any(a in n for a in actores)):
                 e['tono'] = 'Positivo'
                 corregidos.append(g.get('grupo'))
                 break
@@ -3421,9 +3588,12 @@ def aplicar_guarda_positiva(grupos: Sequence[dict], etiquetas: Dict[int, dict],
                     if re.search(r'organiz|convoc|realiz|celebr', m.group(0), re.I) and not re.search(eventos, despues):
                         continue
                     if re.search(r'anunci|present', m.group(0), re.I):
-                        if re.search(r'(informe|estudio|alerta|cifra|panorama|diagnóstico|diagnostico)', oracion, re.I):
+                        menciona_informe = bool(re.search(r'(informe|estudio|alerta|cifra|panorama|diagnóstico|diagnostico)', oracion, re.I))
+                        autoria = bool(_AUTORIA_PROPIA_PAT.search(oracion))
+                        if menciona_informe and not autoria and not any(a in n for a in actores):
                             continue
-                        if not re.search(r'(obra|inversi|programa|beca|sede|congreso|foro|feria|premio|convenio|bloque|aula|programa|paciente)', despues, re.I):
+                        if (not re.search(r'(obra|inversi|programa|beca|sede|congreso|foro|feria|premio|convenio|bloque|aula|programa|paciente)', despues, re.I)
+                                and not autoria):
                             continue
                     e['tono'] = 'Positivo'
                     corregidos.append(g.get('grupo'))

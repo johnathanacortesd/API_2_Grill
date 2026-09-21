@@ -247,6 +247,53 @@ El análisis se adapta por cliente sin tocar código, mediante `perfil_cliente.p
   restablece con try/finally.
 - Variable de entorno opcional `CLIENTES_DIR` para mover la carpeta de perfiles.
 
+## 13. v4.7: mismo hecho por contexto + tono hacia la marca
+
+**Agrupación por `Contexto analizado` (`construir_grupos`, `_contextos_mismo_hecho`):**
+la similitud de noticias ya no depende solo de título/cuerpo. Cada fila calcula
+5-gramas ordenados de su `Contexto analizado`; dos filas se unen si comparten
+>= 6 5-gramas y el solapamiento sobre el contexto menor es >= 0,55. Detecta el
+mismo hecho con titulares y cuerpos redactados distinto (p. ej. dos medios que
+citan la misma declaración). No agrupa por keywords sueltas: exige secuencias
+ordenadas compartidas.
+
+**Consistencia por contexto:** `unificar_subtemas_noticias_similares` y
+`unificar_tono_mismo_hecho` también unen por contexto de marca casi idéntico
+(>= 10 5-gramas, solapamiento >= 0,65): noticias iguales o similares reciben el
+mismo tono, tema y subtema aunque sus titulares difieran. La política de voto se
+mantiene: con un Negativo en el lote no se reconcilia; empate -> Neutro.
+
+**Tono hacia la marca (nunca hacia la noticia en general):**
+- `CRITICA_PAT` ampliado: ataca/ataque, escándalo, crisis, fraude, malversación,
+  despilfarro (además de denuncia, cuestionamiento, acusación, sobrecostos, corrupción…).
+- `aplicar_regla_critica_con_respuesta` (nueva, determinista): crítica dirigida
+  + respuesta atribuida a marca/alias/vocero (respondió, descargo, pronunciamiento,
+  comunicado, desmintió, negó, rechazó las acusaciones…) -> Negativo pasa a Neutro,
+  porque la información se equilibra. Solo toca Negativos; una respuesta de un
+  tercero no neutraliza. El Neutro resultante es "pegajoso": `aplicar_guarda_positiva`
+  no lo sube a Positivo.
+- `aplicar_guarda_positiva` ampliada: reconoce autoría propia de estudios,
+  informes, investigaciones, encuestas y publicaciones (`_AUTORIA_PROPIA_PAT`:
+  elaborado/realizado/publicado/liderado/coordinado por…) y verbos publica/publicó,
+  socializa/socializó. Gestiones, estudios y acciones propias -> Positivo.
+- Catálogo `catalogo_tono_tema.py`: el criterio "Aspectual estricto" y el de
+  "Favorabilidad del sector" incorporan las tres reglas (gestión/estudio/acción
+  propia = Positivo; crítica/ataque/crisis dirigida = Negativo; crítica con
+  respuesta = Neutro) y los ejemplos few-shot se recalibraron (estudios propios
+  que antes salían Neutro ahora salen Positivo).
+
+**Tema que corresponde (`prompt_temas_familias`):** el prompt de nombrado de
+familias temáticas ahora incluye hasta 2 contextos por familia (400 caracteres
+cada uno), además de subtemas y titulares, para que el nombre describa el
+contenido real y no solo el agregado léxico.
+
+`tests/test_precision_v47.py` (17 tests) cubre: unión por contexto con titulares
+distintos, no-unión de contextos distintos, subtemas y tono iguales por contexto,
+gestión/estudio propio -> Positivo, crítica sin respuesta -> Negativo, crítica con
+respuesta -> Neutro (y que no sube a Positivo), ataque dirigido detectado, ataque
+sin blanco ignorado, tema ajeno no asignado al miembro, y contexto presente en el
+prompt temático.
+
 ## 12. Estado conocido de las pruebas
 
 `python -m unittest discover -s tests` cubre las invariantes de tema/subtema del lote
