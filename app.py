@@ -405,7 +405,7 @@ def main():
                 <div class="app-header-icon">◈</div>
                 <div class="app-header-text">
                     <div class="app-header-title">Limpieza y Análisis de Noticias</div>
-                    <div class="app-header-version">v4.7 · Tono/Tema/Subtema por reglas + IA · Realizado por Johnathan Cortés</div>
+                    <div class="app-header-version">v4.14 · Tono/Tema/Subtema por reglas + IA · Realizado por Johnathan Cortés</div>
                 </div>
                 <div class="app-header-badge">Estructurador + IA</div>
             </div>""", unsafe_allow_html=True)
@@ -520,14 +520,27 @@ def main():
                              "de ese modelo y no se inventan temas del lote. No hay memoria entre corridas. "
                              "Las listas fijas o un JSON solo se usan como nombres candidatos cuando no hay PKL.",
                     )
+                    _OPCIONES_TEMA = [
+                        "Solo Tono_IA + Subtema_IA (rápido)",
+                        "Agregar Tema_IA con IA (etapa adicional)",
+                    ]
+                    modo_tema_input = st.radio(
+                        "Columna Tema_IA",
+                        _OPCIONES_TEMA,
+                        index=0,
+                        help="El Tema agrupa los subtemas en cubos. La etapa de temas con IA es "
+                             "secuencial y alarga el proceso. Si subes un PKL de tema más abajo, "
+                             "la columna Tema_IA se genera automáticamente con las clases de tu "
+                             "modelo (sin costo extra de IA), aunque elijas el modo rápido.",
+                    )
 
                 with st.expander("⚙ Ajustes finos del análisis (opcional)"):
                     ca, cb, cc, cd = st.columns(4)
                     with ca:
                         tam_lote_input = st.slider("Grupos por llamada", 5, 30, 10, 1,
-                                                   help="Con gpt-4.1-nano 10 funciona mejor.")
+                                                   help="10 es un buen punto de partida.")
                     with cb:
-                        workers_input = st.slider("Llamadas en paralelo", 1, 8, 4, 1,
+                        workers_input = st.slider("Llamadas en paralelo", 1, 16, 8, 1,
                                                   help="Sube para dossiers grandes; más hilos, más velocidad.")
                     with cc:
                         umbral_titulo_input = st.slider("Similitud de titulares (%)", 75, 100, 92, 1,
@@ -547,6 +560,14 @@ def main():
                         help="Cada grupo se etiqueta N veces y gana la mayoría; un empate cae a Neutro. "
                              "Con 2 se reducen los vaivenes de los modelos pequeños; con 3 sube el costo "
                              "una vez más.")
+                    modelo_input = st.selectbox(
+                        "Modelo de IA",
+                        options=["gpt-4.1-nano-2025-04-14", "gpt-6-luna", "gpt-6-sol"],
+                        index=0,
+                        help="gpt-6-luna (lanzado 2026-09-22) es el más rápido y económico "
+                             "($0.10 por 1M tokens de entrada): ideal para dossiers de alto volumen. "
+                             "gpt-6-sol es más capaz pero más costoso.",
+                    )
                     st.markdown("**💾 Perfil de cliente**")
                     guardar_chk = st.checkbox(
                         "Guardar esta configuración como perfil al procesar",
@@ -576,7 +597,9 @@ def main():
                 st.markdown(
                     '<div class="pkl-hint">Puedes subir el PKL de tono, el de tema, ambos o ninguno. '
                     "Si un eje no tiene PKL, se mantiene el análisis actual (IA). "
-                    "El subtema nunca se reemplaza por PKL.</div>",
+                    "El subtema nunca se reemplaza por PKL. Si subes un PKL de tema, la columna "
+                    "Tema_IA se genera automáticamente con sus clases (verbatim), aunque hayas "
+                    "elegido el modo rápido.</div>",
                     unsafe_allow_html=True,
                 )
                 st.markdown("""
@@ -699,6 +722,7 @@ def main():
                                 "taxonomia": tax_eff,
                                 "cubos_objetivo": int(cubos_objetivo_input),
                                 "votos": int(votos_input),
+                                "incluir_tema": modo_tema_input == _OPCIONES_TEMA[1],
                                 "permitir_cubos_nuevos": True,
                                 "tam_lote": int(tam_lote_input),
                                 "workers": int(workers_input),
@@ -707,7 +731,7 @@ def main():
                                 "api_key": api_key if enable_ai else None,
                                 "typesafe_api_key": typesafe_api_key if enable_ai else None,
                                 "typesafe_model": "jev-latest",
-                                "model": "gpt-4.1-nano-2025-04-14",
+                                "model": modelo_input,
                                 "historial_dir": st.secrets.get("HISTORIAL_DIR"),
                                 "tone_pkl_bytes": tone_bytes,
                                 "theme_pkl_bytes": theme_bytes,
@@ -740,6 +764,12 @@ def main():
                 )
 
             analisis = st.session_state.get("analisis") or {}
+            if (analisis or {}).get("modo_taxonomia") == "pkl":
+                _n_pkl = analisis.get("temas_por_pkl") or 0
+                st.success(
+                    "◆ Tema: PKL del cliente activo — %d grupos clasificados con las clases "
+                    "del modelo (verbatim, sin reescritura)." % _n_pkl
+                )
             if analisis:
                 grupos = analisis.get("grupos")
                 cubos_nuevos = analisis.get("cubos_nuevos") or []
@@ -764,6 +794,9 @@ def main():
                     piezas.append(f"Tema por PKL del cliente: {por_pkl}")
                 elif reglas is not None:
                     piezas.append(f"Tema por reglas: {reglas} · por IA: {por_llm or 0}")
+                uni_llm = analisis.get("subtemas_unificados_llm") or 0
+                if uni_llm:
+                    piezas.append(f"subtemas unificados entre lotes por IA: {uni_llm}")
                 if cubos_nuevos:
                     piezas.append("Cubos nuevos específicos: " + ", ".join(cubos_nuevos[:4]))
                 if fallback:
@@ -802,13 +835,28 @@ def main():
                                 st.caption("Son los Temas armados bottom-up en esta corrida. El próximo lote "
                                            "vuelve a agrupar sus propios subtemas; no se reutiliza el vocabulario.")
         
+            costo = (analisis or {}).get("costo_aprox_usd")
+            uso_t = (analisis or {}).get("uso_tokens") or {}
+            modelo_c = (analisis or {}).get("costo_modelo") or ""
+            if costo is not None:
+                costo_txt = "$%.2f" % costo if costo >= 0.01 else "$%.4f" % costo
+                det_costo = "%s tokens de entrada / %s de salida · %d llamadas · %s" % (
+                    f"{uso_t.get('input', 0):,}".replace(",", "."),
+                    f"{uso_t.get('output', 0):,}".replace(",", "."),
+                    uso_t.get('llamadas', 0), modelo_c)
+            else:
+                costo_txt, det_costo = "—", ""
+
             st.markdown(f"""
             <div class="metrics-grid">
               <div class="metric-card m-total"><div class="metric-val" style="color:var(--text)">{total}</div><div class="metric-lbl">Total Registros</div></div>
               <div class="metric-card m-unique"><div class="metric-val" style="color:var(--green)">{uniq}</div><div class="metric-lbl">Únicos</div></div>
               <div class="metric-card m-dup"><div class="metric-val" style="color:var(--amber)">{dups}</div><div class="metric-lbl">Duplicados</div></div>
               <div class="metric-card m-time"><div class="metric-val" style="color:var(--blue)">{dur}</div><div class="metric-lbl">Tiempo de Ejecución</div></div>
+              <div class="metric-card m-cost" title="{det_costo}"><div class="metric-val" style="color:var(--amber)">{costo_txt}</div><div class="metric-lbl">Costo IA aprox.</div></div>
             </div>""", unsafe_allow_html=True)
+            if det_costo:
+                st.caption("Costo estimado del análisis: " + det_costo + ".")
         
             _historial = []
             try:

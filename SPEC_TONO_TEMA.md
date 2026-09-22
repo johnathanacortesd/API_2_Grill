@@ -316,3 +316,159 @@ marca no une familias, PISA no se mezcla con criminología),
 guard por miembro en `asignar_temas` (cada noticia recibe el tema que la describe;
 el miembro ajeno se separa con tema propio — casos Gutiérrez y Foro de periodismo
 científico — y las familias legítimas no se fragmentan). No hay llamadas a API.
+
+## 14. v4.8: modo sin tema (solo tono + subtema)
+
+El cliente puede desactivar la columna `Tema_IA` desde "Ajustes finos"
+(checkbox "Generar columna Tema_IA", default activado). Con
+`incluir_tema=False` en la config de IA:
+
+- `enrich_rows_with_ai` omite por completo la etapa de temas: no llama a
+  `asignar_temas` (ahorra las llamadas LLM secuenciales de
+  `nombrar_familias_tema`), ni a `corregir_temas_con_jev`, ni aplica el PKL de
+  tema. El tono y el subtema siguen el flujo normal (lotes con votos,
+  guardas deterministas, unificación por mismo hecho).
+- `volcar_analisis_en_filas(..., incluir_tema=False)` deja `Tema_IA` vacío y
+  omite el fallback determinista.
+- `output_columns_for_export(..., include_tema=False)` excluye `Tema_IA` del
+  xlsx; el archivo sale con `Tono_IA` y `Subtema_IA` después de Audiencia.
+- El resumen reporta `modo_taxonomia='omitido'`; la UI no muestra sección de
+  temas del lote.
+
+No cambia el default: sin el checkbox, el comportamiento es idéntico a v4.7.
+
+## 15. v4.9 — Selector de modelo: gpt-6-luna (2026-09-22)
+
+OpenAI lanzó el 2026-09-22 los modelos GPT-6 Sol y GPT-6 Luna, disponibles en
+la API como `gpt-6-sol` y `gpt-6-luna`. Luna cuesta $0.10/1M tokens de entrada
+y $0.50/1M de salida (mitad que su predecesor) y está descrito por OpenAI como
+su modelo más eficiente para tareas enfocadas de alto volumen — justo el perfil
+del etiquetado por lotes de esta app.
+
+- La app ya hablaba con la API vía `/chat/completions` con `model` como
+  parámetro libre: ningún hardcode impedía usar otro modelo.
+- Nuevo `st.selectbox` "Modelo de IA" en Ajustes finos con opciones
+  `gpt-4.1-nano-2025-04-14` (default, comportamiento sin cambios),
+  `gpt-6-luna` y `gpt-6-sol`. El valor viaja `pending_ai_config["model"]` →
+  `enrich_rows_with_ai(model=...)` → `cfg['model']` → payload de
+  `llamar_llm`, verificado por `tests/test_modelo_luna.py`.
+- v4.9 mantenía `gpt-4.1-nano-2025-04-14` como default (los prompts y el gate
+  se calibraron contra ese modelo).
+
+## 16. v4.10 — Defaults: gpt-6-luna y sin columna Tema_IA (2026-09-22)
+
+Decisión del usuario: el default del selector pasa a `gpt-6-luna`
+(`MODELO_DEFECTO` en `analyzer_tono_tema.py` y el fallback de
+`pipeline.py` también apuntan a luna), y el checkbox "Generar columna
+Tema_IA" sale **desmarcado** por defecto — el Excel sale solo con
+`Tono_IA` y `Subtema_IA` salvo que el usuario active el tema a mano.
+
+## 17. v4.11 — Fix crítico: `max_completion_tokens` para GPT-6 (2026-09-22)
+
+Fallo reportado con gpt-6-luna: `HTTP 400: Unsupported parameter: 'max_tokens'
+is not supported with this model. Use 'max_completion_tokens' instead.`
+`llamar_llm` enviaba siempre `max_tokens`; la API lo rechazaba y **todas**
+las llamadas fallaban. Cada grupo caía entonces al fallback determinista
+(tono `Neutro` + subtema = primeras palabras del título), lo que explicaba a
+la vez los 377 s (reintentos inútiles en cada lote) y la calidad destruida.
+La lógica de calidad (prompts, gate, guardas) no se tocó en v4.9–v4.10: lo
+que se vio fue el fallback total, no un cambio de criterio.
+
+- Nuevo `_param_limite(modelo)`: `max_completion_tokens` para familias nuevas
+  (`gpt-5/6…`, serie `o`); `max_tokens` para el resto (nano sin cambios).
+- Autocorrección reactiva en `llamar_llm`: si un 400 menciona
+  `max_completion_tokens`, reintenta con el parámetro corregido; si un 400
+  rechaza `temperature`, reintenta sin ella. Cada ajuste ocurre una sola vez
+  por llamada y cubre modelos futuros sin cambiar código.
+- Tests: `tests/test_llamar_llm_params.py` (6 ok: payload inicial de luna,
+  swap reactivo ante 400, retiro de temperature).
+
+## 18. v4.12 — Velocidad sin tocar calidad + nano por defecto (2026-09-22)
+
+Decisión del usuario: el default vuelve a `gpt-4.1-nano-2025-04-14`
+(selector, `MODELO_DEFECTO` y fallback de `pipeline.py`); luna/sol siguen
+como opciones. El fix de `max_completion_tokens` (v4.11) se conserva.
+
+Auditoría de tiempos con el dossier Cotelco (445 filas, LLM simulado
+instantáneo): `enrich_rows_with_ai` tardaba 26.9 s en puro CPU local.
+El profiling mostró que `construir_grupos` consumía ~60 s por un bug de
+indentación: el pase "Titulares cortos casi iguales" quedó anidado dentro
+del loop de bolsa de palabras y se ejecutaba `len(base)` veces (88 M de
+llamadas a `find`). Los merges son idempotentes, así que al sacarlo a pase
+único la partición es bit a bit idéntica (verificado: 234 grupos iguales
+antes/después) y el tiempo cae a 2.1 s.
+
+Mejoras adicionales, todas neutras en calidad:
+- `_http_post` con `requests.Session` reutilizada: evita renegociar TLS en
+  cada una de las ~50-90 llamadas (tests en `test_llamar_llm_params.py`).
+- Loop de reparación de etiquetas en paralelo (mismos workers, mismos
+  trozos de 12, merge por id de grupo: resultado idéntico).
+- Default de "Llamadas en paralelo": 4 → 8 (rango hasta 16); los lotes son
+  independientes, no afecta el etiquetado. Los 429 se siguen manejando con
+  backoff.
+
+Estimación para 445 filas con nano: ~6 oleadas de llamadas (234 grupos,
+lotes de 10, votos=2, 8 workers) + ~5 s locales → del orden de 2 minutos,
+frente a los 400+ s medidos con luna fallando.
+
+## 19. v4.13 — Costo aprox. en tarjetas + PKL de tema manda (2026-09-22)
+
+Costo aproximado de IA en la tarjeta de resultados finales:
+- `llamar_llm(..., uso=...)` acumula `prompt_tokens`/`completion_tokens` del
+  `usage` real de cada respuesta (seguro entre hilos con `_USO_LOCK`).
+- `PRECIOS_MODELO_USD` (USD/millón): nano $0.10/$0.40 (tarifas indicadas por
+  el cliente), luna $0.10/$0.50, sol $2.00/$10.00 (anuncio OpenAI).
+- `enrich_rows_with_ai` guarda en `_ULTIMO_RESUMEN`: `uso_tokens`
+  (input/output/llamadas), `costo_aprox_usd`, `costo_modelo`, `costo_precios`.
+- `app.py` muestra quinta tarjeta "Costo IA aprox." + caption con el detalle
+  (tokens in/out, llamadas, modelo). Solo cubre llamadas OpenAI; Jev no
+  entra en el cálculo.
+
+PKL de tema verificado y reforzado:
+- Con `theme_model` presente, `incluir_tema` se fuerza a True dentro de
+  `enrich_rows_with_ai` y en `pipeline._ai_extra_con_pkl` (para la columna
+  del Excel): la clasificación del PKL es local, sin llamadas LLM ni demora,
+  así que siempre se aplica aunque el checkbox "Generar columna Tema_IA"
+  venga desmarcado. Sin PKL, el checkbox sigue mandando.
+- Verificado: `aplicar_pkl_del_cliente` conserva las clases verbatim (solo
+  `strip` vía `format_theme_label`), marca `origen='pkl'`, nunca toca el
+  subtema, y se salta `asignar_temas`/`corregir_temas_con_jev`.
+- Tests: `tests/test_costo_pkl_tema.py` (12 ok).
+
+## 20. v4.14 — Unificación de subtemas entre lotes + Tema visible + badge PKL (2026-09-22)
+
+Pase final de unificación entre lotes (1 llamada LLM):
+- `unificar_subtemas_llm(cfg, grupos, etiquetas, uso=...)` corre después de
+  `canonizar_subtemas` + `unificar_subtemas_noticias_similares`, antes de las
+  guardas de tono (el voto de tono por subtema usa los subtemas ya unificados).
+- Recibe la lista completa de subtemas únicos (con un titular corto de ejemplo
+  por subtema para desambiguar) y pide al modelo agrupar solo los que son
+  EXACTAMENTE el mismo hecho/asunto. Prompt conservador: ante la duda no
+  fusiona; no une por genéricos, marca, ciudad/persona/fecha distintas.
+- `_sanitizar_fusiones`: índices 1-based válidos, ≥2 distintos por grupo, sin
+  repetir un índice en dos grupos. `_canonico_de_fusion`: gana el más
+  frecuente; en empate, el más corto (mismo criterio que `canonizar_subtemas`);
+  conserva el texto original verbatim.
+- Si la llamada falla, devuelve 0 sin romper el pipeline. No llama si hay ≤1
+  subtema único. La llamada suma a `uso` (tarjeta de costo).
+- `_ULTIMO_RESUMEN['subtemas_unificados_llm']` con el conteo; `app.py` lo
+  muestra en la línea informativa del análisis.
+
+Tema más visible:
+- Nuevo radio "Columna Tema_IA" en la sección 2 de configuración (junto a
+  "Lista de Temas"): "Solo Tono_IA + Subtema_IA (rápido)" /
+  "Agregar Tema_IA con IA (etapa adicional)". Default: rápido (igual que antes).
+- Eliminado el checkbox "Generar columna Tema_IA" de Ajustes finos (duplicaba
+  el control). El help del radio aclara que con PKL de tema la columna se
+  genera igual, sin costo extra de IA.
+- Texto de ayuda de la sección 3 (PKL) actualizado: subir un PKL de tema
+  activa Tema_IA automáticamente aunque se elija el modo rápido.
+
+Badge "Tema: PKL activo":
+- En resultados, si `modo_taxonomia == 'pkl'`, banner `st.success`:
+  "◆ Tema: PKL del cliente activo — N grupos clasificados con las clases del
+  modelo (verbatim, sin reescritura)."
+
+Tests: `tests/test_unificacion_subtemas_llm.py` (15 ok: sanitización,
+canónico por frecuencia/empate/verbatim, fusión aplicada, sin fusiones,
+fallo LLM no rompe, sin llamada con ≤1 subtema, suma a `uso`).

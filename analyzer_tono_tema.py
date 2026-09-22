@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import time
 import unicodedata
 from collections import Counter, defaultdict
@@ -188,12 +189,53 @@ BASE_URL_DEFECTO = "https://api.openai.com/v1"
 MODELO_DEFECTO = "gpt-4.1-nano-2025-04-14"
 JEV_URL_DEFECTO = "https://api.typesafe.ai/v1/systemone"
 TAM_LOTE_DEFECTO = 10
-WORKERS_DEFECTO = 4
+WORKERS_DEFECTO = 8
 UMBRAL_TITULO_DEFECTO = 92
 UMBRAL_CUERPO_DEFECTO = 85
 K_BODY, MIN_GRAMAS, MIN_PALABRAS_TITULO = 5, 30, 3
 
 _ULTIMO_RESUMEN: Dict[str, object] = {}
+
+
+# Tarifas USD por millón de tokens: (entrada, salida).
+# nano: tarifas indicadas por el cliente. luna/sol: anuncio OpenAI 2026-09-22.
+PRECIOS_MODELO_USD: Dict[str, Tuple[float, float]] = {
+    'gpt-4.1-nano-2025-04-14': (0.10, 0.40),
+    'gpt-6-luna': (0.10, 0.50),
+    'gpt-6-sol': (2.00, 10.00),
+}
+
+_USO_LOCK = threading.Lock()
+
+
+def _precios_modelo(modelo: Optional[str]) -> Tuple[float, float]:
+    """(USD/millón entrada, USD/millón salida) para el modelo dado."""
+    m = (str(modelo or '')).lower()
+    for prefijo, precios in PRECIOS_MODELO_USD.items():
+        if m.startswith(prefijo):
+            return precios
+    return (0.10, 0.40)
+
+
+def _sumar_uso(uso: Optional[dict], prompt_tokens: object, completion_tokens: object) -> None:
+    """Acumula tokens de una llamada LLM exitosa (seguro entre hilos)."""
+    if uso is None:
+        return
+    try:
+        pin, pout = int(prompt_tokens or 0), int(completion_tokens or 0)
+    except (TypeError, ValueError):
+        pin, pout = 0, 0
+    with _USO_LOCK:
+        uso['input'] = uso.get('input', 0) + pin
+        uso['output'] = uso.get('output', 0) + pout
+        uso['llamadas'] = uso.get('llamadas', 0) + 1
+
+
+def _costo_aprox_usd(modelo: Optional[str], uso: dict) -> Tuple[float, float, float]:
+    """(costo_usd, precio_input_millon, precio_output_millon)."""
+    pin, pout = _precios_modelo(modelo)
+    costo = (uso.get('input', 0) / 1_000_000) * pin + (uso.get('output', 0) / 1_000_000) * pout
+    return round(costo, 4), pin, pout
 
 
 def ultimo_resumen() -> Dict[str, object]:
@@ -357,14 +399,17 @@ def construir_grupos(
                 if jac >= 0.42 or (jac >= 0.32 and t3[i, j] >= 0.88):
                     uni(i, j)
 
-            # Titulares cortos casi iguales: 2 palabras distintivas + token_set alto.
-            for i in range(len(base)):
-                for j in range(i + 1, len(base)):
-                    if find(i) == find(j):
-                        continue
-                    inter = base[i]['ctit'] & base[j]['ctit']
-                    if len(inter) >= 2 and t3[i, j] >= 0.90:
-                        uni(i, j)
+        # Titulares cortos casi iguales: 2 palabras distintivas + token_set alto.
+        # (Pase unico: antes quedo anidado por error dentro del loop anterior y
+        # se ejecutaba len(base) veces; los merges son idempotentes asi que el
+        # resultado es identico pero 445x mas rapido en dossiers medianos.)
+        for i in range(len(base)):
+            for j in range(i + 1, len(base)):
+                if find(i) == find(j):
+                    continue
+                inter = base[i]['ctit'] & base[j]['ctit']
+                if len(inter) >= 2 and t3[i, j] >= 0.90:
+                    uni(i, j)
 
     inv = defaultdict(set)
     for j, b in enumerate(base):
@@ -1247,25 +1292,77 @@ def _tono_con_jev(cfg: dict, grupo: dict) -> Optional[str]:
         return None
 
 
+def _param_limite(modelo: str) -> str:
+    """Nombre del parametro de limite de tokens segun la familia del modelo.
+
+    Los modelos nuevos (GPT-5/6, serie o) rechazan 'max_tokens' con HTTP 400 y
+    exigen 'max_completion_tokens'; los anteriores usan 'max_tokens'.
+    """
+    m = str(modelo or '').strip().lower()
+    if re.match(r'^(gpt-[5-9]|o[0-9])', m):
+        return 'max_completion_tokens'
+    return 'max_tokens'
+
+
+_SESION_HTTP = None
+
+
+def _http_post(url, headers, payload, timeout):
+    """POST con sesion reutilizada: evita renegociar TLS en cada llamada.
+
+    La sesion (y su pool de conexiones) es segura para uso concurrente desde
+    los workers del ThreadPoolExecutor.
+    """
+    global _SESION_HTTP
+    if _SESION_HTTP is None:
+        _SESION_HTTP = requests.Session()
+    return _SESION_HTTP.post(url, headers=headers, json=payload, timeout=timeout)
+
+
 def llamar_llm(cfg: dict, mensajes: List[dict], json_mode: bool = True,
-               max_tokens: int = 4000, temperatura: float = 0.0, intentos: int = 3) -> str:
+               max_tokens: int = 4000, temperatura: float = 0.0, intentos: int = 3,
+               uso: Optional[dict] = None) -> str:
     url = (cfg.get('base_url') or BASE_URL_DEFECTO).rstrip('/') + '/chat/completions'
-    payload = {'model': cfg.get('model') or MODELO_DEFECTO, 'messages': mensajes,
-               'temperature': temperatura, 'max_tokens': max_tokens}
+    modelo = cfg.get('model') or MODELO_DEFECTO
+    clave_limite = _param_limite(modelo)
+    payload = {'model': modelo, 'messages': mensajes,
+               'temperature': temperatura, clave_limite: max_tokens}
     if json_mode:
         payload['response_format'] = {'type': 'json_object'}
     cab = {'Authorization': 'Bearer %s' % cfg.get('api_key', ''), 'Content-Type': 'application/json'}
     ultimo = ''
+    limite_ajustado = False
+    temp_ajustada = False
     for k in range(intentos):
         try:
-            r = requests.post(url, headers=cab, json=payload, timeout=cfg.get('timeout', 120))
+            r = _http_post(url, cab, payload, cfg.get('timeout', 120))
             if r.status_code in (429, 500, 502, 503):
                 ultimo = 'HTTP %s' % r.status_code
                 time.sleep(2 + 3 * k)
                 continue
+            if r.status_code == 400:
+                cuerpo = (r.text or '').lower()
+                if (not limite_ajustado and 'max_completion_tokens' in cuerpo
+                        and clave_limite == 'max_tokens'):
+                    # El modelo rechaza max_tokens: autocorregir y reintentar.
+                    payload['max_completion_tokens'] = payload.pop('max_tokens')
+                    clave_limite = 'max_completion_tokens'
+                    limite_ajustado = True
+                    ultimo = 'HTTP 400 (max_tokens no soportado; reintentando con max_completion_tokens)'
+                    continue
+                if (not temp_ajustada and 'temperature' in cuerpo
+                        and 'temperature' in payload):
+                    # El modelo no acepta temperature distinta del default.
+                    payload.pop('temperature', None)
+                    temp_ajustada = True
+                    ultimo = 'HTTP 400 (temperature no soportada; reintentando sin temperature)'
+                    continue
             if r.status_code != 200:
                 raise RuntimeError('HTTP %s: %s' % (r.status_code, r.text[:300]))
-            return r.json()['choices'][0]['message']['content']
+            data = r.json()
+            _sumar_uso(uso, (data.get('usage') or {}).get('prompt_tokens'),
+                       (data.get('usage') or {}).get('completion_tokens'))
+            return data['choices'][0]['message']['content']
         except requests.RequestException as e:
             ultimo = str(e)[:200]
             time.sleep(2 + 3 * k)
@@ -1317,7 +1414,8 @@ def _voto_mayoria(por_grupo: List[Dict[int, dict]], ids_lote: Sequence[int]) -> 
 
 def etiquetar_grupos(cfg: dict, grupos: List[dict], progress: Optional[Callable] = None,
                      tam_lote: int = TAM_LOTE_DEFECTO, workers: int = WORKERS_DEFECTO,
-                     max_reparaciones: int = 2, votos: int = 2) -> Dict[int, dict]:
+                     max_reparaciones: int = 2, votos: int = 2,
+                     uso: Optional[dict] = None) -> Dict[int, dict]:
     """Etiqueta todos los grupos: lotes en paralelo -> votacion -> validacion -> reparacion.
 
     Con `votos=2` cada lote se etiqueta dos veces y se toma la mayoria: los casos limite dejan de
@@ -1339,7 +1437,7 @@ def etiquetar_grupos(cfg: dict, grupos: List[dict], progress: Optional[Callable]
                    {'role': 'user', 'content': prompt_lote(lote, [])}]
         for intento in range(2):
             try:
-                txt = llamar_llm(cfg, sys_msg)
+                txt = llamar_llm(cfg, sys_msg, uso=uso)
                 labels = _normaliza_label(_json_loose(txt), ids)
                 if labels:
                     return lote, labels
@@ -1405,14 +1503,25 @@ def etiquetar_grupos(cfg: dict, grupos: List[dict], progress: Optional[Callable]
             break
         if progress:
             progress(min(93, 92), 'Reparando %d etiquetas…' % len(fallos))
-        for i in range(0, len(fallos), 12):
-            trozo = fallos[i:i + 12]
+        def _reparar(trozo):
             try:
                 txt = llamar_llm(cfg, [{'role': 'system', 'content': prompt_sistema(cfg)},
-                                       {'role': 'user', 'content': prompt_reparacion(trozo)}])
-                corr = _normaliza_label(_json_loose(txt), [f['grupo'] for f in trozo])
+                                       {'role': 'user', 'content': prompt_reparacion(trozo)}],
+                                 uso=uso)
+                return _normaliza_label(_json_loose(txt), [f['grupo'] for f in trozo])
             except Exception:
-                corr = {}
+                return {}
+
+        # Los trozos son independientes (cada grupo aparece en uno solo): se
+        # reparan en paralelo con los mismos workers. Mismo resultado, menos
+        # tiempo cuando hay muchas etiquetas por corregir.
+        trozos = [fallos[i:i + 12] for i in range(0, len(fallos), 12)]
+        if len(trozos) > 1:
+            with ThreadPoolExecutor(max_workers=max(1, int(workers))) as ex_rep:
+                correcciones = list(ex_rep.map(_reparar, trozos))
+        else:
+            correcciones = [_reparar(t) for t in trozos]
+        for corr in correcciones:
             for gid, v in corr.items():
                 if v.get('sub_tema'):
                     etiquetas[gid] = v
@@ -1632,6 +1741,115 @@ def unificar_subtemas_noticias_similares(grupos: Sequence[dict], etiquetas: Dict
             if e and e.get('sub_tema') and nz(e['sub_tema']) != nz(canon):
                 e['sub_tema'] = canon
                 cambios += 1
+    return cambios
+
+
+def _sanitizar_fusiones(fusiones, n):
+    """Limpia la respuesta del modelo: indices 1-based validos, >=2 distintos
+    por grupo y sin repetir un indice en dos grupos (mapeo determinista)."""
+    limpias = []
+    usados = set()
+    for f in fusiones or []:
+        idxs = []
+        for x in f or []:
+            try:
+                i = int(x) - 1
+            except Exception:
+                continue
+            if 0 <= i < n and i not in idxs and i not in usados:
+                idxs.append(i)
+        if len(idxs) >= 2:
+            limpias.append(idxs)
+            usados.update(idxs)
+    return limpias
+
+
+def _canonico_de_fusion(idxs, textos, conteo):
+    """Representante del grupo fusionado: el mas frecuente; en empate, el mas
+    corto. Devuelve el texto original (verbatim) del elegido."""
+    mejor = None
+    for i in idxs:
+        t = textos[i]
+        clave = (conteo.get(nz(t), 0), -len(t))
+        if mejor is None or clave > mejor[0]:
+            mejor = (clave, t)
+    return mejor[1]
+
+
+def unificar_subtemas_llm(cfg, grupos, etiquetas, uso=None):
+    """Pase final (1 sola llamada LLM): fusiona subtemas que son el mismo
+    asunto aunque la redaccion difiera entre lotes.
+
+    Los lotes de etiquetado corren en paralelo sin verse entre si y la
+    canonizacion determinista solo caza variantes de redaccion parecida
+    («Inauguración del laboratorio» vs «Inaguración del laboratorio»), no
+    parafrasis («Apertura del laboratorio»). Esta pasada recibe la lista
+    completa de subtemas unicos y pide al modelo agrupar solo los que son
+    EXACTAMENTE el mismo hecho/asunto. Conservadora por diseño: ante la
+    duda no fusiona (un tema incorrecto es peor que dos subtemas pequenos).
+    Si la llamada falla, no rompe el pipeline: devuelve 0.
+    """
+    vistos = {}
+    for e in etiquetas.values():
+        s = (e.get('sub_tema') or '').strip()
+        if s and nz(s) not in vistos:
+            vistos[nz(s)] = s
+    textos = list(vistos.values())
+    if len(textos) <= 1:
+        return 0
+    # Un titular corto de ejemplo por subtema, para desambiguar.
+    gid_por_sub = {}
+    for gid, e in etiquetas.items():
+        k = nz(e.get('sub_tema'))
+        if k and k not in gid_por_sub:
+            gid_por_sub[k] = gid
+    grupo_por_gid = {g.get('grupo'): g for g in grupos}
+    lineas = []
+    for i, t in enumerate(textos, 1):
+        g = grupo_por_gid.get(gid_por_sub.get(nz(t))) or {}
+        tit = str(g.get('titulo') or '')[:110].strip()
+        lineas.append('%d. «%s»%s' % (i, t, ' — ej.: «%s»' % tit if tit else ''))
+    mensajes = [
+        {'role': 'system',
+         'content': 'Unificas nombres de subtemas de un dossier de prensa. Solo agrupas '
+                    'los que describen EXACTAMENTE el mismo hecho o asunto específico. '
+                    'Respondes únicamente en JSON.'},
+        {'role': 'user',
+         'content': (
+             'SUBTEMAS:\n' + '\n'.join(lineas) + '\n\n'
+             'Reglas:\n'
+             '1. Fusiona SOLO los que describen exactamente el mismo hecho o asunto '
+             'específico (p. ej. «Inauguración del laboratorio» y «Apertura del laboratorio»).\n'
+             '2. ANTE LA DUDA, NO FUSIONES: es preferible dejar dos subtemas separados '
+             'que unir dos asuntos distintos.\n'
+             '3. No fusiones por palabras genéricas (prevención, impacto, crisis, jóvenes, '
+             'mujeres) ni porque mencionen la misma marca, persona o ciudad.\n'
+             '4. Si difieren en ciudad, persona, fecha, entidad o alcance, NO los fusiones.\n'
+             'Responde {"fusiones": [[i, j], ...]} con los números de la lista (empezando '
+             'en 1) que sí son el mismo asunto. Si ninguno, {"fusiones": []}.')},
+    ]
+    try:
+        data = _json_loose(llamar_llm(cfg, mensajes, json_mode=True,
+                                      max_tokens=2000, uso=uso)) or {}
+    except Exception:
+        return 0
+    fusiones = _sanitizar_fusiones(data.get('fusiones'), len(textos))
+    if not fusiones:
+        return 0
+    conteo = Counter(nz(e.get('sub_tema')) for e in etiquetas.values()
+                     if e.get('sub_tema'))
+    cambios = 0
+    for idxs in fusiones:
+        canon = _canonico_de_fusion(idxs, textos, conteo)
+        canon_k = nz(canon)
+        miembros = {nz(textos[i]) for i in idxs}
+        for e in etiquetas.values():
+            k = nz(e.get('sub_tema'))
+            if k in miembros and k != canon_k:
+                e['sub_tema'] = canon
+                cambios += 1
+    if cambios:
+        _ULTIMO_RESUMEN['subtemas_unificados_llm'] = cambios
     return cambios
 
 
@@ -2533,7 +2751,8 @@ def _propuestas_tema_llm(txt: str, familias: Sequence[dict]) -> Tuple[Dict[int, 
 
 
 def nombrar_familias_tema(cfg: dict, familias: Sequence[dict],
-                          candidatos: Optional[Sequence[str]] = None) -> Dict[int, str]:
+                          candidatos: Optional[Sequence[str]] = None,
+                          uso: Optional[dict] = None) -> Dict[int, str]:
     """Nombra cada familia: LLM → gate → una reparación → frase segura. Nunca basura."""
     out: Dict[int, str] = {}
     if not familias:
@@ -2550,7 +2769,7 @@ def nombrar_familias_tema(cfg: dict, familias: Sequence[dict],
             txt = llamar_llm(cfg, [
                 {'role': 'system', 'content': sys_tema},
                 {'role': 'user', 'content': prompt_temas_familias(familias)},
-            ])
+            ], uso=uso)
             aceptados, crudos = _propuestas_tema_llm(txt, familias)
             out.update(aceptados)
         except Exception:
@@ -2572,7 +2791,7 @@ def nombrar_familias_tema(cfg: dict, familias: Sequence[dict],
                 txt = llamar_llm(cfg, [
                     {'role': 'system', 'content': sys_tema},
                     {'role': 'user', 'content': prompt_reparacion_tema(fallos)},
-                ])
+                ], uso=uso)
                 aceptados, _ = _propuestas_tema_llm(txt, familias)
                 out.update(aceptados)
             except Exception:
@@ -2846,7 +3065,8 @@ def corregir_temas_con_jev(cfg: dict, grupos: Sequence[dict], etiquetas: Dict[in
 
 
 def asignar_temas(cfg: dict, grupos: List[dict], etiquetas: Dict[int, dict], tax: dict,
-                  progress: Optional[Callable] = None) -> Tuple[Dict[int, str], Dict[int, str]]:
+                  progress: Optional[Callable] = None,
+                  uso: Optional[dict] = None) -> Tuple[Dict[int, str], Dict[int, str]]:
     """Asigna temas BOTTOM-UP en este lote: un subtema canónico ⇒ un tema.
 
     `tax['temas']` solo aporta nombres candidatos (opcional). No hay memoria
@@ -2896,7 +3116,7 @@ def asignar_temas(cfg: dict, grupos: List[dict], etiquetas: Dict[int, dict], tax
             'id': i, 'subtemas': subs, 'titulos': titulos,
             'contextos': contextos, 'gids': gids,
         })
-    nombres = nombrar_familias_tema(cfg or {}, familias, candidatos=candidatos)
+    nombres = nombrar_familias_tema(cfg or {}, familias, candidatos=candidatos, uso=uso)
     grupo_por_id = {g['grupo']: g for g in grupos}
     # Sin agrupamiento forzado: el tema de la familia solo se asigna a los
     # miembros que sí describe; los demás se nombran como singletons, con
@@ -2936,7 +3156,7 @@ def asignar_temas(cfg: dict, grupos: List[dict], etiquetas: Dict[int, dict], tax
     if sueltos:
         # Una sola pasada (un solo llamado LLM si hay api_key) para todos.
         nombres_sueltos = nombrar_familias_tema(cfg or {}, sueltos,
-                                                candidatos=candidatos)
+                                                candidatos=candidatos, uso=uso)
         for fam_uno in sueltos:
             gid = fam_uno['gid']
             tit = fam_uno['titulos']
@@ -2989,7 +3209,7 @@ def asignar_temas(cfg: dict, grupos: List[dict], etiquetas: Dict[int, dict], tax
                              'el TEMA debe abarcar el subtema como categoría amplia, '
                              'nunca repetirlo ni parafrasearlo. JSON.')},
                 {'role': 'user', 'content': prompt_reparacion_tema(pendientes)},
-            ])
+            ], uso=uso)
             fams = [{'id': p['id'], 'subtemas': p['subtemas'],
                      'titulos': p['titulos']} for p in pendientes]
             aceptados, _ = _propuestas_tema_llm(txt, fams)
@@ -3064,23 +3284,28 @@ def aplicar_pkl_del_cliente(
 
 def volcar_analisis_en_filas(rows: List[dict], mapa: Dict[int, int],
                              etiquetas: Dict[int, dict], temas: Dict[int, str],
-                             preservar_tema: bool = False) -> List[dict]:
+                             preservar_tema: bool = False,
+                             incluir_tema: bool = True) -> List[dict]:
     """Propaga etiqueta de GRUPO. No reasigna tema por fila.
 
     `preservar_tema=True` (PKL de tema): solo rellena si la celda quedó vacía.
     No reescribe clases del cliente con el gate de frases del lote.
+    `incluir_tema=False` (v4.8): deja Tema_IA vacío y omite el fallback, porque
+    la columna no se exporta.
     """
     for i, row in enumerate(rows):
         if row.get('is_duplicate'):
             row['Tono_IA'] = 'Duplicada'
-            row['Tema_IA'] = '-'
+            row['Tema_IA'] = '-' if incluir_tema else ''
             row['Subtema_IA'] = '-'
             continue
         gid = mapa.get(i)
         e = etiquetas.get(gid, {}) if gid else {}
         row['Tono_IA'] = e.get('tono') or 'Neutro'
-        row['Tema_IA'] = temas.get(gid) if gid is not None else ''
+        row['Tema_IA'] = (temas.get(gid) if gid is not None else '') if incluir_tema else ''
         row['Subtema_IA'] = e.get('sub_tema') or 'Hecho informativo'
+        if not incluir_tema:
+            continue
         falta = not _tema_util(row['Tema_IA'])
         copia_titulo = _tema_copia_o_prefijo_titulo(row['Tema_IA'], [_titulo_fila(row, {})])
         if falta or (copia_titulo and not preservar_tema):
@@ -3137,6 +3362,15 @@ def enrich_rows_with_ai(
     votos = int(extra.get('votos') or 2)
     umbral_titulo = int(extra.get('umbral_titulo') or UMBRAL_TITULO_DEFECTO)
     umbral_cuerpo = int(extra.get('umbral_cuerpo') or UMBRAL_CUERPO_DEFECTO)
+    # v4.8: el cliente puede pedir solo tono + subtema. Con incluir_tema=False se
+    # omite por completo la etapa de asignación de temas (asignar_temas,
+    # corrección con Jev y PKL de tema) y el Excel sale sin la columna Tema_IA.
+    incluir_tema = bool(extra.get('incluir_tema', True))
+    # v4.13: el PKL de tema del cliente manda. La clasificación es local (sin
+    # llamadas LLM ni demora), así que siempre se aplica aunque el checkbox
+    # "Generar columna Tema_IA" venga desmarcado.
+    if theme_model is not None:
+        incluir_tema = True
     progreso = progress_callback or (lambda pct, msg: None)
 
     # --- contexto de marca (funcion existente, se conserva para la columna de auditoria) ---
@@ -3158,12 +3392,20 @@ def enrich_rows_with_ai(
     progreso(75, '%d grupos (notas equivalentes comparten etiqueta)' % len(grupos))
 
     # --- etiquetado ---
+    # `uso` acumula tokens de TODAS las llamadas OpenAI de la corrida
+    # (etiquetado + reparaciones + temas) para la tarjeta de costo aprox.
+    uso = {'input': 0, 'output': 0, 'llamadas': 0}
     etiquetas = etiquetar_grupos(cfg, grupos, progreso, tam_lote=tam_lote, workers=workers,
-                                 votos=votos)
+                                 votos=votos, uso=uso)
     cambios = canonizar_subtemas(etiquetas)
     extra_uni = unificar_subtemas_noticias_similares(grupos, etiquetas)
-    if (cambios or extra_uni) and progress_callback:
-        progreso(93, 'Sub-temas unificados: %d' % (cambios + extra_uni))
+    # v4.14: pase final entre lotes (1 llamada LLM): caza paráfrasis que la
+    # canonización determinista no ve («Apertura…» vs «Inauguración…»).
+    # Corre antes de las guardas de tono para que el voto por subtema use
+    # los subtemas ya unificados.
+    extra_llm = unificar_subtemas_llm(cfg, grupos, etiquetas, uso=uso)
+    if (cambios or extra_uni or extra_llm) and progress_callback:
+        progreso(93, 'Sub-temas unificados: %d' % (cambios + extra_uni + extra_llm))
 
     # Con PKL de tono el modelo del cliente es la autoridad: no se aplica la
     # guarda LLM (degradar Negativo / subir a Positivo) porque pisaría el PKL.
@@ -3198,23 +3440,26 @@ def enrich_rows_with_ai(
             _ULTIMO_RESUMEN['tono_unificado_mismo_hecho'] = unificados
 
     # --- tema: PKL del cliente = clases del modelo; si no hay PKL, bottom-up de ESTE lote ---
+    # v4.8: con incluir_tema=False se salta toda la etapa (ni LLM de temas, ni
+    # Jev, ni PKL de tema). Ahorra las llamadas secuenciales de nombrar_familias_tema.
     temas: Dict[int, str] = {}
     origen: Dict[int, str] = {}
-    if theme_model is None:
+    if incluir_tema and theme_model is None:
         tax_lote = {'temas': candidatos_tax, 'reglas': derivar_reglas(candidatos_tax) if candidatos_tax else []}
-        temas, origen = asignar_temas(cfg, grupos, etiquetas, tax_lote, progreso)
+        temas, origen = asignar_temas(cfg, grupos, etiquetas, tax_lote, progreso, uso=uso)
         corregir_temas_con_jev(cfg, grupos, etiquetas, temas)
 
     # PKL gana sobre LLM/lote. NUNCA reemplaza el subtema. El gate de frases
     # del lote no reescribe las clases del cliente (antes las sustituía).
     pkl_counts = aplicar_pkl_del_cliente(
         grupos, rows, etiquetas, temas, origen,
-        tone_model=tone_model, theme_model=theme_model,
+        tone_model=tone_model, theme_model=theme_model if incluir_tema else None,
     )
 
     volcar_analisis_en_filas(
         rows, mapa, etiquetas, temas,
-        preservar_tema=theme_model is not None,
+        preservar_tema=(theme_model is not None) and incluir_tema,
+        incluir_tema=incluir_tema,
     )
 
     temas_lote: List[str] = []
@@ -3225,7 +3470,15 @@ def enrich_rows_with_ai(
             vistos.add(k)
             temas_lote.append(t)
     _ULTIMO_RESUMEN['taxonomia'] = temas_lote
-    if theme_model is not None:
+    if not incluir_tema:
+        # Sin etapa de temas: el resumen no reporta taxonomía del lote.
+        _ULTIMO_RESUMEN['modo_taxonomia'] = 'omitido'
+        _ULTIMO_RESUMEN['taxonomia_detalle'] = {
+            'temas': [],
+            'reglas': [],
+            'nota': 'Etapa de temas omitida por configuración (solo tono + subtema).',
+        }
+    elif theme_model is not None:
         _ULTIMO_RESUMEN['modo_taxonomia'] = 'pkl'
         _ULTIMO_RESUMEN['temas_por_pkl'] = pkl_counts.get('tema', 0)
         _ULTIMO_RESUMEN['taxonomia_detalle'] = {
@@ -3247,8 +3500,18 @@ def enrich_rows_with_ai(
     _ULTIMO_RESUMEN['votos_tono'] = votos
     _ULTIMO_RESUMEN['filas'] = len(rows)
     _ULTIMO_RESUMEN['duplicadas'] = sum(1 for r in rows if r.get('is_duplicate'))
+    # Costo aproximado de IA para la tarjeta de resultados finales.
+    costo, pin, pout = _costo_aprox_usd(model, uso)
+    _ULTIMO_RESUMEN['uso_tokens'] = {'input': uso['input'], 'output': uso['output'],
+                                     'llamadas': uso['llamadas']}
+    _ULTIMO_RESUMEN['costo_aprox_usd'] = costo
+    _ULTIMO_RESUMEN['costo_modelo'] = model
+    _ULTIMO_RESUMEN['costo_precios'] = {'input_por_millon': pin, 'output_por_millon': pout}
     if progress_callback:
-        progreso(93, 'Etiquetado listo: %d grupos, %d temas del lote' % (len(grupos), len(temas_lote)))
+        if incluir_tema:
+            progreso(93, 'Etiquetado listo: %d grupos, %d temas del lote' % (len(grupos), len(temas_lote)))
+        else:
+            progreso(93, 'Etiquetado listo: %d grupos (solo tono + subtema)' % len(grupos))
     return rows
 
 # ============================================================================

@@ -56,11 +56,12 @@ AI_COLUMNS_AFTER_AUDIENCIA = ["Tono_IA", "Tema_IA", "Subtema_IA"]
 CONTEXTO_ANALIZADO_COL = "Contexto analizado"
 
 
-def output_columns_for_export(include_ai: bool = False) -> List[str]:
+def output_columns_for_export(include_ai: bool = False, include_tema: bool = True) -> List[str]:
     """Columnas del xlsx de salida.
 
     Con IA/PKL: inserta Tono_IA, Tema_IA, Subtema_IA después de Audiencia y deja
     Contexto analizado como última columna. Sin IA: solo BASE_OUTPUT_COLUMNS.
+    v4.8: con include_tema=False se omite la columna Tema_IA (solo tono + subtema).
     """
     cols = list(BASE_OUTPUT_COLUMNS)
     if not include_ai:
@@ -69,6 +70,8 @@ def output_columns_for_export(include_ai: bool = False) -> List[str]:
     for offset, col in enumerate(AI_COLUMNS_AFTER_AUDIENCIA):
         if col not in cols:
             cols.insert(audiencia_idx + 1 + offset, col)
+    if not include_tema and "Tema_IA" in cols:
+        cols.remove("Tema_IA")
     if CONTEXTO_ANALIZADO_COL in cols:
         cols = [c for c in cols if c != CONTEXTO_ANALIZADO_COL]
     cols.append(CONTEXTO_ANALIZADO_COL)
@@ -846,6 +849,19 @@ def _load_optional_pkl_models(ai_config: Optional[dict]):
     return tone_model, theme_model
 
 
+def _ai_extra_con_pkl(ai_config: Optional[dict], theme_model) -> dict:
+    """Extra para enrich: si hay PKL de tema, fuerza incluir_tema=True.
+
+    La clasificación del PKL es local (sin llamadas LLM ni demora), así que
+    siempre se aplica aunque el checkbox "Generar columna Tema_IA" del
+    cliente venga desmarcado: el modelo del cliente manda.
+    """
+    extra = dict(ai_config or {})
+    if theme_model is not None:
+        extra["incluir_tema"] = True
+    return extra
+
+
 # ======================================
 # Proceso Principal
 # ======================================
@@ -885,6 +901,10 @@ def process_dossier(
     analisis = {}
 
     if has_ai:
+        # v4.13: el PKL de tema del cliente manda. La clasificación es local
+        # (sin llamadas LLM ni demora), así que siempre se aplica aunque el
+        # checkbox "Generar columna Tema_IA" venga desmarcado.
+        ai_extra = _ai_extra_con_pkl(ai_config, theme_model)
         emit_progress(progress, 70, "Iniciando análisis de Tono, Tema y Sub-tema…")
         rows = enrich_rows_with_ai(
             rows=rows,
@@ -896,7 +916,7 @@ def process_dossier(
             progress_callback=progress,
             tone_model=tone_model,
             theme_model=theme_model,
-            extra=ai_config,
+            extra=ai_extra,
         )
         analisis = ultimo_resumen()
     elif has_pkl:
@@ -924,7 +944,10 @@ def process_dossier(
     rows.sort(key=lambda r: (norm_key(r.get(KEY_MAP.get("titulo", "Título"), "")),
                              str(r.get(KEY_MAP.get("idnoticia", "ID Noticia"), ""))))
 
-    cols_to_export = output_columns_for_export(include_ai=has_ai or has_pkl)
+    cols_to_export = output_columns_for_export(
+        include_ai=has_ai or has_pkl,
+        include_tema=(ai_extra if has_ai else (ai_config or {})).get("incluir_tema", True),
+    )
 
     emit_progress(progress, 94, "✓ Estructuración finalizada. Generando archivo Excel…")
 
