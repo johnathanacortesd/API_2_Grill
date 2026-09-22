@@ -472,3 +472,28 @@ Badge "Tema: PKL activo":
 Tests: `tests/test_unificacion_subtemas_llm.py` (15 ok: sanitización,
 canónico por frecuencia/empate/verbatim, fusión aplicada, sin fusiones,
 fallo LLM no rompe, sin llamada con ≤1 subtema, suma a `uso`).
+
+## 21. v4.15 — Fix calidad subtema v4.14 + participación en reuniones es Positivo (2026-09-22)
+
+Regresión reportada de v4.14 (pase `unificar_subtemas_llm`): subtemas menos
+específicos y Positivos volteados a Neutro. Causas y correcciones:
+- Empate de frecuencia elegía el subtema MÁS CORTO → ahora el MÁS LARGO
+  (más específico). `_canonico_de_fusion` conserva verbatim.
+- La pasada fusionaba subtemas con tonos distintos y el voto de tono por
+  subtema (`unificar_tono_mismo_hecho`) volteaba Positivos a Neutro → ahora
+  se salta cualquier fusión con tonos heterogéneos (ante la duda, separar).
+- `_sanitizar_fusiones` tolera índices 0-based además de 1-based (antes una
+  respuesta 0-based se descartaba en silencio y no se fusionaba nada).
+
+Regla de tono (pedido del cliente): participación de la marca en reuniones /
+conversatorios / foros es Positivo.
+- En `aplicar_guarda_positiva`: verbo de participación (participa, asistió,
+  hizo parte, intervino…) + nombre del evento (reunión, conversatorio, mesa,
+  encuentro, foro…) + actor en la misma oración → Neutro a Positivo.
+- No toca Negativos; no aplica en tragedia sin acción de la marca (la regla
+  tragedia corre después y sigue mandando).
+- `eventos` ampliado con reunión/reuniones/conversatorio (organiza/convoca/
+  realiza/celebra + reunión también cuentan).
+
+Tests: `tests/test_unificacion_subtemas_llm.py` (24 ok, incl. nueva clase
+`TestGuardaParticipacion` con 6 casos).

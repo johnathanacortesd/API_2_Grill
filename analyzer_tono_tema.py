@@ -1745,32 +1745,49 @@ def unificar_subtemas_noticias_similares(grupos: Sequence[dict], etiquetas: Dict
 
 
 def _sanitizar_fusiones(fusiones, n):
-    """Limpia la respuesta del modelo: indices 1-based validos, >=2 distintos
-    por grupo y sin repetir un indice en dos grupos (mapeo determinista)."""
+    """Limpia la respuesta del modelo: >=2 índices distintos por grupo y sin
+    repetir un índice en dos grupos (mapeo determinista).
+
+    Tolera índices 0-based o 1-based: si el mínimo es 0 y el máximo < n se
+    interpretan como 0-based; si están en [1, n], como 1-based. Sin esto, una
+    respuesta 0-based se descartaba en silencio y no se fusionaba nada.
+    """
     limpias = []
     usados = set()
     for f in fusiones or []:
-        idxs = []
+        crudos = []
         for x in f or []:
             try:
-                i = int(x) - 1
+                crudos.append(int(x))
             except Exception:
                 continue
-            if 0 <= i < n and i not in idxs and i not in usados:
-                idxs.append(i)
-        if len(idxs) >= 2:
-            limpias.append(idxs)
-            usados.update(idxs)
+        if not crudos:
+            continue
+        if min(crudos) >= 1 and max(crudos) <= n:
+            idxs = [c - 1 for c in crudos]
+        elif min(crudos) >= 0 and max(crudos) < n:
+            idxs = list(crudos)
+        else:
+            continue
+        unicos = []
+        for i in idxs:
+            if i not in unicos and i not in usados:
+                unicos.append(i)
+        if len(unicos) >= 2:
+            limpias.append(unicos)
+            usados.update(unicos)
     return limpias
 
 
 def _canonico_de_fusion(idxs, textos, conteo):
-    """Representante del grupo fusionado: el mas frecuente; en empate, el mas
-    corto. Devuelve el texto original (verbatim) del elegido."""
+    """Representante del grupo fusionado: el más frecuente; en empate, el MÁS
+    LARGO (más específico). El empate corto-elegido degradaba la especificidad
+    del subtema («Conversatorio» ganaba a «Participación en el conversatorio
+    de salud mental»). Devuelve el texto original (verbatim) del elegido."""
     mejor = None
     for i in idxs:
         t = textos[i]
-        clave = (conteo.get(nz(t), 0), -len(t))
+        clave = (conteo.get(nz(t), 0), len(t))
         if mejor is None or clave > mejor[0]:
             mejor = (clave, t)
     return mejor[1]
@@ -1786,7 +1803,10 @@ def unificar_subtemas_llm(cfg, grupos, etiquetas, uso=None):
     parafrasis («Apertura del laboratorio»). Esta pasada recibe la lista
     completa de subtemas unicos y pide al modelo agrupar solo los que son
     EXACTAMENTE el mismo hecho/asunto. Conservadora por diseño: ante la
-    duda no fusiona (un tema incorrecto es peor que dos subtemas pequenos).
+    duda no fusiona (un tema incorrecto es peor que dos subtemas pequenos);
+    en empate de frecuencia conserva el subtema MAS especifico (el mas
+    largo), y nunca fusiona subtemas con tonos distintos (evita que el voto
+    de tono por subtema voltee un Positivo a Neutro).
     Si la llamada falla, no rompe el pipeline: devuelve 0.
     """
     vistos = {}
@@ -1840,9 +1860,16 @@ def unificar_subtemas_llm(cfg, grupos, etiquetas, uso=None):
                      if e.get('sub_tema'))
     cambios = 0
     for idxs in fusiones:
+        miembros = {nz(textos[i]) for i in idxs}
+        # Nunca fusionar subtemas con tonos distintos: el voto de tono por
+        # subtema (`unificar_tono_mismo_hecho`) podria voltear un Positivo
+        # legitimo a Neutro. Ante la duda, separar.
+        tonos = {((etiquetas.get(g) or {}).get('tono') or 'Neutro')
+                 for g, e in etiquetas.items() if nz(e.get('sub_tema')) in miembros}
+        if len(tonos) > 1:
+            continue
         canon = _canonico_de_fusion(idxs, textos, conteo)
         canon_k = nz(canon)
-        miembros = {nz(textos[i]) for i in idxs}
         for e in etiquetas.values():
             k = nz(e.get('sub_tema'))
             if k in miembros and k != canon_k:
@@ -3784,7 +3811,7 @@ def aplicar_guarda_positiva(grupos: Sequence[dict], etiquetas: Dict[int, dict],
               r'gan(?:a|ó|aron|ará|arán)|recib(?:e|ió|ieron|irá|irán)|ocup(?:a|ó|aron|ará|arán)|'
               r'abr(?:e|ió|irá|irán)|firm(?:a|ó|aron|ará|arán)|atend(?:e|ió|erá|erán)|'
               r'pone en servicio|habilita|habilitó')
-    eventos = r'(congreso|foro|feria|cumbre|seminario|jornada|conferencia|encuentro|festival)'
+    eventos = r'(congreso|foro|feria|cumbre|seminario|jornada|conferencia|encuentro|festival|reuni[oó]n|reuniones|conversatorio)'
     peticion = re.compile(r'\b(pidió|pide|solicitó|solicita|exigió|exige|debería)\b', re.I)
     critica = re.compile(r'\b(denunci|cuestion|sancion|acus|incumpl|sobrecost|corrup|'
                          r'retras|paraliz|rechaz|investiga(?!ción|cion))\w*', re.I)
@@ -3835,6 +3862,24 @@ def aplicar_guarda_positiva(grupos: Sequence[dict], etiquetas: Dict[int, dict],
                     or (not tragedia_sin_accion
                         and _AUTORIA_PROPIA_PAT.search(oracion)
                         and any(a in n for a in actores)):
+                e['tono'] = 'Positivo'
+                corregidos.append(g.get('grupo'))
+                break
+            # Participación de la marca en reuniones/conversatorios/foros: es
+            # Positivo (regla del cliente, 2026-09-22). Requiere verbo de
+            # participación + nombre del evento + actor en la misma oración.
+            # No aplica en tragedia sin acción de la marca (la regla tragedia
+            # corre después y sigue mandando) ni toca Negativos.
+            if (not tragedia_sin_accion
+                    and re.search(r'\b(participa|participó|participaron|participará|'
+                                  r'asiste|asistió|asistieron|hizo parte|hace parte|'
+                                  r'formó parte|tomó parte|estuvo presente|'
+                                  r'interviene|intervino)\b', oracion, re.I)
+                    and re.search(r'\b(reuni[oó]n|reuniones|conversatorio|'
+                                  r'mesa de trabajo|mesa redonda|encuentro|'
+                                  r'foro|congreso|seminario|jornada|panel|'
+                                  r'simposio)\b', oracion, re.I)
+                    and any(a in n for a in actores)):
                 e['tono'] = 'Positivo'
                 corregidos.append(g.get('grupo'))
                 break

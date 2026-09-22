@@ -1,13 +1,21 @@
-"""Pruebas v4.14: pase final de unificación de subtemas entre lotes.
+"""Pruebas v4.14/v4.15: pase final de unificación de subtemas entre lotes.
 
+v4.14:
 - `_sanitizar_fusiones`: solo grupos válidos (>=2 índices distintos, en rango,
-  sin repetir un índice en dos grupos).
-- `_canonico_de_fusion`: gana el más frecuente; en empate, el más corto
-  (mismo criterio que `canonizar_subtemas`).
+  sin repetir un índice en dos grupos); tolera índices 0-based y 1-based.
+- `_canonico_de_fusion`: gana el más frecuente; en empate, el MÁS LARGO
+  (más específico) — v4.15: el empate corto degradaba la especificidad.
 - `unificar_subtemas_llm`: aplica la fusión del modelo a `etiquetas`,
-  conserva el texto original del canónico (verbatim) y no rompe si la
-  llamada LLM falla (devuelve 0).
+  conserva el texto original del canónico (verbatim), NUNCA fusiona
+  subtemas con tonos distintos (v4.15: evita que el voto de tono por subtema
+  voltee un Positivo a Neutro) y no rompe si la llamada LLM falla.
 - No llama al modelo si hay 0-1 subtemas únicos.
+
+v4.15 (tono):
+- `aplicar_guarda_positiva`: participación de la marca en reuniones /
+  conversatorios / foros (verbo de participación + evento + actor en la
+  misma oración) sube Neutro a Positivo; no toca Negativos; no aplica en
+  tragedia sin acción de la marca.
 """
 import os
 import sys
@@ -47,6 +55,12 @@ class TestSanitizarFusiones(unittest.TestCase):
         # El índice 2 ya se usó: el segundo grupo queda en singleton y se cae.
         self.assertEqual(az._sanitizar_fusiones([[1, 2], [2, 3]], 5), [[0, 1]])
 
+    def test_indices_base_cero_tolerados(self):
+        # Si el modelo devuelve 0-based, se interpreta como tal en vez de
+        # descartarse en silencio.
+        self.assertEqual(az._sanitizar_fusiones([[0, 1]], 5), [[0, 1]])
+        self.assertEqual(az._sanitizar_fusiones([[0, 4]], 5), [[0, 4]])
+
     def test_valores_no_enteros(self):
         self.assertEqual(az._sanitizar_fusiones([['a', 1, 2], None, 'x'], 5),
                          [[0, 1]])
@@ -64,12 +78,15 @@ class TestCanonicoDeFusion(unittest.TestCase):
         self.assertEqual(az._canonico_de_fusion([0, 1], textos, conteo),
                          'Inauguración del laboratorio')
 
-    def test_empate_gana_el_mas_corto(self):
-        textos = ['Apertura del laboratorio central', 'Apertura del laboratorio']
-        conteo = {az.nz('Apertura del laboratorio central'): 2,
-                  az.nz('Apertura del laboratorio'): 2}
+    def test_empate_gana_el_mas_especifico(self):
+        # v4.15: en empate se conserva el subtema MÁS LARGO (más específico).
+        # El empate corto degradaba la calidad («Conversatorio» ganaba a
+        # «Participación en el conversatorio de salud mental»).
+        textos = ['Conversatorio', 'Participación en el conversatorio de salud mental']
+        conteo = {az.nz('Conversatorio'): 1,
+                  az.nz('Participación en el conversatorio de salud mental'): 1}
         self.assertEqual(az._canonico_de_fusion([0, 1], textos, conteo),
-                         'Apertura del laboratorio')
+                         'Participación en el conversatorio de salud mental')
 
     def test_conserva_verbatim(self):
         textos = ['Foro de Periodismo Científico', 'foro periodismo cientifico']
@@ -90,10 +107,32 @@ class TestUnificarSubtemasLlm(unittest.TestCase):
             cambios = az.unificar_subtemas_llm({'model': 'x'}, gr, et, uso={})
         self.assertTrue(m.called)
         self.assertEqual(cambios, 1)
-        # Empate de frecuencia (1-1): gana el más corto.
-        self.assertEqual(et[1]['sub_tema'], 'Apertura del laboratorio')
-        self.assertEqual(et[2]['sub_tema'], 'Apertura del laboratorio')
+        # Empate de frecuencia (1-1): v4.15 gana el más específico (más largo).
+        self.assertEqual(et[1]['sub_tema'], 'Inauguración del laboratorio')
+        self.assertEqual(et[2]['sub_tema'], 'Inauguración del laboratorio')
         self.assertEqual(et[3]['sub_tema'], 'Obras en Sincelejo')
+
+    def test_no_fusiona_tonos_distintos(self):
+        # v4.15: fusionar subtemas con tonos distintos podía voltear un
+        # Positivo a Neutro en el voto de tono por subtema. Se dejan como están.
+        et = {1: {'sub_tema': 'Apertura del laboratorio', 'tono': 'Positivo'},
+              2: {'sub_tema': 'Inauguración del laboratorio', 'tono': 'Neutro'}}
+        gr = _grupos(['Apertura del laboratorio', 'Inauguración del laboratorio'])
+        with patch.object(az, 'llamar_llm', return_value='{"fusiones": [[1, 2]]}'):
+            cambios = az.unificar_subtemas_llm({'model': 'x'}, gr, et, uso={})
+        self.assertEqual(cambios, 0)
+        self.assertEqual(et[1]['sub_tema'], 'Apertura del laboratorio')
+        self.assertEqual(et[2]['sub_tema'], 'Inauguración del laboratorio')
+        self.assertEqual(et[1]['tono'], 'Positivo')
+
+    def test_fusiona_con_indices_base_cero(self):
+        subs = ['Apertura del laboratorio', 'Inauguración del laboratorio']
+        et = _etiquetas(subs)
+        gr = _grupos(subs)
+        with patch.object(az, 'llamar_llm', return_value='{"fusiones": [[0, 1]]}'):
+            cambios = az.unificar_subtemas_llm({'model': 'x'}, gr, et, uso={})
+        self.assertEqual(cambios, 1)
+        self.assertEqual(et[1]['sub_tema'], 'Inauguración del laboratorio')
 
     def test_respeta_frecuencia_del_lote(self):
         subs = ['Apertura del laboratorio', 'Inauguración del laboratorio',
@@ -149,6 +188,78 @@ class TestUnificarSubtemasLlm(unittest.TestCase):
             az.unificar_subtemas_llm({'model': 'x'}, gr, et, uso=uso)
         self.assertEqual(uso['llamadas'], 1)
         self.assertEqual(uso['input'], 10)
+
+
+class TestGuardaParticipacion(unittest.TestCase):
+    """v4.15: participación de la marca en reuniones/conversatorios/foros
+    (regla del cliente) → Neutro a Positivo."""
+
+    BRAND = 'Universidad Simón Bolívar'
+
+    def _grupo(self, titulo, contexto, tono='Neutro'):
+        g = {'grupo': 1, 'titulo': titulo, 'contexto': contexto}
+        et = {1: {'tono': tono, 'sub_tema': 'x'}}
+        return g, et
+
+    def test_asistio_a_conversatorio_es_positivo(self):
+        g, et = self._grupo(
+            'Universidad Simón Bolívar en conversatorio de salud mental',
+            'La Universidad Simón Bolívar asistió al conversatorio de salud '
+            'mental realizado ayer en la sede.')
+        res = az.aplicar_guarda_positiva([g], et, self.BRAND, [])
+        self.assertEqual(et[1]['tono'], 'Positivo')
+        self.assertEqual(res, [1])
+
+    def test_participo_en_reunion_es_positivo(self):
+        g, et = self._grupo(
+            'Reunión con empresarios',
+            'La rectora de la Universidad Simón Bolívar participó en la '
+            'reunión con empresarios del sector.')
+        res = az.aplicar_guarda_positiva([g], et, self.BRAND, [])
+        self.assertEqual(et[1]['tono'], 'Positivo')
+        self.assertEqual(res, [1])
+
+    def test_organizo_reunion_es_positivo(self):
+        g, et = self._grupo(
+            'Reunión gremial',
+            'La Universidad Simón Bolívar organizó una reunión con '
+            'empresarios del sector.')
+        res = az.aplicar_guarda_positiva([g], et, self.BRAND, [])
+        self.assertEqual(et[1]['tono'], 'Positivo')
+        self.assertEqual(res, [1])
+
+    def test_no_toca_negativo(self):
+        g, et = self._grupo(
+            'Cuestionan a la Universidad',
+            'La Universidad Simón Bolívar asistió al conversatorio, pero fue '
+            'cuestionada por los asistentes por incumplimientos.',
+            tono='Negativo')
+        res = az.aplicar_guarda_positiva([g], et, self.BRAND, [])
+        self.assertEqual(et[1]['tono'], 'Negativo')
+        self.assertEqual(res, [])
+
+    def test_tragedia_sin_accion_no_sube(self):
+        # Tragedia con experto de la casa citado = neutral (regla vigente);
+        # la participación no la sube a Positivo.
+        g, et = self._grupo(
+            'Conversatorio sobre el accidente',
+            'El rector de la Universidad Simón Bolívar participó en el '
+            'conversatorio sobre el accidente fatal de ayer. Se registraron '
+            '3 muertes.')
+        res = az.aplicar_guarda_positiva([g], et, self.BRAND, [])
+        self.assertEqual(et[1]['tono'], 'Neutro')
+        self.assertEqual(res, [])
+
+    def test_mencion_sin_participacion_no_sube(self):
+        # Mencionar la marca junto a un conversatorio, sin verbo de
+        # participación, no alcanza.
+        g, et = self._grupo(
+            'Conversatorio de salud mental',
+            'En el conversatorio de salud mental se mencionó a la '
+            'Universidad Simón Bolívar entre los asistentes.')
+        res = az.aplicar_guarda_positiva([g], et, self.BRAND, [])
+        self.assertEqual(et[1]['tono'], 'Neutro')
+        self.assertEqual(res, [])
 
 
 if __name__ == '__main__':
