@@ -53,18 +53,32 @@ class TestTemas(unittest.TestCase):
 
 
 class TestSubtemas(unittest.TestCase):
-    def test_copia_titular(self):
+    def test_copia_titular_titular_largo_verbatim(self):
+        # v4.21: el titular copiado tal cual (largo, no es etiqueta válida)
+        # sí se marca como copia_titular.
+        t = ('La medicina que viene será multimodal y personalizada, '
+             'coinciden los expertos')
+        pr = az.validar(t, 'Neutro', [t])
+        self.assertIn('copia_titular', pr)
+
+    def test_recorte_nominal_valido_no_es_copia(self):
+        # v4.21: un recorte en el mismo orden del titular que ya es una
+        # etiqueta nominal válida no se marca (antes generaba 46 falsos
+        # positivos en el dossier Fundación Santa Fe, p. ej. «Estado de
+        # salud de Yamid Amat»).
         pr = az.validar(
             'Medicina multimodal y personalizada', 'Neutro',
             ['La medicina que viene será multimodal y personalizada, '
              'coinciden los expertos'])
-        self.assertIn('copia_titular', pr)
+        self.assertNotIn('copia_titular', pr)
 
-    def test_copia_titular_mismo_orden(self):
+    def test_copia_titular_mismo_orden_etiqueta_valida(self):
+        # v4.21: «Conexión entre educación media y superior» es una etiqueta
+        # válida por sí misma; que siga el orden del titular no la invalida.
         pr = az.validar(
             'Conexión entre educación media y superior', 'Neutro',
             ['La sustancial conexión entre la educación media y la superior'])
-        self.assertIn('copia_titular', pr)
+        self.assertNotIn('copia_titular', pr)
 
     def test_reformulacion_valida_no_es_copia(self):
         # Mismo hecho, otro orden y otras palabras: reformulación legítima.

@@ -186,8 +186,11 @@ class TestEnrichHonraPkl(unittest.TestCase):
         self.assertNotIn(LOTE_TEMA, temas)
         for r in unicos:
             self.assertIn(r["Tema_IA"], theme.classes_)
-        for r in unicos:
-            self.assertEqual(r["Subtema_IA"], LOTE_SUB)
+        # v4.18: el fake etiqueta la nota de robótica como PAE (cruce); la
+        # reparación de etiquetas ajenas la devuelve a su propio titular.
+        self.assertEqual(rows[0]["Subtema_IA"], LOTE_SUB)
+        self.assertEqual(rows[1]["Subtema_IA"],
+                         "Estudiantes ganan el concurso nacional de robótica")
         resumen = ultimo_resumen()
         self.assertEqual(resumen.get("modo_taxonomia"), "pkl")
         self.assertGreaterEqual(resumen.get("temas_por_pkl") or 0, 1)
@@ -255,8 +258,13 @@ class TestEnrichHonraPkl(unittest.TestCase):
     def test_tema_pkl_no_unifica_clases_distintas_del_mismo_subtema(self):
         rows = [
             _row("Soledad fortalece la nutrición escolar con el PAE", PAE_CUERPO),
-            _row("Jornada de vacunación en el hospital municipal",
-                 "El hospital municipal adelanta una jornada de vacunación infantil."),
+            # Comparte subtema legítimamente (PAE) pero el PKL la clasifica
+            # en otra clase: las clases no deben unificarse. v4.18: la
+            # reparación de etiquetas ajenas no debe tocarla (el subtema
+            # describe su propio contenido).
+            _row("Hospital municipal articula vacunación con el PAE escolar",
+                 "El hospital municipal adelanta una jornada de vacunación infantil "
+                 "y articula con el PAE la nutrición escolar."),
         ]
         theme = FakeClf(PKL_TEMA, by_text={"vacun": PKL_TEMA_B, "hospital": PKL_TEMA_B})
 

@@ -497,3 +497,257 @@ conversatorios / foros es Positivo.
 
 Tests: `tests/test_unificacion_subtemas_llm.py` (24 ok, incl. nueva clase
 `TestGuardaParticipacion` con 6 casos).
+
+## 22. v4.16 — Freno anti-encadenamiento + Negativo calibrado + contexto mínimo (2026-09-23)
+
+Tres mejoras derivadas de la auditoría del dossier Cotelco (445 noticias, 23 columnas).
+
+1. **Freno anti-encadenamiento en `construir_grupos`.** Las palabras
+   omnipresentes del dossier (>12% de los titulares, mínimo 8) no sirven como
+   puente distintivo entre hechos. Los cuatro pases por similitud de título
+   ahora exigen que las palabras compartidas sean DISTINTIVAS
+   (`_puente_distintivo`). Caso real: 'Traslado de adultos mayores' había
+   absorbido '36 hoteles resultaron afectados' por compartir solo
+   {cali, hoteles, terremoto}. No baja umbrales ni fuerza familias: solo
+   elimina fusiones, nunca agrega ("ante la duda, separar").
+
+2. **Negativo calibrado: el señalamiento debe apuntar a la marca**
+   (`aplicar_regla_negativo_sin_blanco`, corre tras crítica-con-respuesta).
+   Baja Negativo a Neutro cuando la marca no es blanco del señalamiento Y no
+   protagoniza la noticia (mención incidental). `_marca_blanco_de_critica`
+   exige verbo de acusación en construcción direccional ("cuestionaron a
+   Cotelco", "Cotelco fue sancionada"); un sustantivo-tema como 'multa' en
+   'fotomultas' no cuenta. `_marca_protagonista`: marca en titular o ≥2
+   menciones. Caso real: el único Negativo del dossier Cotelco (fotomultas,
+   mención incidental) pasa a Neutro.
+
+3. **Contexto mínimo** (`_contexto_minimo_util`). Si la extracción por mención
+   devolvió solo un fragmento (<140 caracteres o <18 palabras, p. ej. "Edwin
+   Bernal, director ejecutivo de Cotelco."), se completa con titular + texto
+   más completo (resumen). Los contextos útiles no se tocan.
+
+Tests: `tests/test_calidad_v416.py` (10 ok, incl. réplica del caso real
+traslado-vs-afectados y verificación de que el código viejo sí fusionaba el
+par de prueba). Suite completa: 196/196 OK.
+
+### Calibración 2026-09-23 (mismo v4.16, sin bump de versión)
+
+- **Generalidad por cliente:** las tres mejoras son agnósticas al cliente
+  (verificado por AST: ningún literal de cliente en el código). El freno
+  anti-encadenamiento calcula las palabras omnipresentes por dossier; el
+  Negativo calibrado y el contexto mínimo se parametrizan con
+  marca/alias/voceros del perfil o del modo manual.
+- **Contexto analizado recalibrado** (`_contexto_exacto_marca`): antes
+  devolvía párrafos completos con la mención (tope 6000) → ahora devuelve el
+  extracto exacto: solo las oraciones con mención de marca/alias/vocero,
+  literales, deduplicadas y en orden. Topes: 1200 caracteres en
+  radiodifusión (Radio, Televisión, Aire, Cable, AM, FM, TV — se lee de
+  `km["tipodemedio"]`) y 2000 en el resto. El tipo de medio se pasa desde el
+  flujo principal; sin vecinas: solo la oración-mención.
+- Tests nuevos: `TestContextoExactoCalibrado` (8 ok). Suite: 204/204 OK.
+
+## 23. v4.17 — Fix caso Unisimón «La Universidad de Atalaya» (2026-09-23)
+
+Dos errores graves en una nota (cliente Universidad Simón Bolívar):
+subtema «Investigación sobre Carnaval 2027» (hecho ajeno) y tono Neutro
+(debía ser Positivo: la marca participa en la creación del campus).
+
+- **Causa 1 (subtema):** `unificar_subtemas_noticias_similares` unía grupos
+  por señales débiles y el canon por frecuencia sobrescribía el subtema
+  correcto de la minoría con el de la mayoría, sin verificar mismo hecho.
+- **Fix 1:** el canon solo se adopta con evidencia FUERTE y directa entre la
+  pareja (`_puede_adoptar_canon`): subtemas ya similares, titulares casi
+  duplicados (token_set_ratio ≥ 80 y ≥2 palabras de contenido), o pasajes de
+  contexto casi idénticos (`_solapamiento_contexto ≥ 0.75`; calibrado: mismo
+  hecho real ≈0.83, boilerplate compartido ≈0.62). Ante la duda, separar: la
+  unión débil ya no renombra.
+- **Causa 2 (tono):** `unificar_tono_mismo_hecho` corría DESPUÉS de las
+  guardas, así que el voto por subtema revertía el Positivo que la guarda
+  positiva sí había detectado (verificado por simulación con el texto real).
+- **Fix 2:** el voto por hecho corre ANTES que las guardas deterministas;
+  las reglas de criterio del cliente (guarda positiva, tragedia, crítica con
+  respuesta…) tienen la última palabra. Efecto colateral correcto: la regla
+  tragedia ya no puede ser revertida por el voto a Positivo.
+- Todo paramétrico por marca/alias/voceros y por dossier: nada atado a cliente.
+- Tests nuevos: `tests/test_caso_atalaya_unisimon.py` (5 ok). Suite: 209/209 OK.
+
+## 24. v4.18 — Ajustes tras auditoría del dossier Unisimón (2026-09-23)
+
+Auditoría fila por fila del dossier real (41 noticias) tras v4.17: cuatro
+subtemas cruzados entre noticias del mismo archivo (el subtema de un grupo
+describía el hecho de otro grupo) y dos calibraciones de tono.
+
+- **F1 — Empate de subtema gana el más largo:** `_voto_mayoria` y el canon
+  determinista de `unificar_subtemas_noticias_similares` elegían en empate el
+  subtema MÁS CORTO. Un solo voto cruzado del modelo (corto y ajeno) le
+  ganaba al voto correcto. Ahora en empate gana el más específico (más
+  palabras, desempate por caracteres), mismo criterio ya adoptado en v4.15
+  para el pase LLM. `reparar_subtemas_ajenos` revierte a `_subtema_desde_titulo`.
+- **F2 — Guarda contra subtemas ajenos** (`reparar_subtemas_ajenos`): tras las
+  unificaciones de subtema y antes del voto de tono, detecta si el subtema de
+  un grupo comparte ≥2 palabras distintivas con el titular de OTRO grupo y
+  ≤1 con su propio contenido (título+texto+contexto); si se confirma, lo
+  reemplaza por un rótulo honesto derivado del propio titular
+  (`_subtema_desde_titulo`: quita artículo inicial, usa lo que sigue a «:»,
+  últimas 7 palabras en titulares largos, siglas en mayúsculas conservadas).
+  Solo actúa con evidencia fuerte; ignora subtemas genéricos y conjuntos
+  distintivos de <2 palabras. Registra `subtemas_ajenos_reparados` en el
+  resumen. Casos reales reparados: Atalaya→«Universidad de Atalaya»,
+  Estefanel→«Ascenso político de Estefanel Gutiérrez»,
+  «LA IA Y LA RECONVERSIÓN LABORAL»→«IA y la reconversión laboral»,
+  congreso de psicología→«Congreso Internacional de Innovación en
+  Intervención Psicológica».
+- **F3 — Guarda positiva con participios pasivos:** `aplicar_guarda_positiva`
+  reconoce «organizado/realizado/presentado/publicado… por la marca» (actor
+  después del verbo, introducido por «por»). Caso real: foro de periodismo
+  climático «organizado por la Universidad Simón Bolívar» → Neutro a Positivo.
+- **F4 — Alma máter no es acción de la marca:** `_mencion_biografica` evita
+  que «recordó su formación en la Universidad…, donde participó…»,
+  «egresado de…», «alma máter», «estudió en…» suban a Positivo (participó la
+  persona, no la marca). Solo cuenta si el actor va DESPUÉS de la marca
+  biográfica («estudió en la Universidad»); «la Universidad estudió…» es
+  acción propia y no se excluye. Caso real: proyecto de paz barrial de
+  Estefanel → permanece Neutro.
+- Todo paramétrico por marca/alias/voceros y por dossier (verificado por AST:
+  los únicos literales del dominio son recursos lingüísticos generales —
+  geografía y sustantivos en -al — preexistentes).
+- Tests nuevos: `tests/test_ajustes_v418.py` (18 ok; 4 cruces reales, falsos
+  positivos, empate→largo, participio pasivo, alma máter). Dos tests de
+  `test_pkl_tono_tema.py` actualizados al comportamiento correcto: el fake
+  que etiquetaba la nota de robótica como «PAE» ahora se repara (caso 1), y
+  el caso «mismo subtema, distintas clases PKL» usa una nota que comparte el
+  subtema legítimamente. Suite: 227/227 OK.
+
+## 25. v4.19 — Precisión de tono: marca como sede + cita experta (2026-09-23)
+
+Regla del cliente: «eventos en la marca/alias o participación de voceros es
+positivo». Caso real (ID 60761392): «Salud Consciencia 2026, realizado el 26
+de agosto en la Universidad Simón Bolívar» quedó Neutro.
+
+- **Sede del evento** (nueva rama en `aplicar_guarda_positiva`): verbo de
+  realización (`realiz|celebr|organiz|desarroll` en participio, futuro,
+  presente y pasados; `llev(ad[oa]s?|ara|a) a cabo`; `tuvo/tiene/tendrá
+  lugar`) o sustantivo de evento (congreso, foro, simposio, panel…) +
+  «en + marca/alias» en la misma oración → Positivo. La marca es anfitriona.
+  No aplica en tragedia sin acción de la marca; tampoco en menciones
+  biográficas («realiza sus estudios en la Universidad» se excluye por
+  sustantivo académico entre verbo y marca) ni en alianzas («en alianza con
+  … la Universidad» no es sede: el «en» no precede a la marca). «encuentro»
+  no cuenta tras «me » (verbo, no evento).
+- **HABLA_PAT suma «de acuerdo con»**: «de acuerdo con Hernando Sánchez,
+  biólogo y docente de la Universidad Simón Bolívar, …» → Positivo (vocero
+  citado como fuente experta). «según» se excluyó deliberadamente: cero
+  verdaderos positivos en el dossier real y riesgo de marcar la marca como
+  simple punto de referencia («según la Policía, ocurrió frente a la
+  Universidad»).
+- Verificado sobre el dossier real: voltean a Positivo 60761392 (Salud
+  Consciencia), 60816125 y 60794120 (Ruta del cuidado, sede Unisimón),
+  60879489 (simposio científico en Unisimón) y 60843713 (docente experto en
+  ciénaga). Siguen Neutro: alianzas (11874683), tesis biográfica (60775126),
+  tragedia (60887853), asistencia como invitado (60763705).
+- Todo paramétrico por marca/alias/voceros (verificado por AST).
+- Tests nuevos: `tests/test_precision_tono_v419.py` (14 ok). Suite: 241/241 OK.
+
+## 26. v4.20 — Mismo hecho por ancla de persona + voto final de tono (2026-09-24)
+
+Caso real (Fundación Santa Fe, dossier 2026-09-24, 484 filas): un mismo
+paciente produjo 8+ variantes de subtema («Estado de salud de Yamid Amat»,
+«Hospitalización de Yamid Amat», «Yamid Amat en UCI», «Ingreso a UCI de
+Yamid»…) y el mismo hecho quedó con tonos divididos (194 Positivo / 67
+Neutro). Criterio del cliente: para salud es esencial ver los pacientes
+tratados; noticias similares deben compartir subtema Y tono.
+
+- **Clases de evento** (`_CLASES_EVENTO`, vocabulario de dominio, no de
+  cliente): `salud` (hospitalización, UCI, pronóstico, complicación,
+  tratamiento…), `nacimiento` (nacimiento, parto, cesárea), `cirugia`,
+  `lanzamiento`, `reunion`, `reconocimiento`, `ranking`, `inauguracion`,
+  `firma`. Las etapas asistenciales van separadas: el ingreso ≠ el
+  nacimiento aunque compartan paciente.
+- **`unificar_hecho_por_ancla`** (tras `reparar_subtemas_ajenos`, antes del
+  voto de tono): une grupos con ancla de persona compartida (nombre propio
+  multi-palabra, nunca marca/alias/voceros/geografía) + clase de evento
+  compatible + firma de evento sin más de una diferencia. Referencia cruzada
+  madre/hijo solo si ambos titulares se nombran. El canon es el subtema más
+  frecuente (empate: nombra el ancla, luego el más largo) y se escribe con
+  sus mayúsculas originales. Ante la duda, no une.
+- **Veto de anclas no-persona** (`_ancla_vetada` + `_ORG_PAT`): un «nombre
+  propio» con vocabulario de evento («Así Vamos en Salud», «Sistema de Salud
+  Colombiano») o sustantivo común («Conversatorio», «Estado») no es un
+  paciente y no ancla.
+- **Guarda positiva: episodio de atención en la marca**
+  (`_atencion_paciente_en_marca`): ancla de persona + clase asistencial +
+  marca/alias como lugar («en/de/a la Fundación Santa Fe») → Positivo. Para
+  clientes de salud el episodio asistencial es contenido propio. No aplica en
+  tragedia sin acción ni con crítica dirigida.
+- **Guarda positiva: alianza/convenio con la marca** («alianza entre Morphy
+  y la Fundación…») → Positivo; «de acuerdo con» se excluye (atribución).
+- **Guarda positiva: sede en construcción de sujeto** («Serena del Mar vivió
+  una gran fiesta deportiva») → Positivo.
+- **`aplicar_regla_positivo_incidental`** (espejo de la v4.16): el Positivo
+  también se evalúa hacia la marca. Baja Positivo→Neutro la mención
+  incidental (una sola mención, sin protagonismo). La guarda se valida en
+  una copia: si ella misma encontraría evidencia (atención al paciente,
+  alianza, sede, vocero…), el Positivo se conserva. No toca Negativos ni
+  Duplicadas; lo bajado queda `neutro_pegajoso`.
+- **`voto_final_tono_por_subtema`**: tras las guardas, mayoría ≥60% dentro de
+  cada subtema unificado; respeta `neutro_pegajoso` y nunca toca Negativos.
+- **Alias ambiguo** (`_marca_protagonista`): la forma corta («Santa Fe»)
+  solo cuenta como protagonismo fuera de contexto deportivo local
+  (`_DEPORTE_PAT`: partido, empate/empató, campín, gol, fútbol…); la forma
+  larga siempre resuelve primero.
+- Verificado sobre el dossier real (simulación determinista, sin LLM):
+  Yamid 280/284 en «Estado de salud de Yamid Amat» (281 Positivo);
+  «Vargas se pronuncia sobre Yamid», «Edad y trayectoria» e «Información
+  sobre el EPOC» siguen separados; Lina/Gael por etapas (12 ingreso, 15
+  nacimiento); 25 Positivos incidentales → Neutro (rankings de otros
+  hospitales, inmobiliaria, Mhoni Vidente, Morphy en config Santa Fe…).
+- Tests nuevos: `tests/test_v420_ancla_tono.py` (27 ok). Suite: 268/268 OK.
+
+## 27. v4.21 — El subtema nunca es el titular (2026-09-24)
+
+El modelo a veces devuelve el titular tal cual como subtema. La revisión
+exhaustiva sobre el dossier Fundación Santa Fe (484 filas) encontró el
+panorama real:
+
+- `copia_titular` tenía 46 falsos positivos: etiquetas nominales válidas
+  («Estado de salud de Yamid Amat») que aparecen dentro del titular iban a
+  la vuelta de reparación LLM, desperdiciando llamadas y arriesgando que el
+  modelo «arreglara» lo que estaba bien. Quedan 2 casos genuinos.
+- 4 subtemas-cita: `"Septiembre era el momento perfecto"` como etiqueta.
+- El fallback final recortaba 5 palabras crudas del titular (medio titular
+  como subtema).
+
+Cambios (generales, no atados a cliente):
+
+1. `_es_etiqueta_valida(sub)`: el subtema es etiqueta válida por sí misma
+   (2–7 palabras, nominal, sin ¡!¿? ni comillas envolventes) reusando
+   `validar(..., _con_copia=False)` — sin el flag habría recursión infinita.
+2. `validar()` solo marca `copia_titular` cuando el subtema NO es etiqueta
+   válida: una etiqueta buena que coincide con (parte de) el titular no es
+   pereza del modelo.
+3. `reparar_subtema_determinista()`: el titular copiado tal cual, la cita
+   como etiqueta y la pregunta como etiqueta se reparan sin LLM derivando
+   un rótulo honesto del titular. Corre antes de la vuelta LLM; solo los
+   problemas puramente mecánicos (`copia_titular`, `caracter_marcador`) van
+   por esta vía. Contador en `_ULTIMO_RESUMEN['subtemas_reparados_determinista']`.
+4. `_subtema_desde_titulo` endurecido: quita interjecciones («¡Atención!»,
+   «Última hora:»), signos ¡!¿? en bordes, comillas envolventes; elimina
+   oraciones-pregunta («¿Cuántos años…? Inició en…» → «Inició en…»); ante
+   `:` prefiere el segmento no-cita y detecta frase destacada sin comillas
+   («…Gael: Septiembre era el momento perfecto» → el hecho, no el destacado;
+   `_es_frase_destacada`: último ≤6 palabras sin clase de evento + primero
+   ≥2× más largo con clase); tras recortar a 7 palabras quita verbos
+   iniciales («revela detalles…» → «detalles…»).
+5. El fallback final usa `_subtema_desde_titulo` en vez del recorte crudo.
+- La cita parcial dentro de etiqueta nominal («Lanzamiento de álbum
+  'Arriba La L'») se conserva: solo se reescribe la cita envolvente.
+- Una etiqueta válida idéntica al titular no se toca (el titular ya era
+  etiqueta; no hay nada que reparar).
+- Validación dossier real: `copia_titular` 46 → 2; los 2 se reparan sin LLM
+  («Septiembre…» → «Detalles del nacimiento de su hijo Gael», que luego la
+  unificación por ancla v4.20 lleva a «Nacimiento de Gael en Santa Fe»).
+- Tests nuevos: `tests/test_v421_subtema_no_titular.py` (21 ok); 2 tests de
+  `test_calidad_tema_tono.py` actualizados al criterio v4.21 (los ejemplos
+  que marcaban son etiquetas válidas). Suite: 258/258 OK (3 módulos no
+  cargan: falta `openai`, ambiental preexistente, no instalable por
+  conflicto debian).
