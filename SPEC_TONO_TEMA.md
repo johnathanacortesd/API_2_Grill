@@ -845,3 +845,16 @@ Dos adiciones a la columna Prominencia (v4.23), sin tocar lo demás:
 
 - Tests nuevos: clase `TestComunicadoMarca` en `tests/test_prominencia.py`
   (6 pruebas).
+
+## 31. v4.25 — Título de auditor no cuenta en radio/TV (2026-09-24)
+
+Solo para prominencia: cuando el Tipo de Medio es Aire, Cable, AM, FM,
+Radio o Televisión, el título lo pone un auditor (no el medio), así que se
+ignora y la prominencia se calcula solo con el contenido de la noticia.
+Cubre valores crudos y normalizados del pipeline (AM/FM→Radio,
+Aire/Cable→Televisión); comparación insensible a mayúsculas y tildes.
+Prensa/Internet/Revistas siguen contando el título. No toca ninguna otra
+lógica (tono, temas, subtemas).
+
+- Tests nuevos: clase `TestTituloAuditor` en `tests/test_prominencia.py`
+  (4 pruebas).

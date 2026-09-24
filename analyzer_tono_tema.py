@@ -5173,9 +5173,24 @@ def aplicar_regla_tragedia(grupos: Sequence[dict], etiquetas: Dict[int, dict],
 #   - Referencial: 0 o 1 menciones en total y sin presencia en el título.
 # v4.24: si la noticia es un "comunicado de la marca" (su propia voz),
 # 2 o más menciones bastan para Exclusiva.
+# v4.25: en radio/TV (Aire, Cable, AM, FM, Radio, Televisión) el título lo
+# pone un auditor, no el medio: para prominencia solo cuenta el contenido.
 # Nota: "marca mencionada junto a otras marcas" (comparativos) no se puede
 # detectar sin una lista de competidores; la banda de 2-3 menciones la cubre
 # de forma mecánica.
+
+# v4.25: en radio/TV el título lo pone el auditor, no el medio: para
+# prominencia SOLO cuenta el contenido de la noticia (no el título).
+# Se compara normalizado (sin tildes/mayúsculas); cubre tanto los valores
+# crudos ("aire", "cable", "am", "fm") como los normalizados del pipeline
+# ("radio", "televisión").
+_TIPOS_MEDIO_TITULO_AUDITOR = frozenset({'aire', 'cable', 'am', 'fm', 'radio', 'television'})
+
+
+def _titulo_no_es_del_medio(tipo_medio):
+    """True si el Tipo de Medio es radio/TV: el título es del auditor."""
+    return nz(tipo_medio or '') in _TIPOS_MEDIO_TITULO_AUDITOR
+
 
 def _terminos_prominencia(brand, aliases):
     """Términos de marca/alias normalizados, sin duplicados ni ruido.
@@ -5258,10 +5273,16 @@ def clasificar_prominencia(n_titulo, n_cuerpo, comunicado_marca=False):
     return 'Referencial'
 
 
-def calcular_prominencia(titulo, cuerpo, brand, aliases=()):
-    """Prominencia de una noticia: 'Exclusiva' | 'Compartida' | 'Referencial'."""
+def calcular_prominencia(titulo, cuerpo, brand, aliases=(), tipo_medio=''):
+    """Prominencia de una noticia: 'Exclusiva' | 'Compartida' | 'Referencial'.
+
+    v4.25: si el tipo de medio es radio/TV, el título lo puso un auditor
+    (no el medio) y no cuenta: solo vale el contenido.
+    """
     terms = _terminos_prominencia(brand, aliases)
     patron = _patron_prominencia(terms)
+    if _titulo_no_es_del_medio(tipo_medio):
+        titulo = ''
     n_tit = contar_menciones_prominencia(titulo, patron)
     n_cue = contar_menciones_prominencia(cuerpo, patron)
     com = _tiene_comunicado_marca(titulo, cuerpo, _patron_comunicado(terms))
@@ -5275,8 +5296,11 @@ def aplicar_prominencia(rows, km, brand, aliases=()):
     patron_com = _patron_comunicado(terms)
     k_tit = (km or {}).get('titulo', 'Título')
     k_cue = (km or {}).get('resumen', 'Resumen - Aclaracion')
+    k_tipo = (km or {}).get('tipodemedio', 'Tipo de Medio')
     for r in rows:
         tit, cue = r.get(k_tit), r.get(k_cue)
+        if _titulo_no_es_del_medio(r.get(k_tipo)):
+            tit = ''  # v4.25: en radio/TV el título es del auditor
         n_tit = contar_menciones_prominencia(tit, patron)
         n_cue = contar_menciones_prominencia(cue, patron)
         com = _tiene_comunicado_marca(tit, cue, patron_com)

@@ -405,7 +405,7 @@ def main():
                 <div class="app-header-icon">◈</div>
                 <div class="app-header-text">
                     <div class="app-header-title">Limpieza y Análisis de Noticias</div>
-                    <div class="app-header-version">v4.24 · Tono/Tema/Subtema por reglas + IA · Realizado por Johnathan Cortés</div>
+                    <div class="app-header-version">v4.25 · Tono/Tema/Subtema por reglas + IA · Realizado por Johnathan Cortés</div>
                 </div>
                 <div class="app-header-badge">Estructurador + IA</div>
             </div>""", unsafe_allow_html=True)
@@ -540,7 +540,8 @@ def main():
                              "alias en Título y CuerpoEs. Exclusiva: 4+ menciones, o marca en el "
                              "título con 2+ en el cuerpo, o 'comunicado de la marca' con 2+ "
                              "menciones. Compartida: 2-3 menciones, o marca en el título con "
-                             "0-1 en el cuerpo. Referencial: 0-1 menciones.",
+                             "0-1 en el cuerpo. Referencial: 0-1 menciones. En radio/TV el "
+                             "título lo pone el auditor y no cuenta: solo vale el contenido.",
                     )
 
                 with st.expander("⚙ Ajustes finos del análisis (opcional)"):

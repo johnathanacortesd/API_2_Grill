@@ -179,3 +179,54 @@ class TestComunicadoMarca(unittest.TestCase):
         # sin flag, el comportamiento v4.23 no cambia
         self.assertEqual(A.clasificar_prominencia(0, 2), 'Compartida')
         self.assertEqual(A.clasificar_prominencia(0, 1), 'Referencial')
+
+
+class TestTituloAuditor(unittest.TestCase):
+    """v4.25: en radio/TV el título lo pone el auditor: no cuenta para
+    prominencia (solo el contenido). Solo aplica a prominencia."""
+
+    def test_radio_ignora_titulo(self):
+        titulo = 'La Fundación Santa Fe abre nueva sede'      # 1 mención
+        cuerpo = 'La Fundación Santa Fe invirtió. Santa Fe contrató.'  # 2
+        # sin tipo de medio: título(1) + cuerpo(2) -> Exclusiva
+        self.assertEqual(A.calcular_prominencia(titulo, cuerpo, BRAND, ALIASES),
+                         'Exclusiva')
+        # en radio/TV: solo cuerpo(2) -> Compartida
+        for tipo in ('Radio', 'Televisión', 'AM', 'FM', 'Aire', 'Cable',
+                     'radio', 'TELEVISIÓN'):
+            self.assertEqual(
+                A.calcular_prominencia(titulo, cuerpo, BRAND, ALIASES, tipo),
+                'Compartida', tipo)
+
+    def test_prensa_e_internet_si_cuentan_titulo(self):
+        titulo = 'La Fundación Santa Fe abre nueva sede'
+        cuerpo = 'La Fundación Santa Fe invirtió. Santa Fe contrató.'
+        for tipo in ('Prensa', 'Internet', 'Revistas', '', None):
+            self.assertEqual(
+                A.calcular_prominencia(titulo, cuerpo, BRAND, ALIASES, tipo),
+                'Exclusiva', tipo)
+
+    def test_comunicado_en_titulo_ignorado_en_radio(self):
+        titulo = 'Comunicado de la Fundación Santa Fe'
+        cuerpo = 'La Fundación Santa Fe informó. Santa Fe añadió.'
+        self.assertEqual(A.calcular_prominencia(titulo, cuerpo, BRAND, ALIASES),
+                         'Exclusiva')
+        # en radio el título (auditor) no cuenta: cuerpo 2, sin comunicado
+        self.assertEqual(
+            A.calcular_prominencia(titulo, cuerpo, BRAND, ALIASES, 'Radio'),
+            'Compartida')
+
+    def test_aplicar_lee_tipo_de_medio(self):
+        rows = [
+            {'Título': 'La Fundación Santa Fe abre sede',
+             'Resumen - Aclaracion': 'La Fundación Santa Fe invirtió. Santa Fe contrató.',
+             'Tipo de Medio': 'Radio'},
+            {'Título': 'La Fundación Santa Fe abre sede',
+             'Resumen - Aclaracion': 'La Fundación Santa Fe invirtió. Santa Fe contrató.',
+             'Tipo de Medio': 'Prensa'},
+        ]
+        km = {'titulo': 'Título', 'resumen': 'Resumen - Aclaracion',
+              'tipodemedio': 'Tipo de Medio'}
+        out = A.aplicar_prominencia(rows, km, BRAND, ALIASES)
+        self.assertEqual(out[0]['Prominencia'], 'Compartida')
+        self.assertEqual(out[1]['Prominencia'], 'Exclusiva')
