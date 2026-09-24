@@ -5150,3 +5150,97 @@ def aplicar_regla_tragedia(grupos: Sequence[dict], etiquetas: Dict[int, dict],
             e['tono'] = 'Neutro'
             bajados.append(g.get('grupo'))
     return bajados
+
+
+# ---------------------------------------------------------------------------
+# v4.23 — Prominencia de marca (métrica determinista, sin LLM)
+# ---------------------------------------------------------------------------
+# Columna "Prominencia" en el xlsx de resultados: mide la presencia de la
+# marca en cada noticia contando menciones de la marca y sus alias — tal como
+# el usuario los digitó en "Marca o Cliente Principal" y en
+# "Alias o términos relacionados" (separados por coma o punto y coma) —
+# en las columnas Título y CuerpoEs ("Resumen - Aclaracion" como respaldo).
+#
+# Es una búsqueda por palabras y similitudes: insensible a mayúsculas y
+# tildes, y tolera variantes de separación ("santa fe" = "santa-fe" =
+# "santafe"). No usa la API: es un conteo mecánico.
+#
+# Reglas (definidas por el usuario, 2026-09-24). Solo tres categorías:
+#   - Exclusiva:   4 o más menciones en total; o marca en el Título con
+#                  2 o más menciones en el cuerpo.
+#   - Compartida:  2 o 3 menciones en total; o marca en el Título con 0-1
+#                  menciones en el cuerpo (el titular solo no basta).
+#   - Referencial: 0 o 1 menciones en total y sin presencia en el título.
+# Nota: "marca mencionada junto a otras marcas" (comparativos) no se puede
+# detectar sin una lista de competidores; la banda de 2-3 menciones la cubre
+# de forma mecánica.
+
+def _terminos_prominencia(brand, aliases):
+    """Términos de marca/alias normalizados, sin duplicados ni ruido.
+
+    Acepta aliases como lista o como texto separado por coma o punto y coma.
+    El término más largo va primero para no contar dos veces
+    ("fundación santa fe de bogotá" antes que "santa fe").
+    """
+    if isinstance(aliases, str):
+        aliases = [a.strip() for a in re.split(r'[,;]', aliases) if a.strip()]
+    terms = []
+    for t in [brand] + list(aliases or []):
+        n = nz(t)
+        if len(n) >= 2 and n not in terms:
+            terms.append(n)
+    terms.sort(key=len, reverse=True)
+    return terms
+
+
+def _patron_prominencia(terms):
+    """Un solo regex de alternancia no solapada sobre texto normalizado."""
+    if not terms:
+        return None
+    alts = []
+    for t in terms:
+        ws = t.split()
+        alt = r'[\s\-]*'.join(re.escape(w) for w in ws) if len(ws) > 1 else re.escape(t)
+        alts.append(alt)
+    return re.compile(r'(?<!\w)(?:%s)(?!\w)' % '|'.join(alts))
+
+
+def contar_menciones_prominencia(texto, patron):
+    """Ocurrencias no solapadas de los términos en el texto (0 si no hay)."""
+    if patron is None:
+        return 0
+    return len(patron.findall(nz(texto or '')))
+
+
+def clasificar_prominencia(n_titulo, n_cuerpo):
+    """Etiqueta de prominencia a partir de los conteos de título y cuerpo."""
+    if n_titulo >= 1:
+        # La marca está en el titular: es Exclusiva salvo que el cuerpo
+        # apenas la mencione (0-1) — el titular solo no basta.
+        return 'Exclusiva' if n_cuerpo >= 2 else 'Compartida'
+    total = n_titulo + n_cuerpo
+    if total >= 4:
+        return 'Exclusiva'
+    if total >= 2:
+        return 'Compartida'
+    return 'Referencial'
+
+
+def calcular_prominencia(titulo, cuerpo, brand, aliases=()):
+    """Prominencia de una noticia: 'Exclusiva' | 'Compartida' | 'Referencial'."""
+    patron = _patron_prominencia(_terminos_prominencia(brand, aliases))
+    n_tit = contar_menciones_prominencia(titulo, patron)
+    n_cue = contar_menciones_prominencia(cuerpo, patron)
+    return clasificar_prominencia(n_tit, n_cue)
+
+
+def aplicar_prominencia(rows, km, brand, aliases=()):
+    """Agrega row['Prominencia'] a cada fila. Determinista, sin LLM."""
+    patron = _patron_prominencia(_terminos_prominencia(brand, aliases))
+    k_tit = (km or {}).get('titulo', 'Título')
+    k_cue = (km or {}).get('resumen', 'Resumen - Aclaracion')
+    for r in rows:
+        n_tit = contar_menciones_prominencia(r.get(k_tit), patron)
+        n_cue = contar_menciones_prominencia(r.get(k_cue), patron)
+        r['Prominencia'] = clasificar_prominencia(n_tit, n_cue)
+    return rows

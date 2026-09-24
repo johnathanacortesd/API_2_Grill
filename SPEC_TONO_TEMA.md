@@ -793,3 +793,34 @@ Neutros pegajosos por diseño.
 
 - Tests nuevos: `tests/test_v422_senalo_no_es_critica.py` (8 ok).
 - Limitación conocida: cobertura en inglés fuera de alcance (1 fila).
+
+## 29. v4.23 — Columna Prominencia (2026-09-24)
+
+Nueva columna `Prominencia` en el xlsx de resultados: métrica determinista
+(sin LLM) de la presencia de la marca en cada noticia. Cuenta menciones de
+la marca y sus alias —exactamente lo digitado en "Marca o Cliente Principal"
+y "Alias o términos relacionados" (coma o punto y coma)— en Título y
+CuerpoEs ("Resumen - Aclaracion" como respaldo).
+
+Búsqueda por palabras y similitudes: insensible a mayúsculas y tildes;
+tolera "santa fe" = "santa-fe" = "santafe". La alternancia ordena el término
+más largo primero para no contar dos veces ("Fundación Santa Fe de Bogotá"
+cuenta una vez, no dos con "Santa Fe").
+
+Solo tres categorías (reglas del usuario):
+- **Exclusiva**: 4+ menciones en total; o marca en el Título con 2+
+  menciones en el cuerpo.
+- **Compartida**: 2-3 menciones en total; o marca en el Título con 0-1
+  menciones en el cuerpo (el titular solo no basta).
+- **Referencial**: 0-1 menciones y sin presencia en el título.
+
+La columna se genera siempre que haya marca configurada, con o sin
+análisis IA, y va justo después de las columnas IA (o tras Audiencia si no
+hay IA). No toca ninguna otra lógica: es una adición.
+
+- Funciones: `calcular_prominencia()`, `aplicar_prominencia()`,
+  `clasificar_prominencia()`, `contar_menciones_prominencia()` en
+  `analyzer_tono_tema.py`; hook en `pipeline.py`.
+- Tests nuevos: `tests/test_prominencia.py`.
+- Limitación conocida: "marca junto a otras marcas" (comparativos) no se
+  detecta sin una lista de competidores; la banda 2-3 la cubre mecánicamente.

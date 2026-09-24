@@ -20,7 +20,7 @@ from openpyxl import load_workbook
 from openpyxl.utils.cell import column_index_from_string, coordinate_from_string, range_boundaries
 from unidecode import unidecode
 
-from analyzer_tono_tema import enrich_rows_with_ai, ultimo_resumen
+from analyzer_tono_tema import enrich_rows_with_ai, ultimo_resumen, aplicar_prominencia
 from pkl_classifier import (
     apply_pkl_classifiers,
     fill_classification_context,
@@ -56,20 +56,31 @@ AI_COLUMNS_AFTER_AUDIENCIA = ["Tono_IA", "Tema_IA", "Subtema_IA"]
 CONTEXTO_ANALIZADO_COL = "Contexto analizado"
 
 
-def output_columns_for_export(include_ai: bool = False, include_tema: bool = True) -> List[str]:
+def output_columns_for_export(include_ai: bool = False, include_tema: bool = True,
+                              include_prominencia: bool = False) -> List[str]:
     """Columnas del xlsx de salida.
 
     Con IA/PKL: inserta Tono_IA, Tema_IA, Subtema_IA después de Audiencia y deja
     Contexto analizado como última columna. Sin IA: solo BASE_OUTPUT_COLUMNS.
     v4.8: con include_tema=False se omite la columna Tema_IA (solo tono + subtema).
+    v4.23: con include_prominencia=True se agrega la columna Prominencia
+    (métrica determinista de presencia de marca, sin LLM) después de las
+    columnas IA, o después de Audiencia si no hay IA.
     """
     cols = list(BASE_OUTPUT_COLUMNS)
+    if include_prominencia and "Prominencia" not in cols:
+        cols.insert(cols.index("Audiencia") + 1, "Prominencia")
     if not include_ai:
         return cols
     audiencia_idx = cols.index("Audiencia")
     for offset, col in enumerate(AI_COLUMNS_AFTER_AUDIENCIA):
         if col not in cols:
             cols.insert(audiencia_idx + 1 + offset, col)
+    # v4.23: la prominencia va justo después de las columnas IA.
+    if include_prominencia and "Prominencia" in cols:
+        cols.remove("Prominencia")
+        ref = "Subtema_IA" if "Subtema_IA" in cols else "Tono_IA"
+        cols.insert(cols.index(ref) + 1, "Prominencia")
     if not include_tema and "Tema_IA" in cols:
         cols.remove("Tema_IA")
     if CONTEXTO_ANALIZADO_COL in cols:
@@ -938,6 +949,19 @@ def process_dossier(
             aliases=(ai_config or {}).get("aliases", []),
         )
 
+    # v4.23: prominencia de marca — métrica determinista por conteo de
+    # menciones en Título y CuerpoEs (sin LLM). Se calcula siempre que haya
+    # marca configurada, con o sin análisis IA.
+    _brand_prom = ((ai_config or {}).get("brand") or "").strip()
+    _incluir_prominencia = bool(_brand_prom)
+    if _incluir_prominencia:
+        emit_progress(progress, 89, "Calculando prominencia de marca…")
+        rows = aplicar_prominencia(
+            rows, KEY_MAP,
+            brand=_brand_prom,
+            aliases=(ai_config or {}).get("aliases", []),
+        )
+
     # Orden editorial estable: primero por Título A–Z para revisar y agrupar
     # noticias iguales/similares en Excel. La clave ignora mayúsculas y tildes,
     # pero conserva el texto original en la salida.
@@ -947,6 +971,7 @@ def process_dossier(
     cols_to_export = output_columns_for_export(
         include_ai=has_ai or has_pkl,
         include_tema=(ai_extra if has_ai else (ai_config or {})).get("incluir_tema", True),
+        include_prominencia=_incluir_prominencia,
     )
 
     emit_progress(progress, 94, "✓ Estructuración finalizada. Generando archivo Excel…")
