@@ -4461,8 +4461,14 @@ def unificar_tono_mismo_hecho(grupos: Sequence[dict],
 # El modelo pequeno tiende a marcar Negativo todo hecho tragico (un robo, El Nino, una protesta,
 # una cifra de suicidios). Esta guarda aplica en codigo la regla del criterio: Negativo SOLO si hay
 # un señalamiento dirigido a la marca, a su vocero o a una empresa del sector.
+# NOTA v4.22: «señalar» como verbo de habla («la Fundación señaló que…») NO
+# es crítica: es el verbo más común para introducir declaraciones en prensa
+# y ya está en HABLA_PAT como verbo de habla. Solo el sustantivo
+# «señalamiento(s)» conserva sentido acusatorio inequívoco. Las formas
+# verbales acusatorias con blanco explícito («señalaron a la Fundación»)
+# las sigue cazando _marca_blanco_de_critica por construcción direccional.
 CRITICA_PAT = re.compile(
-    r'(denunci|cuestion|sancion|critic|rechaz|exig|acusa|se[nñ]al|demand|investiga|irregular|'
+    r'(denunci|cuestion|sancion|critic|rechaz|exig|acusa|se[ñn]alamientos?|demand|investiga|irregular|'
     r'sobrecosto|corrup|incumpl|multa|reclam|responsabiliz|se le atribuye|'
     r'atac|esc[áa]ndal|crisis|fraude|malvers|despilfarr)', re.I)
 VICTIMA_PAT = re.compile(

@@ -751,3 +751,45 @@ Cambios (generales, no atados a cliente):
   que marcaban son etiquetas válidas). Suite: 258/258 OK (3 módulos no
   cargan: falta `openai`, ambiental preexistente, no instalable por
   conflicto debian).
+
+## 28. v4.22 — «Señaló» no es crítica dirigida (2026-09-24)
+
+Segunda vuelta de auditoría sobre el dossier Fundación Santa Fe (484
+filas), corriendo la cadena determinista v4.21 sobre la salida ya
+procesada: 151 cambios potenciales, de los cuales el hallazgo
+implementable fue uno solo, pero de alto impacto.
+
+Hallazgo: `CRITICA_PAT` incluía `se[nñ]al`, que calzaba el verbo de habla
+«señaló/señala» («La Fundación Santa Fe señaló que los próximos
+comunicados…»). En el dossier, **28 de 32** activaciones de
+`_critica_dirigida` venían de ahí — todas falsas. El propio código se
+contradecía: `HABLA_PAT` ya trata «señaló» como verbo de habla (fuente
+experta). Efectos del falso positivo:
+
+- Vetaba la rama asistencial de `aplicar_guarda_positiva` («estado
+  crítico» no es crítica a la marca): 5 episodios de atención al paciente
+  (Yamid Amat en UCI, parte médico de la Fundación) quedaban
+  desprotegidos y `aplicar_regla_positivo_incidental` los bajaba de
+  Positivo a Neutro.
+- Podía disparar `aplicar_regla_critica_con_respuesta` cuando había un
+  «comunicado» cerca (el parte médico no es un descargo).
+
+Cambio (general, no atado a cliente): en `CRITICA_PAT`, `se[nñ]al` →
+`se[ñn]alamientos?`. Solo el sustantivo conserva sentido acusatorio
+inequívoco («los señalamientos contra la Fundación»). Las formas verbales
+acusatorias con blanco explícito las sigue cazando
+`_marca_blanco_de_critica` por construcción direccional (no tocado: exige
+`a|al|contra|hacia` + marca, «señaló que» nunca calza).
+
+Validación dossier real: `positivo incidental` 20 → 15; los 4 episodios
+«parte médico» vuelven a Positivo (el 5.º, en inglés —«in Critical
+Condition in Bogota ICU»—, queda fuera: las clases de evento y las
+preposiciones de sede son de español por diseño). Los 3 subtemas que
+siguen con tono dividido (cardiología, pediatría, EPS: 2N/1P) son
+divisiones defendibles: la guarda encuentra evidencia positiva real según
+las reglas del usuario («fue reconocida en…», «ocupó el puesto 134»,
+«organizado por… la Fundación Santa Fe») y el voto final respeta los
+Neutros pegajosos por diseño.
+
+- Tests nuevos: `tests/test_v422_senalo_no_es_critica.py` (8 ok).
+- Limitación conocida: cobertura en inglés fuera de alcance (1 fila).
