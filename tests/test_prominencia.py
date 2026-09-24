@@ -126,3 +126,56 @@ class TestAplicarProminencia(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestComunicadoMarca(unittest.TestCase):
+    """v4.24: "comunicado de la marca" + 2 o más menciones = Exclusiva."""
+
+    def test_comunicado_con_dos_menciones_es_exclusiva(self):
+        cuerpo = ('Según un comunicado de la Fundación Santa Fe, la entidad '
+                  'informó. La Fundación Santa Fe añadió detalles.')
+        # 2 menciones: sin la regla del comunicado sería Compartida
+        self.assertEqual(
+            A.calcular_prominencia('Titular neutro', cuerpo, BRAND, ALIASES),
+            'Exclusiva')
+
+    def test_comunicado_con_tres_menciones_es_exclusiva(self):
+        cuerpo = ('En comunicado de la Santa Fe se anunció. Santa Fe detalló. '
+                  'La Santa Fe concluyó.')
+        self.assertEqual(
+            A.calcular_prominencia('Titular neutro', cuerpo, BRAND, ALIASES),
+            'Exclusiva')
+
+    def test_comunicado_con_una_mencion_sigue_referencial(self):
+        cuerpo = 'En un comunicado de la Santa Fe se informó del evento.'
+        self.assertEqual(
+            A.calcular_prominencia('Titular neutro', cuerpo, BRAND, ALIASES),
+            'Referencial')
+
+    def test_comunicado_ajeno_no_aplica(self):
+        cuerpo = ('La empresa emitió un comunicado de prensa. '
+                  'La Fundación Santa Fe asistió. Santa Fe apoyó.')
+        # 2 menciones pero el comunicado no es DE la marca -> Compartida
+        self.assertEqual(
+            A.calcular_prominencia('Titular neutro', cuerpo, BRAND, ALIASES),
+            'Compartida')
+
+    def test_comunicado_de_alias_tambien_cuenta(self):
+        cuerpo = ('Mediante comunicado de Serena del Mar se informó. '
+                  'Serena del Mar amplió la información.')
+        self.assertEqual(
+            A.calcular_prominencia('Titular neutro', cuerpo, BRAND, ALIASES),
+            'Exclusiva')
+
+    def test_clasificar_con_flag(self):
+        self.assertEqual(
+            A.clasificar_prominencia(0, 2, comunicado_marca=True), 'Exclusiva')
+        self.assertEqual(
+            A.clasificar_prominencia(0, 3, comunicado_marca=True), 'Exclusiva')
+        self.assertEqual(
+            A.clasificar_prominencia(0, 1, comunicado_marca=True), 'Referencial')
+        self.assertEqual(
+            A.clasificar_prominencia(1, 1, comunicado_marca=True), 'Exclusiva')
+        # sin flag, el comportamiento v4.23 no cambia
+        self.assertEqual(A.clasificar_prominencia(0, 2), 'Compartida')
+        self.assertEqual(A.clasificar_prominencia(0, 1), 'Referencial')

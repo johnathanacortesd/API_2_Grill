@@ -952,8 +952,11 @@ def process_dossier(
     # v4.23: prominencia de marca — métrica determinista por conteo de
     # menciones en Título y CuerpoEs (sin LLM). Se calcula siempre que haya
     # marca configurada, con o sin análisis IA.
+    # v4.24: el usuario puede desactivarla con el checkbox "Agregar columna
+    # Prominencia" en la app (incluir_prominencia; default True).
     _brand_prom = ((ai_config or {}).get("brand") or "").strip()
-    _incluir_prominencia = bool(_brand_prom)
+    _incluir_prominencia = bool(_brand_prom) and bool(
+        (ai_config or {}).get("incluir_prominencia", True))
     if _incluir_prominencia:
         emit_progress(progress, 89, "Calculando prominencia de marca…")
         rows = aplicar_prominencia(

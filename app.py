@@ -405,7 +405,7 @@ def main():
                 <div class="app-header-icon">◈</div>
                 <div class="app-header-text">
                     <div class="app-header-title">Limpieza y Análisis de Noticias</div>
-                    <div class="app-header-version">v4.23 · Tono/Tema/Subtema por reglas + IA · Realizado por Johnathan Cortés</div>
+                    <div class="app-header-version">v4.24 · Tono/Tema/Subtema por reglas + IA · Realizado por Johnathan Cortés</div>
                 </div>
                 <div class="app-header-badge">Estructurador + IA</div>
             </div>""", unsafe_allow_html=True)
@@ -532,6 +532,15 @@ def main():
                              "secuencial y alarga el proceso. Si subes un PKL de tema más abajo, "
                              "la columna Tema_IA se genera automáticamente con las clases de tu "
                              "modelo (sin costo extra de IA), aunque elijas el modo rápido.",
+                    )
+                    prominencia_chk = st.checkbox(
+                        "Agregar columna Prominencia (presencia de la marca)",
+                        value=True,
+                        help="Métrica determinista (sin IA): cuenta menciones de la marca y sus "
+                             "alias en Título y CuerpoEs. Exclusiva: 4+ menciones, o marca en el "
+                             "título con 2+ en el cuerpo, o 'comunicado de la marca' con 2+ "
+                             "menciones. Compartida: 2-3 menciones, o marca en el título con "
+                             "0-1 en el cuerpo. Referencial: 0-1 menciones.",
                     )
 
                 with st.expander("⚙ Ajustes finos del análisis (opcional)"):
@@ -723,6 +732,7 @@ def main():
                                 "cubos_objetivo": int(cubos_objetivo_input),
                                 "votos": int(votos_input),
                                 "incluir_tema": modo_tema_input == _OPCIONES_TEMA[1],
+                                "incluir_prominencia": bool(prominencia_chk),
                                 "permitir_cubos_nuevos": True,
                                 "tam_lote": int(tam_lote_input),
                                 "workers": int(workers_input),

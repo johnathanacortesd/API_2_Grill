@@ -824,3 +824,24 @@ hay IA). No toca ninguna otra lógica: es una adición.
 - Tests nuevos: `tests/test_prominencia.py`.
 - Limitación conocida: "marca junto a otras marcas" (comparativos) no se
   detecta sin una lista de competidores; la banda 2-3 la cubre mecánicamente.
+
+## 30. v4.24 — Comunicado de la marca + interruptor de Prominencia (2026-09-24)
+
+Dos adiciones a la columna Prominencia (v4.23), sin tocar lo demás:
+
+1. **Regla del comunicado**: si la noticia contiene "comunicado(s) de
+   [la/el/los/las/del] <marca o alias>" —es decir, la noticia ES la voz de
+   la propia marca— basta con **2 o más menciones** para ser Exclusiva
+   (antes esas 2-3 menciones caían en Compartida). Con 1 mención sigue
+   siendo Referencial. Detección con regex sobre texto normalizado
+   (`_patron_comunicado`); "comunicado de prensa" (ajeno) no dispara la
+   regla.
+
+2. **Interruptor en la app**: checkbox "Agregar columna Prominencia
+   (presencia de la marca)" junto a la opción de Tema_IA (default
+   activado). Viaja en `ai_config["incluir_prominencia"]`; el pipeline
+   solo genera la columna si hay marca configurada Y el interruptor está
+   activo.
+
+- Tests nuevos: clase `TestComunicadoMarca` en `tests/test_prominencia.py`
+  (6 pruebas).

@@ -5171,6 +5171,8 @@ def aplicar_regla_tragedia(grupos: Sequence[dict], etiquetas: Dict[int, dict],
 #   - Compartida:  2 o 3 menciones en total; o marca en el Título con 0-1
 #                  menciones en el cuerpo (el titular solo no basta).
 #   - Referencial: 0 o 1 menciones en total y sin presencia en el título.
+# v4.24: si la noticia es un "comunicado de la marca" (su propia voz),
+# 2 o más menciones bastan para Exclusiva.
 # Nota: "marca mencionada junto a otras marcas" (comparativos) no se puede
 # detectar sin una lista de competidores; la banda de 2-3 menciones la cubre
 # de forma mecánica.
@@ -5193,16 +5195,40 @@ def _terminos_prominencia(brand, aliases):
     return terms
 
 
-def _patron_prominencia(terms):
-    """Un solo regex de alternancia no solapada sobre texto normalizado."""
-    if not terms:
-        return None
+def _alternativas_terminos(terms):
+    """Alternancia regex de los términos con separadores flexibles."""
     alts = []
     for t in terms:
         ws = t.split()
         alt = r'[\s\-]*'.join(re.escape(w) for w in ws) if len(ws) > 1 else re.escape(t)
         alts.append(alt)
-    return re.compile(r'(?<!\w)(?:%s)(?!\w)' % '|'.join(alts))
+    return '|'.join(alts)
+
+
+def _patron_prominencia(terms):
+    """Un solo regex de alternancia no solapada sobre texto normalizado."""
+    if not terms:
+        return None
+    return re.compile(r'(?<!\w)(?:%s)(?!\w)' % _alternativas_terminos(terms))
+
+
+def _patron_comunicado(terms):
+    """Detecta "comunicado(s) de [la/el/los/las/del] <marca o alias>".
+
+    v4.24: si la noticia ES un comunicado de la marca (su propia voz),
+    basta con 2 menciones para ser Exclusiva.
+    """
+    if not terms:
+        return None
+    return re.compile(
+        r'(?<!\w)comunicados?\s+de\s+(?:l[ao]s?\s+|del\s+)?(?:%s)(?!\w)'
+        % _alternativas_terminos(terms))
+
+
+def _tiene_comunicado_marca(titulo, cuerpo, patron_com):
+    if patron_com is None:
+        return False
+    return bool(patron_com.search(nz('%s %s' % (titulo or '', cuerpo or ''))))
 
 
 def contar_menciones_prominencia(texto, patron):
@@ -5212,13 +5238,19 @@ def contar_menciones_prominencia(texto, patron):
     return len(patron.findall(nz(texto or '')))
 
 
-def clasificar_prominencia(n_titulo, n_cuerpo):
-    """Etiqueta de prominencia a partir de los conteos de título y cuerpo."""
+def clasificar_prominencia(n_titulo, n_cuerpo, comunicado_marca=False):
+    """Etiqueta de prominencia a partir de los conteos de título y cuerpo.
+
+    v4.24: si la noticia es un "comunicado de la marca" (su propia voz),
+    2 o más menciones bastan para Exclusiva.
+    """
+    total = n_titulo + n_cuerpo
+    if comunicado_marca and total >= 2:
+        return 'Exclusiva'
     if n_titulo >= 1:
         # La marca está en el titular: es Exclusiva salvo que el cuerpo
         # apenas la mencione (0-1) — el titular solo no basta.
         return 'Exclusiva' if n_cuerpo >= 2 else 'Compartida'
-    total = n_titulo + n_cuerpo
     if total >= 4:
         return 'Exclusiva'
     if total >= 2:
@@ -5228,19 +5260,25 @@ def clasificar_prominencia(n_titulo, n_cuerpo):
 
 def calcular_prominencia(titulo, cuerpo, brand, aliases=()):
     """Prominencia de una noticia: 'Exclusiva' | 'Compartida' | 'Referencial'."""
-    patron = _patron_prominencia(_terminos_prominencia(brand, aliases))
+    terms = _terminos_prominencia(brand, aliases)
+    patron = _patron_prominencia(terms)
     n_tit = contar_menciones_prominencia(titulo, patron)
     n_cue = contar_menciones_prominencia(cuerpo, patron)
-    return clasificar_prominencia(n_tit, n_cue)
+    com = _tiene_comunicado_marca(titulo, cuerpo, _patron_comunicado(terms))
+    return clasificar_prominencia(n_tit, n_cue, comunicado_marca=com)
 
 
 def aplicar_prominencia(rows, km, brand, aliases=()):
     """Agrega row['Prominencia'] a cada fila. Determinista, sin LLM."""
-    patron = _patron_prominencia(_terminos_prominencia(brand, aliases))
+    terms = _terminos_prominencia(brand, aliases)
+    patron = _patron_prominencia(terms)
+    patron_com = _patron_comunicado(terms)
     k_tit = (km or {}).get('titulo', 'Título')
     k_cue = (km or {}).get('resumen', 'Resumen - Aclaracion')
     for r in rows:
-        n_tit = contar_menciones_prominencia(r.get(k_tit), patron)
-        n_cue = contar_menciones_prominencia(r.get(k_cue), patron)
-        r['Prominencia'] = clasificar_prominencia(n_tit, n_cue)
+        tit, cue = r.get(k_tit), r.get(k_cue)
+        n_tit = contar_menciones_prominencia(tit, patron)
+        n_cue = contar_menciones_prominencia(cue, patron)
+        com = _tiene_comunicado_marca(tit, cue, patron_com)
+        r['Prominencia'] = clasificar_prominencia(n_tit, n_cue, comunicado_marca=com)
     return rows
