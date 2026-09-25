@@ -230,3 +230,35 @@ class TestTituloAuditor(unittest.TestCase):
         out = A.aplicar_prominencia(rows, km, BRAND, ALIASES)
         self.assertEqual(out[0]['Prominencia'], 'Compartida')
         self.assertEqual(out[1]['Prominencia'], 'Exclusiva')
+
+
+class TestColumnaProminenciaAlFinal(unittest.TestCase):
+    """v4.26: la columna Prominencia va al final, después de
+    'Contexto analizado' (con o sin IA)."""
+
+    def _cols(self):
+        import os
+        import sys
+        import types
+        sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        _stub = types.ModuleType('openai')
+        _stub.OpenAI = object
+        sys.modules.setdefault('openai', _stub)
+        from pipeline import output_columns_for_export
+        return output_columns_for_export
+
+    def test_con_ia_al_final(self):
+        cols = self._cols()(include_ai=True, include_tema=True,
+                            include_prominencia=True)
+        self.assertEqual(cols[-1], 'Prominencia')
+        self.assertLess(cols.index('Contexto analizado'),
+                        cols.index('Prominencia'))
+
+    def test_sin_ia_al_final(self):
+        cols = self._cols()(include_ai=False, include_prominencia=True)
+        self.assertEqual(cols[-1], 'Prominencia')
+
+    def test_desactivada_no_aparece(self):
+        cols = self._cols()(include_ai=True, include_prominencia=False)
+        self.assertNotIn('Prominencia', cols)
+        self.assertEqual(cols[-1], 'Contexto analizado')

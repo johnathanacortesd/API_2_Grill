@@ -858,3 +858,16 @@ lógica (tono, temas, subtemas).
 
 - Tests nuevos: clase `TestTituloAuditor` en `tests/test_prominencia.py`
   (4 pruebas).
+
+## 32. v4.26 — Prominencia desmarcada por defecto y al final (2026-09-25)
+
+El checkbox "Agregar columna Prominencia (presencia de la marca)" ahora
+sale DESMARCADO por defecto (`value=False` en la app; el fallback del
+pipeline para `incluir_prominencia` también pasó a False). Cuando el usuario
+lo activa, la columna "Prominencia" se ubica al final del xlsx, después de
+"Contexto analizado" (con o sin IA), en vez de junto a las columnas IA.
+Además se corrigió el borde de v4.24: activar Prominencia sin IA ni PKL ya
+construye el config y calcula la columna (es determinista, no necesita LLM).
+
+- Tests nuevos: clase `TestColumnaProminenciaAlFinal` en
+  `tests/test_prominencia.py` (3 pruebas de posición de columna).

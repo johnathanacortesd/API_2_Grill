@@ -405,7 +405,7 @@ def main():
                 <div class="app-header-icon">◈</div>
                 <div class="app-header-text">
                     <div class="app-header-title">Limpieza y Análisis de Noticias</div>
-                    <div class="app-header-version">v4.25 · Tono/Tema/Subtema por reglas + IA · Realizado por Johnathan Cortés</div>
+                    <div class="app-header-version">v4.26 · Tono/Tema/Subtema por reglas + IA · Realizado por Johnathan Cortés</div>
                 </div>
                 <div class="app-header-badge">Estructurador + IA</div>
             </div>""", unsafe_allow_html=True)
@@ -535,7 +535,7 @@ def main():
                     )
                     prominencia_chk = st.checkbox(
                         "Agregar columna Prominencia (presencia de la marca)",
-                        value=True,
+                        value=False,
                         help="Métrica determinista (sin IA): cuenta menciones de la marca y sus "
                              "alias en Título y CuerpoEs. Exclusiva: 4+ menciones, o marca en el "
                              "título con 2+ en el cuerpo, o 'comunicado de la marca' con 2+ "
@@ -721,7 +721,9 @@ def main():
                             tax_eff = _perfil_tax
                         else:
                             tax_eff = tax_nombre
-                        if enable_ai or tone_bytes or theme_bytes:
+                        # v4.26: la prominencia también construye el config aunque no haya
+                        # IA ni PKL (es determinista, no necesita LLM).
+                        if enable_ai or tone_bytes or theme_bytes or prominencia_chk:
                             st.session_state["pending_ai_config"] = {
                                 "enabled": bool(enable_ai),
                                 "brand": brand_input.strip(),

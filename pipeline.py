@@ -64,28 +64,27 @@ def output_columns_for_export(include_ai: bool = False, include_tema: bool = Tru
     Contexto analizado como última columna. Sin IA: solo BASE_OUTPUT_COLUMNS.
     v4.8: con include_tema=False se omite la columna Tema_IA (solo tono + subtema).
     v4.23: con include_prominencia=True se agrega la columna Prominencia
-    (métrica determinista de presencia de marca, sin LLM) después de las
-    columnas IA, o después de Audiencia si no hay IA.
+    (métrica determinista de presencia de marca, sin LLM).
+    v4.26: la columna Prominencia va al final del todo, después de
+    "Contexto analizado" (con o sin IA).
     """
     cols = list(BASE_OUTPUT_COLUMNS)
-    if include_prominencia and "Prominencia" not in cols:
-        cols.insert(cols.index("Audiencia") + 1, "Prominencia")
     if not include_ai:
+        if include_prominencia:
+            cols.append("Prominencia")
         return cols
     audiencia_idx = cols.index("Audiencia")
     for offset, col in enumerate(AI_COLUMNS_AFTER_AUDIENCIA):
         if col not in cols:
             cols.insert(audiencia_idx + 1 + offset, col)
-    # v4.23: la prominencia va justo después de las columnas IA.
-    if include_prominencia and "Prominencia" in cols:
-        cols.remove("Prominencia")
-        ref = "Subtema_IA" if "Subtema_IA" in cols else "Tono_IA"
-        cols.insert(cols.index(ref) + 1, "Prominencia")
     if not include_tema and "Tema_IA" in cols:
         cols.remove("Tema_IA")
     if CONTEXTO_ANALIZADO_COL in cols:
         cols = [c for c in cols if c != CONTEXTO_ANALIZADO_COL]
     cols.append(CONTEXTO_ANALIZADO_COL)
+    # v4.26: la prominencia va al final, después de "Contexto analizado".
+    if include_prominencia:
+        cols.append("Prominencia")
     return cols
 
 
@@ -953,10 +952,11 @@ def process_dossier(
     # menciones en Título y CuerpoEs (sin LLM). Se calcula siempre que haya
     # marca configurada, con o sin análisis IA.
     # v4.24: el usuario puede desactivarla con el checkbox "Agregar columna
-    # Prominencia" en la app (incluir_prominencia; default True).
+    # Prominencia" en la app (incluir_prominencia; desde v4.26 default False,
+    # checkbox desmarcado).
     _brand_prom = ((ai_config or {}).get("brand") or "").strip()
     _incluir_prominencia = bool(_brand_prom) and bool(
-        (ai_config or {}).get("incluir_prominencia", True))
+        (ai_config or {}).get("incluir_prominencia", False))
     if _incluir_prominencia:
         emit_progress(progress, 89, "Calculando prominencia de marca…")
         rows = aplicar_prominencia(
