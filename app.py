@@ -12,7 +12,8 @@ import pandas as pd
 
 from catalogo_tono_tema import CRITERIOS_TONO
 from perfil_cliente import cargar_perfil, guardar_perfil, listar_perfiles, perfil_a_resumen, slugify
-from pipeline import process_dossier, leer_columnas_xlsx, sugerir_columna, renombrar_columnas_xlsx
+from pipeline import (process_dossier, leer_columnas_xlsx, sugerir_columna,
+                      renombrar_columnas_xlsx, construir_ai_config_custom)
 from pkl_classifier import PklClassifierError, load_sklearn_estimator
 
 logger = logging.getLogger("limpieza_grill")
@@ -405,7 +406,7 @@ def main():
                 <div class="app-header-icon">◈</div>
                 <div class="app-header-text">
                     <div class="app-header-title">Limpieza y Análisis de Noticias</div>
-                    <div class="app-header-version">v4.27 · Tono/Tema/Subtema por reglas + IA · Realizado por Johnathan Cortés</div>
+                    <div class="app-header-version">v4.28 · Tono/Tema/Subtema por reglas + IA · Realizado por Johnathan Cortés</div>
                 </div>
                 <div class="app-header-badge">Estructurador + IA</div>
             </div>""", unsafe_allow_html=True)
@@ -830,6 +831,20 @@ def main():
                     help="Igual que en la pestaña estándar: métrica determinista que va al final, "
                          "después de «Contexto analizado».")
 
+                st.markdown('<div class="sec-label">3. Modelos PKL del cliente (opcional)</div>', unsafe_allow_html=True)
+                st.caption("Igual que la pestaña estándar: puedes subir el PKL de tono, el de tema, "
+                           "ambos o ninguno. Si un eje no tiene PKL, se mantiene el análisis con IA. "
+                           "El subtema nunca se reemplaza por PKL.")
+                cc_pt, cc_pm = st.columns(2)
+                with cc_pt:
+                    f_tono_c = st.file_uploader(
+                        "PKL de tono", type=["pkl"], key="pkl_tono_custom",
+                        help="Modelo opcional de scikit-learn para tono. Si no se sube, se usa la IA existente.")
+                with cc_pm:
+                    f_tema_c = st.file_uploader(
+                        "PKL de tema", type=["pkl"], key="pkl_tema_custom",
+                        help="Modelo opcional de scikit-learn para tema. Si no se sube, se usa la IA existente.")
+
                 if st.button("▶ Iniciar Limpieza y Análisis", use_container_width=True,
                              type="primary", key="btn_custom"):
                     if f2 is None:
@@ -854,40 +869,32 @@ def main():
                         except ValueError as exc:
                             st.error(str(exc))
                             st.stop()
-                        aliases_c = [a.strip() for a in re.split(r"[,;]", alias_c or "") if a.strip()]
+                        tone_bytes_c = f_tono_c.getvalue() if f_tono_c else None
+                        theme_bytes_c = f_tema_c.getvalue() if f_tema_c else None
+                        try:
+                            if tone_bytes_c:
+                                load_sklearn_estimator(tone_bytes_c, "tono")
+                            if theme_bytes_c:
+                                load_sklearn_estimator(theme_bytes_c, "tema")
+                        except PklClassifierError as exc:
+                            st.error(str(exc))
+                            st.stop()
                         st.session_state["pending_dossier"] = blob_custom
                         st.session_state["pending_meta"] = {
                             "name": f2.name,
                             "size": len(blob_custom),
                         }
-                        if enable_ai_c or prominencia_c:
-                            st.session_state["pending_ai_config"] = {
-                                "enabled": bool(enable_ai_c),
-                                "brand": (brand_c or "").strip(),
-                                "aliases": aliases_c,
-                                "voceros": [v.strip() for v in re.split(r"[,;]", voceros_c or "") if v.strip()],
-                                "criterio": criterio_c,
-                                "criterio_texto": "",
-                                "taxonomia": "Automática según el archivo (recomendada)",
-                                "cubos_objetivo": 16,
-                                "votos": 2,
-                                "incluir_tema": modo_tema_c == _OPCIONES_TEMA_C[1],
-                                "incluir_prominencia": bool(prominencia_c),
-                                "permitir_cubos_nuevos": True,
-                                "tam_lote": 10,
-                                "workers": 8,
-                                "umbral_titulo": 92,
-                                "umbral_cuerpo": 85,
-                                "api_key": api_key if enable_ai_c else None,
-                                "typesafe_api_key": typesafe_api_key if enable_ai_c else None,
-                                "typesafe_model": "jev-latest",
-                                "model": "gpt-4.1-nano-2025-04-14",
-                                "historial_dir": st.secrets.get("HISTORIAL_DIR"),
-                                "tone_pkl_bytes": None,
-                                "theme_pkl_bytes": None,
-                            }
-                        else:
-                            st.session_state["pending_ai_config"] = None
+                        st.session_state["pending_ai_config"] = construir_ai_config_custom(
+                            brand_c, alias_c, voceros_c, criterio_c,
+                            incluir_tema=(modo_tema_c == _OPCIONES_TEMA_C[1]),
+                            incluir_prominencia=bool(prominencia_c),
+                            enable_ai=enable_ai_c,
+                            api_key=api_key,
+                            typesafe_api_key=typesafe_api_key,
+                            historial_dir=st.secrets.get("HISTORIAL_DIR"),
+                            tone_pkl_bytes=tone_bytes_c,
+                            theme_pkl_bytes=theme_bytes_c,
+                        )
                         st.session_state["procesando"] = True
                         st.session_state["processing_complete"] = False
                         st.rerun()

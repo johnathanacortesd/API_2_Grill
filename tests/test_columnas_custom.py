@@ -14,7 +14,8 @@ _openai_stub = types.ModuleType('openai')
 _openai_stub.OpenAI = object
 sys.modules.setdefault('openai', _openai_stub)
 
-from pipeline import leer_columnas_xlsx, renombrar_columnas_xlsx, sugerir_columna
+from pipeline import (leer_columnas_xlsx, renombrar_columnas_xlsx, sugerir_columna,
+                      construir_ai_config_custom)
 
 
 def _xlsx_bytes(headers, rows):
@@ -107,3 +108,44 @@ class TestColumnasCustom(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestConfigCustom(unittest.TestCase):
+    """v4.28: el ai_config de la pestaña nueva acepta PKL de tono/tema."""
+
+    def _cfg(self, **kw):
+        base = dict(brand="La Marca", alias_txt="Alias1; Alias2", voceros_txt="El Vocero",
+                    criterio="Aspectual estricto", incluir_tema=False,
+                    incluir_prominencia=False, enable_ai=True, api_key="k",
+                    typesafe_api_key="tk", historial_dir=None,
+                    tone_pkl_bytes=None, theme_pkl_bytes=None)
+        base.update(kw)
+        return construir_ai_config_custom(**base)
+
+    def test_none_sin_analisis(self):
+        self.assertIsNone(self._cfg(enable_ai=False))
+
+    def test_con_pkl_tono_y_tema(self):
+        cfg = self._cfg(tone_pkl_bytes=b"tono", theme_pkl_bytes=b"tema", incluir_tema=True)
+        self.assertTrue(cfg["enabled"])
+        self.assertEqual(cfg["brand"], "La Marca")
+        self.assertEqual(cfg["aliases"], ["Alias1", "Alias2"])
+        self.assertEqual(cfg["voceros"], ["El Vocero"])
+        self.assertEqual(cfg["tone_pkl_bytes"], b"tono")
+        self.assertEqual(cfg["theme_pkl_bytes"], b"tema")
+        self.assertTrue(cfg["incluir_tema"])
+
+    def test_solo_pkl_sin_ia_construye_config(self):
+        cfg = self._cfg(enable_ai=False, tone_pkl_bytes=b"tono", api_key=None,
+                        typesafe_api_key=None)
+        self.assertIsNotNone(cfg)
+        self.assertFalse(cfg["enabled"])
+        self.assertIsNone(cfg["api_key"])
+        self.assertEqual(cfg["tone_pkl_bytes"], b"tono")
+
+    def test_solo_prominencia_sin_ia_ni_pkl(self):
+        cfg = self._cfg(enable_ai=False, incluir_prominencia=True, api_key=None,
+                        typesafe_api_key=None)
+        self.assertIsNotNone(cfg)
+        self.assertFalse(cfg["enabled"])
+        self.assertTrue(cfg["incluir_prominencia"])

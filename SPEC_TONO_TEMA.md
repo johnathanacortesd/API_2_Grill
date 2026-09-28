@@ -899,3 +899,17 @@ que la pantalla de resultados y la descarga son idénticas.
   apartado de colisión, error de misma columna, error de columna inexistente,
   sugerencia de columna, y carga del xlsx renombrado por
   `load_dossier_dataframe`).
+
+## 34. v4.28 — PKL de tono/tema en "Columnas personalizadas" (2026-09-28)
+
+La pestaña "🗂 Columnas personalizadas" ahora acepta los PKL de tono y de
+tema del cliente (misma sección "Modelos PKL del cliente (opcional)" que la
+pestaña estándar, con la misma validación de `load_sklearn_estimator`).
+El constructor del `ai_config` de esta pestaña se extrajo a
+`construir_ai_config_custom()` en `pipeline.py` (testeable sin Streamlit);
+incluye los bytes de ambos PKL y devuelve None solo si no hay análisis que
+hacer (sin IA, sin PKL y sin prominencia), igual que la pestaña estándar.
+
+- Tests nuevos: clase `TestConfigCustom` en `tests/test_columnas_custom.py`
+  (4 pruebas: None sin análisis, PKL de tono+tema con IA, solo PKL sin IA,
+  solo prominencia sin IA ni PKL).

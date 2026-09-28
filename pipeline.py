@@ -630,6 +630,45 @@ def renombrar_columnas_xlsx(file_bytes: bytes, etiqueta_titulo: str,
         wb.close()
 
 
+def construir_ai_config_custom(brand, alias_txt, voceros_txt, criterio,
+                               incluir_tema, incluir_prominencia, enable_ai,
+                               api_key, typesafe_api_key, historial_dir,
+                               tone_pkl_bytes, theme_pkl_bytes,
+                               model="gpt-4.1-nano-2025-04-14"):
+    """ai_config de la pestaña "Columnas personalizadas" (v4.27/v4.28).
+
+    Misma forma que el de la pestaña estándar. Devuelve None si no hay
+    análisis que hacer (sin IA, sin PKL y sin prominencia).
+    """
+    if not (enable_ai or incluir_prominencia or tone_pkl_bytes or theme_pkl_bytes):
+        return None
+    return {
+        "enabled": bool(enable_ai),
+        "brand": (brand or "").strip(),
+        "aliases": [a.strip() for a in re.split(r"[,;]", alias_txt or "") if a.strip()],
+        "voceros": [v.strip() for v in re.split(r"[,;]", voceros_txt or "") if v.strip()],
+        "criterio": criterio,
+        "criterio_texto": "",
+        "taxonomia": "Automática según el archivo (recomendada)",
+        "cubos_objetivo": 16,
+        "votos": 2,
+        "incluir_tema": bool(incluir_tema),
+        "incluir_prominencia": bool(incluir_prominencia),
+        "permitir_cubos_nuevos": True,
+        "tam_lote": 10,
+        "workers": 8,
+        "umbral_titulo": 92,
+        "umbral_cuerpo": 85,
+        "api_key": api_key if enable_ai else None,
+        "typesafe_api_key": typesafe_api_key if enable_ai else None,
+        "typesafe_model": "jev-latest",
+        "model": model,
+        "historial_dir": historial_dir,
+        "tone_pkl_bytes": tone_pkl_bytes,
+        "theme_pkl_bytes": theme_pkl_bytes,
+    }
+
+
 def normalize_dossier_dataframe(df, region_map, internet_map, progress: ProgressCb = None):
     if df is None or df.empty:
         return pd.DataFrame()
