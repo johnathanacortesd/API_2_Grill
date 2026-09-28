@@ -871,3 +871,31 @@ construye el config y calcula la columna (es determinista, no necesita LLM).
 
 - Tests nuevos: clase `TestColumnaProminenciaAlFinal` en
   `tests/test_prominencia.py` (3 pruebas de posición de columna).
+
+## 33. v4.27 — Pestaña "Columnas personalizadas" (2026-09-28)
+
+La app ahora tiene dos pestañas: "📋 Dossier estándar" (todo lo que ya
+existía, intacto) y "🗂 Columnas personalizadas". En la nueva pestaña el
+usuario sube el xlsx y elige, con dos selectores, qué columnas se usan como
+título y como cuerpo (CuerpoEs) cuando no se llaman "Título" ni
+"Resumen - Aclaracion". La app preselecciona automáticamente si detecta un
+nombre parecido (título/headline/titular; resumen/cuerpo/body/texto…).
+
+El análisis de tono, tema y subtema es EXACTAMENTE el mismo: antes de entrar
+al pipeline, los encabezados elegidos se renombran a "Título" y
+"Resumen - Aclaracion" en una copia del xlsx (`renombrar_columnas_xlsx` en
+`pipeline.py`), preservando el resto del libro intacto. Si otra columna ya se
+llamaba así, se aparta con el sufijo "(original)" para no crear duplicados;
+elegir la misma columna para título y cuerpo da error.
+
+La pestaña nueva trae su propia configuración mínima del análisis (marca*,
+alias, voceros, criterio de tono, modo Tema_IA, checkbox de Prominencia
+desmarcado por defecto) con los mismos valores por defecto de la pestaña
+estándar, y reutiliza `run_cleaning_process` con el mismo `ai_config`, así
+que la pantalla de resultados y la descarga son idénticas.
+
+- Tests nuevos: `tests/test_columnas_custom.py` (8 pruebas: lectura de
+  columnas, etiquetas únicas ante duplicados, renombre con datos intactos,
+  apartado de colisión, error de misma columna, error de columna inexistente,
+  sugerencia de columna, y carga del xlsx renombrado por
+  `load_dossier_dataframe`).

@@ -547,6 +547,89 @@ def _load_dossier_openpyxl(file_bytes: bytes, progress: ProgressCb = None) -> pd
         bio.close()
 
 
+# v4.27 — Pestaña "Columnas personalizadas": permite elegir qué columnas del
+# xlsx se usan como título y cuerpo (CuerpoEs) cuando no se llaman "Título" ni
+# "Resumen - Aclaracion". El análisis (tono/tema/subtema) no cambia: solo se
+# renombran los encabezados elegidos antes de entrar al pipeline normal.
+def leer_columnas_xlsx(file_bytes: bytes) -> List[Tuple[str, int]]:
+    """Encabezados de la primera hoja como [(etiqueta, indice)].
+
+    La etiqueta es única (los duplicados se sufijan con su posición) y el
+    índice es 1-based (para openpyxl). Devuelve [] si no se puede leer.
+    """
+    try:
+        wb = load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+        try:
+            ws = wb.active
+            raw = next(ws.iter_rows(min_row=1, max_row=1, values_only=True), [])
+        finally:
+            wb.close()
+    except Exception:
+        logger.exception("No se pudieron leer las columnas del xlsx")
+        return []
+    vistos = {}
+    out = []
+    for i, h in enumerate(raw, start=1):
+        nombre = str(h).strip() if h is not None else ""
+        if not nombre:
+            continue
+        vistos[nombre] = vistos.get(nombre, 0) + 1
+        etiqueta = nombre if vistos[nombre] == 1 else "%s (%d)" % (nombre, vistos[nombre])
+        out.append((etiqueta, i))
+    return out
+
+
+def sugerir_columna(etiquetas: List[str], candidatos) -> Optional[str]:
+    """Primera etiqueta cuyo nombre normalizado coincide (total o parcial)
+    con algún candidato."""
+    cands = [unidecode(str(c)).lower().strip() for c in candidatos if str(c).strip()]
+    for lbl in etiquetas:
+        base = re.sub(r"\s*\(\d+\)$", "", str(lbl))
+        nbase = unidecode(base).lower().strip()
+        if not nbase:
+            continue
+        for cand in cands:
+            if nbase == cand or nbase in cand or cand in nbase:
+                return lbl
+    return None
+
+
+def renombrar_columnas_xlsx(file_bytes: bytes, etiqueta_titulo: str,
+                            etiqueta_cuerpo: str) -> bytes:
+    """Copia del xlsx con los encabezados elegidos renombrados a 'Título' y
+    'Resumen - Aclaracion'. El resto del libro queda intacto.
+
+    Si otra columna ya se llamaba así, se aparta con el sufijo "(original)"
+    para no crear duplicados. Lanza ValueError si las etiquetas no existen o
+    si ambas apuntan a la misma columna.
+    """
+    cols = leer_columnas_xlsx(file_bytes)
+    por_etiqueta = {lbl: idx for lbl, idx in cols}
+    if etiqueta_titulo not in por_etiqueta or etiqueta_cuerpo not in por_etiqueta:
+        raise ValueError("No se encontraron las columnas elegidas en el archivo.")
+    idx_t, idx_c = por_etiqueta[etiqueta_titulo], por_etiqueta[etiqueta_cuerpo]
+    if idx_t == idx_c:
+        raise ValueError("La columna de título y la de cuerpo deben ser diferentes.")
+    wb = load_workbook(io.BytesIO(file_bytes))
+    try:
+        ws = wb.active
+        for celda in ws[1]:
+            if celda.column in (idx_t, idx_c):
+                continue
+            v = str(celda.value).strip() if celda.value is not None else ""
+            if v == "Título":
+                celda.value = "Título (original)"
+            elif v == "Resumen - Aclaracion":
+                celda.value = "Resumen - Aclaracion (original)"
+        ws.cell(row=1, column=idx_t).value = "Título"
+        ws.cell(row=1, column=idx_c).value = "Resumen - Aclaracion"
+        bio = io.BytesIO()
+        wb.save(bio)
+        return bio.getvalue()
+    finally:
+        wb.close()
+
+
 def normalize_dossier_dataframe(df, region_map, internet_map, progress: ProgressCb = None):
     if df is None or df.empty:
         return pd.DataFrame()

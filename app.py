@@ -12,7 +12,7 @@ import pandas as pd
 
 from catalogo_tono_tema import CRITERIOS_TONO
 from perfil_cliente import cargar_perfil, guardar_perfil, listar_perfiles, perfil_a_resumen, slugify
-from pipeline import process_dossier
+from pipeline import process_dossier, leer_columnas_xlsx, sugerir_columna, renombrar_columnas_xlsx
 from pkl_classifier import PklClassifierError, load_sklearn_estimator
 
 logger = logging.getLogger("limpieza_grill")
@@ -405,7 +405,7 @@ def main():
                 <div class="app-header-icon">◈</div>
                 <div class="app-header-text">
                     <div class="app-header-title">Limpieza y Análisis de Noticias</div>
-                    <div class="app-header-version">v4.26 · Tono/Tema/Subtema por reglas + IA · Realizado por Johnathan Cortés</div>
+                    <div class="app-header-version">v4.27 · Tono/Tema/Subtema por reglas + IA · Realizado por Johnathan Cortés</div>
                 </div>
                 <div class="app-header-badge">Estructurador + IA</div>
             </div>""", unsafe_allow_html=True)
@@ -420,338 +420,474 @@ def main():
                     refresh_config_cache()
                     st.success("Config recargada")
 
-            # --- Perfil de cliente (multicliente): precarga marca, alias, voceros,
-            #     criterio de tono y lista de Temas guardados para cada cliente. ---
-            _SIN_PERFIL = "Sin perfil (configuración manual)"
-            try:
-                _perfiles = listar_perfiles()
-            except Exception:
-                _perfiles = []
-            _opciones_perfil = [_SIN_PERFIL] + [p["nombre"] for p in _perfiles]
-            sel_perfil = st.selectbox(
-                "Perfil de cliente",
-                _opciones_perfil,
-                help="Carga la configuración guardada del cliente. Puedes editar los campos "
-                     "abajo antes de procesar; también puedes guardar la configuración actual "
-                     "como un perfil nuevo desde 'Ajustes finos'.",
-            )
-            _perfil_actual = None
-            if sel_perfil != _SIN_PERFIL:
-                _pid = next((p["id"] for p in _perfiles if p["nombre"] == sel_perfil), None)
-                if _pid:
-                    _perfil_actual = cargar_perfil(_pid)
-                    if st.session_state.get("_perfil_aplicado") != sel_perfil:
-                        st.session_state["brand_input"] = _perfil_actual.get("brand", "")
-                        st.session_state["alias_input"] = "; ".join(_perfil_actual.get("aliases", []))
-                        st.session_state["voceros_input"] = "; ".join(_perfil_actual.get("voceros", []))
-                        st.session_state["criterio_input"] = (
-                            _perfil_actual.get("criterio") or list(CRITERIOS_TONO)[0])
-                        st.session_state["criterio_custom_input"] = _perfil_actual.get("criterio_custom", "")
-                        st.session_state["_perfil_taxonomia"] = _perfil_actual.get("taxonomia")
-                        st.session_state["_perfil_aplicado"] = sel_perfil
-                        st.rerun()
-                    st.caption("📋 " + perfil_a_resumen(_perfil_actual))
-            else:
-                st.session_state["_perfil_aplicado"] = None
-                st.session_state["_perfil_taxonomia"] = None
-
-            with st.form("main_form"):
-                st.markdown('<div class="sec-label">1. Sube el archivo de entrada</div>', unsafe_allow_html=True)
-                st.markdown("""
-                <div class="upload-zone">
-                    <div class="upload-zone-card">
-                        <div class="upload-zone-icon uz-dossier">📋</div>
-                        <div class="upload-zone-text">
-                            <div class="upload-zone-title">Dossier de Noticias</div>
-                            <div class="upload-zone-desc">Sube el .xlsx con las columnas Título y Resumen - Aclaracion.</div>
-                        </div>
-                    </div>
-                </div>""", unsafe_allow_html=True)
-            
-                f1 = st.file_uploader("Dossier", type=["xlsx"], label_visibility="collapsed", key="f1")
-
-                st.markdown('<div class="sec-label">2. Configuración de Análisis IA (Tono, Tema, Subtema)</div>', unsafe_allow_html=True)
-                enable_ai = st.checkbox("Activar análisis reputacional con IA + Jev para el tono", value=True)
-            
-                c_brand, c_alias = st.columns(2)
-                with c_brand:
-                    brand_input = st.text_input(
-                        "Marca o Cliente Principal*",
-                        placeholder="Ej: Universidad de Antioquia, Ecopetrol, Bancolombia",
-                        help="El tono se mide solo sobre esta marca, sus voceros y sus alias.",
-                        key="brand_input",
-                    )
-                with c_alias:
-                    alias_input = st.text_input(
-                        "Alias o términos relacionados (separados por coma o punto y coma)",
-                        placeholder="Ej: UdeA; Alma Mater; rectoría; la universidad",
-                        help="Variantes del nombre que deban atribuirse al cliente.",
-                        key="alias_input",
-                    )
-
-                c_crit, c_voc = st.columns([3, 2])
-                with c_crit:
-                    criterio = st.radio(
-                        "Criterio del tono",
-                        list(CRITERIOS_TONO.keys()),
-                        index=0,
-                        horizontal=False,
-                        key="criterio_input",
-                        help=("Aspectual estricto: la crítica dirigida a la marca es lo único Negativo "
-                              "(gobiernos, alcaldías, entidades públicas). Favorabilidad del sector: "
-                              "cuenta cómo queda parado el sector aunque la marca no sea el actor (gremios, "
-                              "cámaras, empresas de un sector)."),
-                    )
-                with c_voc:
-                    voceros_input = st.text_input(
-                        "Vocero(s) de la marca (opcional)",
-                        placeholder="Ej: Gonzalo Moreno; el rector",
-                        help="Personas cuyo nombre se atribuye a la marca para el tono.",
-                        key="voceros_input",
-                    )
-                    tax_nombre = st.selectbox(
-                        "Lista de Temas",
-                        ["Automática según el archivo (recomendada)",
-                         "Gobierno territorial (21 cubos)",
-                         "Gremio o sector (16 cubos)"],
-                        index=0,
-                        help="Por defecto los Temas se arman bottom-up en ESTE lote: se agrupan subtemas "
-                             "afines y se nombra cada familia. Si subes un PKL de tema, se usan las clases "
-                             "de ese modelo y no se inventan temas del lote. No hay memoria entre corridas. "
-                             "Las listas fijas o un JSON solo se usan como nombres candidatos cuando no hay PKL.",
-                    )
-                    _OPCIONES_TEMA = [
-                        "Solo Tono_IA + Subtema_IA (rápido)",
-                        "Agregar Tema_IA con IA (etapa adicional)",
-                    ]
-                    modo_tema_input = st.radio(
-                        "Columna Tema_IA",
-                        _OPCIONES_TEMA,
-                        index=0,
-                        help="El Tema agrupa los subtemas en cubos. La etapa de temas con IA es "
-                             "secuencial y alarga el proceso. Si subes un PKL de tema más abajo, "
-                             "la columna Tema_IA se genera automáticamente con las clases de tu "
-                             "modelo (sin costo extra de IA), aunque elijas el modo rápido.",
-                    )
-                    prominencia_chk = st.checkbox(
-                        "Agregar columna Prominencia (presencia de la marca)",
-                        value=False,
-                        help="Métrica determinista (sin IA): cuenta menciones de la marca y sus "
-                             "alias en Título y CuerpoEs. Exclusiva: 4+ menciones, o marca en el "
-                             "título con 2+ en el cuerpo, o 'comunicado de la marca' con 2+ "
-                             "menciones. Compartida: 2-3 menciones, o marca en el título con "
-                             "0-1 en el cuerpo. Referencial: 0-1 menciones. En radio/TV el "
-                             "título lo pone el auditor y no cuenta: solo vale el contenido.",
-                    )
-
-                with st.expander("⚙ Ajustes finos del análisis (opcional)"):
-                    ca, cb, cc, cd = st.columns(4)
-                    with ca:
-                        tam_lote_input = st.slider("Grupos por llamada", 5, 30, 10, 1,
-                                                   help="10 es un buen punto de partida.")
-                    with cb:
-                        workers_input = st.slider("Llamadas en paralelo", 1, 16, 8, 1,
-                                                  help="Sube para dossiers grandes; más hilos, más velocidad.")
-                    with cc:
-                        umbral_titulo_input = st.slider("Similitud de titulares (%)", 75, 100, 92, 1,
-                                                        help="Bájalo para fusionar la misma noticia publicada por "
-                                                             "muchos medios con titulares distintos.")
-                    with cd:
-                        umbral_cuerpo_input = st.slider("Similitud de resúmenes (%)", 70, 100, 85, 1)
-                    tax_file = st.file_uploader(
-                        "Reutilizar la lista de Temas de un cliente (JSON, opcional)",
-                        type=["json"], key="tax_json",
-                        help="Si subes la lista que descargaste de un período anterior del mismo cliente, "
-                             "los Temas se mantienen idénticos entre meses (mejor para comparar).",
-                    )
-                    cubos_objetivo_input = st.slider("Cubos objetivo cuando la lista es automática", 8, 25, 16, 1)
-                    votos_input = st.slider(
-                        "Verificaciones del tono por grupo", 1, 3, 2, 1,
-                        help="Cada grupo se etiqueta N veces y gana la mayoría; un empate cae a Neutro. "
-                             "Con 2 se reducen los vaivenes de los modelos pequeños; con 3 sube el costo "
-                             "una vez más.")
-                    modelo_input = st.selectbox(
-                        "Modelo de IA",
-                        options=["gpt-4.1-nano-2025-04-14", "gpt-6-luna", "gpt-6-sol"],
-                        index=0,
-                        help="gpt-6-luna (lanzado 2026-09-22) es el más rápido y económico "
-                             "($0.10 por 1M tokens de entrada): ideal para dossiers de alto volumen. "
-                             "gpt-6-sol es más capaz pero más costoso.",
-                    )
-                    st.markdown("**💾 Perfil de cliente**")
-                    guardar_chk = st.checkbox(
-                        "Guardar esta configuración como perfil al procesar",
-                        help="Crea o actualiza el JSON del cliente (marca, alias, voceros, criterio y "
-                             "lista de Temas si subiste un JSON) para reutilizarlo en próximas corridas.",
-                    )
-                    sobrescribir_chk = st.checkbox(
-                        "Sobrescribir el perfil si ya existe uno con ese nombre",
-                        help="Por seguridad, si el perfil ya existe y no marcas esta casilla, "
-                             "el proceso se detiene con un aviso en lugar de reemplazarlo.",
-                    )
-                    nombre_perfil = st.text_input(
-                        "Nombre del perfil",
-                        key="nombre_perfil_input",
-                        placeholder="Por defecto se usa la marca",
-                    )
-                    criterio_custom = st.text_area(
-                        "Criterio de tono personalizado (opcional)",
-                        key="criterio_custom_input",
-                        height=80,
-                        placeholder="Si lo llenas, este texto reemplaza al criterio del catálogo para este cliente.",
-                        help="Texto libre con la regla de tono propia del cliente. Tiene prioridad sobre "
-                             "el criterio seleccionado arriba.",
-                    )
-
-                st.markdown('<div class="sec-label">3. Modelos PKL del cliente (opcional)</div>', unsafe_allow_html=True)
-                st.markdown(
-                    '<div class="pkl-hint">Puedes subir el PKL de tono, el de tema, ambos o ninguno. '
-                    "Si un eje no tiene PKL, se mantiene el análisis actual (IA). "
-                    "El subtema nunca se reemplaza por PKL. Si subes un PKL de tema, la columna "
-                    "Tema_IA se genera automáticamente con sus clases (verbatim), aunque hayas "
-                    "elegido el modo rápido.</div>",
-                    unsafe_allow_html=True,
+            tab_std, tab_custom = st.tabs(["📋 Dossier estándar", "🗂 Columnas personalizadas"])
+            with tab_std:
+                # --- Perfil de cliente (multicliente): precarga marca, alias, voceros,
+                #     criterio de tono y lista de Temas guardados para cada cliente. ---
+                _SIN_PERFIL = "Sin perfil (configuración manual)"
+                try:
+                    _perfiles = listar_perfiles()
+                except Exception:
+                    _perfiles = []
+                _opciones_perfil = [_SIN_PERFIL] + [p["nombre"] for p in _perfiles]
+                sel_perfil = st.selectbox(
+                    "Perfil de cliente",
+                    _opciones_perfil,
+                    help="Carga la configuración guardada del cliente. Puedes editar los campos "
+                         "abajo antes de procesar; también puedes guardar la configuración actual "
+                         "como un perfil nuevo desde 'Ajustes finos'.",
                 )
-                st.markdown("""
-                <div class="upload-zone">
-                    <div class="upload-zone-card">
-                        <div class="upload-zone-icon uz-pkl">◆</div>
-                        <div class="upload-zone-text">
-                            <div class="upload-zone-title">Clasificadores sklearn (joblib)</div>
-                            <div class="upload-zone-desc">Archivos .pkl con pipeline de texto (pasos tfidf + clf). No son obligatorios.</div>
+                _perfil_actual = None
+                if sel_perfil != _SIN_PERFIL:
+                    _pid = next((p["id"] for p in _perfiles if p["nombre"] == sel_perfil), None)
+                    if _pid:
+                        _perfil_actual = cargar_perfil(_pid)
+                        if st.session_state.get("_perfil_aplicado") != sel_perfil:
+                            st.session_state["brand_input"] = _perfil_actual.get("brand", "")
+                            st.session_state["alias_input"] = "; ".join(_perfil_actual.get("aliases", []))
+                            st.session_state["voceros_input"] = "; ".join(_perfil_actual.get("voceros", []))
+                            st.session_state["criterio_input"] = (
+                                _perfil_actual.get("criterio") or list(CRITERIOS_TONO)[0])
+                            st.session_state["criterio_custom_input"] = _perfil_actual.get("criterio_custom", "")
+                            st.session_state["_perfil_taxonomia"] = _perfil_actual.get("taxonomia")
+                            st.session_state["_perfil_aplicado"] = sel_perfil
+                            st.rerun()
+                        st.caption("📋 " + perfil_a_resumen(_perfil_actual))
+                else:
+                    st.session_state["_perfil_aplicado"] = None
+                    st.session_state["_perfil_taxonomia"] = None
+
+                with st.form("main_form"):
+                    st.markdown('<div class="sec-label">1. Sube el archivo de entrada</div>', unsafe_allow_html=True)
+                    st.markdown("""
+                    <div class="upload-zone">
+                        <div class="upload-zone-card">
+                            <div class="upload-zone-icon uz-dossier">📋</div>
+                            <div class="upload-zone-text">
+                                <div class="upload-zone-title">Dossier de Noticias</div>
+                                <div class="upload-zone-desc">Sube el .xlsx con las columnas Título y Resumen - Aclaracion.</div>
+                            </div>
                         </div>
-                    </div>
-                </div>""", unsafe_allow_html=True)
-                c_tono, c_tema = st.columns(2)
-                with c_tono:
-                    f_tono = st.file_uploader(
-                        "PKL de tono",
-                        type=["pkl"],
-                        key="pkl_tono",
-                        help="Modelo opcional de scikit-learn para tono. Si no se sube, se usa la IA existente.",
-                    )
-                with c_tema:
-                    f_tema = st.file_uploader(
-                        "PKL de tema",
-                        type=["pkl"],
-                        key="pkl_tema",
-                        help="Modelo opcional de scikit-learn para tema. Si no se sube, se usa la IA existente.",
-                    )
+                    </div>""", unsafe_allow_html=True)
+            
+                    f1 = st.file_uploader("Dossier", type=["xlsx"], label_visibility="collapsed", key="f1")
 
-                if st.form_submit_button("▶ Iniciar Limpieza y Análisis", use_container_width=True, type="primary"):
-                    if not f1:
-                        st.error("Por favor, sube un archivo Excel.")
-                    elif enable_ai and not brand_input.strip():
-                        st.error("Por favor indica la Marca o Cliente Principal para realizar el análisis enfocado.")
-                    else:
-                        api_key = st.secrets.get("OPENAI_API_KEY")
-                        typesafe_api_key = st.secrets.get("TYPESAFE_API_KEY")
-                        if enable_ai and not api_key:
-                            st.error("❌ Falta configurar OPENAI_API_KEY en los Secrets de Streamlit: se usa para subtema y tema.")
-                            st.stop()
-                        if enable_ai and not typesafe_api_key:
-                            st.warning("Sin TYPESAFE_API_KEY la verificación de temas con Jev queda desactivada "
-                                       "(es opcional); el tono, el subtema y el tema se generan igual con la API de OpenAI.")
-                    
-                        aliases_parsed = [
-                            a.strip() for a in re.split(r"[,;]", alias_input) if a.strip()
+                    st.markdown('<div class="sec-label">2. Configuración de Análisis IA (Tono, Tema, Subtema)</div>', unsafe_allow_html=True)
+                    enable_ai = st.checkbox("Activar análisis reputacional con IA + Jev para el tono", value=True)
+            
+                    c_brand, c_alias = st.columns(2)
+                    with c_brand:
+                        brand_input = st.text_input(
+                            "Marca o Cliente Principal*",
+                            placeholder="Ej: Universidad de Antioquia, Ecopetrol, Bancolombia",
+                            help="El tono se mide solo sobre esta marca, sus voceros y sus alias.",
+                            key="brand_input",
+                        )
+                    with c_alias:
+                        alias_input = st.text_input(
+                            "Alias o términos relacionados (separados por coma o punto y coma)",
+                            placeholder="Ej: UdeA; Alma Mater; rectoría; la universidad",
+                            help="Variantes del nombre que deban atribuirse al cliente.",
+                            key="alias_input",
+                        )
+
+                    c_crit, c_voc = st.columns([3, 2])
+                    with c_crit:
+                        criterio = st.radio(
+                            "Criterio del tono",
+                            list(CRITERIOS_TONO.keys()),
+                            index=0,
+                            horizontal=False,
+                            key="criterio_input",
+                            help=("Aspectual estricto: la crítica dirigida a la marca es lo único Negativo "
+                                  "(gobiernos, alcaldías, entidades públicas). Favorabilidad del sector: "
+                                  "cuenta cómo queda parado el sector aunque la marca no sea el actor (gremios, "
+                                  "cámaras, empresas de un sector)."),
+                        )
+                    with c_voc:
+                        voceros_input = st.text_input(
+                            "Vocero(s) de la marca (opcional)",
+                            placeholder="Ej: Gonzalo Moreno; el rector",
+                            help="Personas cuyo nombre se atribuye a la marca para el tono.",
+                            key="voceros_input",
+                        )
+                        tax_nombre = st.selectbox(
+                            "Lista de Temas",
+                            ["Automática según el archivo (recomendada)",
+                             "Gobierno territorial (21 cubos)",
+                             "Gremio o sector (16 cubos)"],
+                            index=0,
+                            help="Por defecto los Temas se arman bottom-up en ESTE lote: se agrupan subtemas "
+                                 "afines y se nombra cada familia. Si subes un PKL de tema, se usan las clases "
+                                 "de ese modelo y no se inventan temas del lote. No hay memoria entre corridas. "
+                                 "Las listas fijas o un JSON solo se usan como nombres candidatos cuando no hay PKL.",
+                        )
+                        _OPCIONES_TEMA = [
+                            "Solo Tono_IA + Subtema_IA (rápido)",
+                            "Agregar Tema_IA con IA (etapa adicional)",
                         ]
-                        tax_cargada = None
-                        if tax_file is not None:
-                            try:
-                                tax_cargada = json.loads(tax_file.getvalue().decode("utf-8"))
-                                if not isinstance(tax_cargada, dict) or not tax_cargada.get("temas"):
-                                    raise ValueError("el JSON debe traer la clave 'temas' con la lista de cubos")
-                                tax_cargada.setdefault("reglas", [])
-                            except Exception as exc:
-                                st.error(f"La lista de Temas (JSON) no es válida: {exc}")
-                                st.stop()
-                        tone_bytes = f_tono.getvalue() if f_tono else None
-                        theme_bytes = f_tema.getvalue() if f_tema else None
-                        try:
-                            if tone_bytes:
-                                load_sklearn_estimator(tone_bytes, "tono")
-                            if theme_bytes:
-                                load_sklearn_estimator(theme_bytes, "tema")
-                        except PklClassifierError as exc:
-                            st.error(str(exc))
-                            st.stop()
+                        modo_tema_input = st.radio(
+                            "Columna Tema_IA",
+                            _OPCIONES_TEMA,
+                            index=0,
+                            help="El Tema agrupa los subtemas en cubos. La etapa de temas con IA es "
+                                 "secuencial y alarga el proceso. Si subes un PKL de tema más abajo, "
+                                 "la columna Tema_IA se genera automáticamente con las clases de tu "
+                                 "modelo (sin costo extra de IA), aunque elijas el modo rápido.",
+                        )
+                        prominencia_chk = st.checkbox(
+                            "Agregar columna Prominencia (presencia de la marca)",
+                            value=False,
+                            help="Métrica determinista (sin IA): cuenta menciones de la marca y sus "
+                                 "alias en Título y CuerpoEs. Exclusiva: 4+ menciones, o marca en el "
+                                 "título con 2+ en el cuerpo, o 'comunicado de la marca' con 2+ "
+                                 "menciones. Compartida: 2-3 menciones, o marca en el título con "
+                                 "0-1 en el cuerpo. Referencial: 0-1 menciones. En radio/TV el "
+                                 "título lo pone el auditor y no cuenta: solo vale el contenido.",
+                        )
 
-                        st.session_state["pending_dossier"] = f1.getvalue()
-                        st.session_state["pending_meta"] = {
-                            "name": f1.name,
-                            "size": int(getattr(f1, "size", 0) or len(st.session_state["pending_dossier"])),
-                        }
-                        criterio_texto = (criterio_custom or "").strip()
-                        if guardar_chk:
-                            _nombre_final = (nombre_perfil or "").strip() or brand_input.strip()
-                            _pid_cand = slugify(_nombre_final)
-                            _existe = any(p["id"] == _pid_cand for p in listar_perfiles())
-                            if _existe and not sobrescribir_chk:
-                                st.warning(
-                                    "Ya existe un perfil llamado '%s'. Si quieres actualizarlo, "
-                                    "marca 'Sobrescribir el perfil si ya existe' y procesa de nuevo; "
-                                    "si es otro cliente, cambia el nombre del perfil." % _nombre_final
-                                )
+                    with st.expander("⚙ Ajustes finos del análisis (opcional)"):
+                        ca, cb, cc, cd = st.columns(4)
+                        with ca:
+                            tam_lote_input = st.slider("Grupos por llamada", 5, 30, 10, 1,
+                                                       help="10 es un buen punto de partida.")
+                        with cb:
+                            workers_input = st.slider("Llamadas en paralelo", 1, 16, 8, 1,
+                                                      help="Sube para dossiers grandes; más hilos, más velocidad.")
+                        with cc:
+                            umbral_titulo_input = st.slider("Similitud de titulares (%)", 75, 100, 92, 1,
+                                                            help="Bájalo para fusionar la misma noticia publicada por "
+                                                                 "muchos medios con titulares distintos.")
+                        with cd:
+                            umbral_cuerpo_input = st.slider("Similitud de resúmenes (%)", 70, 100, 85, 1)
+                        tax_file = st.file_uploader(
+                            "Reutilizar la lista de Temas de un cliente (JSON, opcional)",
+                            type=["json"], key="tax_json",
+                            help="Si subes la lista que descargaste de un período anterior del mismo cliente, "
+                                 "los Temas se mantienen idénticos entre meses (mejor para comparar).",
+                        )
+                        cubos_objetivo_input = st.slider("Cubos objetivo cuando la lista es automática", 8, 25, 16, 1)
+                        votos_input = st.slider(
+                            "Verificaciones del tono por grupo", 1, 3, 2, 1,
+                            help="Cada grupo se etiqueta N veces y gana la mayoría; un empate cae a Neutro. "
+                                 "Con 2 se reducen los vaivenes de los modelos pequeños; con 3 sube el costo "
+                                 "una vez más.")
+                        modelo_input = st.selectbox(
+                            "Modelo de IA",
+                            options=["gpt-4.1-nano-2025-04-14", "gpt-6-luna", "gpt-6-sol"],
+                            index=0,
+                            help="gpt-6-luna (lanzado 2026-09-22) es el más rápido y económico "
+                                 "($0.10 por 1M tokens de entrada): ideal para dossiers de alto volumen. "
+                                 "gpt-6-sol es más capaz pero más costoso.",
+                        )
+                        st.markdown("**💾 Perfil de cliente**")
+                        guardar_chk = st.checkbox(
+                            "Guardar esta configuración como perfil al procesar",
+                            help="Crea o actualiza el JSON del cliente (marca, alias, voceros, criterio y "
+                                 "lista de Temas si subiste un JSON) para reutilizarlo en próximas corridas.",
+                        )
+                        sobrescribir_chk = st.checkbox(
+                            "Sobrescribir el perfil si ya existe uno con ese nombre",
+                            help="Por seguridad, si el perfil ya existe y no marcas esta casilla, "
+                                 "el proceso se detiene con un aviso en lugar de reemplazarlo.",
+                        )
+                        nombre_perfil = st.text_input(
+                            "Nombre del perfil",
+                            key="nombre_perfil_input",
+                            placeholder="Por defecto se usa la marca",
+                        )
+                        criterio_custom = st.text_area(
+                            "Criterio de tono personalizado (opcional)",
+                            key="criterio_custom_input",
+                            height=80,
+                            placeholder="Si lo llenas, este texto reemplaza al criterio del catálogo para este cliente.",
+                            help="Texto libre con la regla de tono propia del cliente. Tiene prioridad sobre "
+                                 "el criterio seleccionado arriba.",
+                        )
+
+                    st.markdown('<div class="sec-label">3. Modelos PKL del cliente (opcional)</div>', unsafe_allow_html=True)
+                    st.markdown(
+                        '<div class="pkl-hint">Puedes subir el PKL de tono, el de tema, ambos o ninguno. '
+                        "Si un eje no tiene PKL, se mantiene el análisis actual (IA). "
+                        "El subtema nunca se reemplaza por PKL. Si subes un PKL de tema, la columna "
+                        "Tema_IA se genera automáticamente con sus clases (verbatim), aunque hayas "
+                        "elegido el modo rápido.</div>",
+                        unsafe_allow_html=True,
+                    )
+                    st.markdown("""
+                    <div class="upload-zone">
+                        <div class="upload-zone-card">
+                            <div class="upload-zone-icon uz-pkl">◆</div>
+                            <div class="upload-zone-text">
+                                <div class="upload-zone-title">Clasificadores sklearn (joblib)</div>
+                                <div class="upload-zone-desc">Archivos .pkl con pipeline de texto (pasos tfidf + clf). No son obligatorios.</div>
+                            </div>
+                        </div>
+                    </div>""", unsafe_allow_html=True)
+                    c_tono, c_tema = st.columns(2)
+                    with c_tono:
+                        f_tono = st.file_uploader(
+                            "PKL de tono",
+                            type=["pkl"],
+                            key="pkl_tono",
+                            help="Modelo opcional de scikit-learn para tono. Si no se sube, se usa la IA existente.",
+                        )
+                    with c_tema:
+                        f_tema = st.file_uploader(
+                            "PKL de tema",
+                            type=["pkl"],
+                            key="pkl_tema",
+                            help="Modelo opcional de scikit-learn para tema. Si no se sube, se usa la IA existente.",
+                        )
+
+                    if st.form_submit_button("▶ Iniciar Limpieza y Análisis", use_container_width=True, type="primary"):
+                        if not f1:
+                            st.error("Por favor, sube un archivo Excel.")
+                        elif enable_ai and not brand_input.strip():
+                            st.error("Por favor indica la Marca o Cliente Principal para realizar el análisis enfocado.")
+                        else:
+                            api_key = st.secrets.get("OPENAI_API_KEY")
+                            typesafe_api_key = st.secrets.get("TYPESAFE_API_KEY")
+                            if enable_ai and not api_key:
+                                st.error("❌ Falta configurar OPENAI_API_KEY en los Secrets de Streamlit: se usa para subtema y tema.")
                                 st.stop()
+                            if enable_ai and not typesafe_api_key:
+                                st.warning("Sin TYPESAFE_API_KEY la verificación de temas con Jev queda desactivada "
+                                           "(es opcional); el tono, el subtema y el tema se generan igual con la API de OpenAI.")
+                    
+                            aliases_parsed = [
+                                a.strip() for a in re.split(r"[,;]", alias_input) if a.strip()
+                            ]
+                            tax_cargada = None
+                            if tax_file is not None:
+                                try:
+                                    tax_cargada = json.loads(tax_file.getvalue().decode("utf-8"))
+                                    if not isinstance(tax_cargada, dict) or not tax_cargada.get("temas"):
+                                        raise ValueError("el JSON debe traer la clave 'temas' con la lista de cubos")
+                                    tax_cargada.setdefault("reglas", [])
+                                except Exception as exc:
+                                    st.error(f"La lista de Temas (JSON) no es válida: {exc}")
+                                    st.stop()
+                            tone_bytes = f_tono.getvalue() if f_tono else None
+                            theme_bytes = f_tema.getvalue() if f_tema else None
                             try:
-                                _pid = guardar_perfil({
-                                    "nombre": _nombre_final,
+                                if tone_bytes:
+                                    load_sklearn_estimator(tone_bytes, "tono")
+                                if theme_bytes:
+                                    load_sklearn_estimator(theme_bytes, "tema")
+                            except PklClassifierError as exc:
+                                st.error(str(exc))
+                                st.stop()
+
+                            st.session_state["pending_dossier"] = f1.getvalue()
+                            st.session_state["pending_meta"] = {
+                                "name": f1.name,
+                                "size": int(getattr(f1, "size", 0) or len(st.session_state["pending_dossier"])),
+                            }
+                            criterio_texto = (criterio_custom or "").strip()
+                            if guardar_chk:
+                                _nombre_final = (nombre_perfil or "").strip() or brand_input.strip()
+                                _pid_cand = slugify(_nombre_final)
+                                _existe = any(p["id"] == _pid_cand for p in listar_perfiles())
+                                if _existe and not sobrescribir_chk:
+                                    st.warning(
+                                        "Ya existe un perfil llamado '%s'. Si quieres actualizarlo, "
+                                        "marca 'Sobrescribir el perfil si ya existe' y procesa de nuevo; "
+                                        "si es otro cliente, cambia el nombre del perfil." % _nombre_final
+                                    )
+                                    st.stop()
+                                try:
+                                    _pid = guardar_perfil({
+                                        "nombre": _nombre_final,
+                                        "brand": brand_input.strip(),
+                                        "aliases": aliases_parsed,
+                                        "voceros": [v.strip() for v in re.split(r"[,;]", voceros_input) if v.strip()],
+                                        "criterio": criterio,
+                                        "criterio_custom": criterio_texto,
+                                        "taxonomia": tax_cargada,
+                                        "notas": "",
+                                    })
+                                    st.toast(f"Perfil de cliente guardado: {_pid}")
+                                except ValueError as exc:
+                                    st.error(str(exc))
+                                    st.stop()
+                            # Precedencia de la lista de Temas: JSON subido > opción elegida >
+                            # taxonomía del perfil > automática del lote.
+                            _TAX_AUTO = "Automática según el archivo (recomendada)"
+                            _perfil_tax = st.session_state.get("_perfil_taxonomia")
+                            if tax_cargada:
+                                tax_eff = tax_cargada
+                            elif tax_nombre != _TAX_AUTO:
+                                tax_eff = tax_nombre
+                            elif _perfil_tax:
+                                tax_eff = _perfil_tax
+                            else:
+                                tax_eff = tax_nombre
+                            # v4.26: la prominencia también construye el config aunque no haya
+                            # IA ni PKL (es determinista, no necesita LLM).
+                            if enable_ai or tone_bytes or theme_bytes or prominencia_chk:
+                                st.session_state["pending_ai_config"] = {
+                                    "enabled": bool(enable_ai),
                                     "brand": brand_input.strip(),
                                     "aliases": aliases_parsed,
                                     "voceros": [v.strip() for v in re.split(r"[,;]", voceros_input) if v.strip()],
                                     "criterio": criterio,
-                                    "criterio_custom": criterio_texto,
-                                    "taxonomia": tax_cargada,
-                                    "notas": "",
-                                })
-                                st.toast(f"Perfil de cliente guardado: {_pid}")
-                            except ValueError as exc:
-                                st.error(str(exc))
-                                st.stop()
-                        # Precedencia de la lista de Temas: JSON subido > opción elegida >
-                        # taxonomía del perfil > automática del lote.
-                        _TAX_AUTO = "Automática según el archivo (recomendada)"
-                        _perfil_tax = st.session_state.get("_perfil_taxonomia")
-                        if tax_cargada:
-                            tax_eff = tax_cargada
-                        elif tax_nombre != _TAX_AUTO:
-                            tax_eff = tax_nombre
-                        elif _perfil_tax:
-                            tax_eff = _perfil_tax
-                        else:
-                            tax_eff = tax_nombre
-                        # v4.26: la prominencia también construye el config aunque no haya
-                        # IA ni PKL (es determinista, no necesita LLM).
-                        if enable_ai or tone_bytes or theme_bytes or prominencia_chk:
+                                    "criterio_texto": criterio_texto,
+                                    "taxonomia": tax_eff,
+                                    "cubos_objetivo": int(cubos_objetivo_input),
+                                    "votos": int(votos_input),
+                                    "incluir_tema": modo_tema_input == _OPCIONES_TEMA[1],
+                                    "incluir_prominencia": bool(prominencia_chk),
+                                    "permitir_cubos_nuevos": True,
+                                    "tam_lote": int(tam_lote_input),
+                                    "workers": int(workers_input),
+                                    "umbral_titulo": int(umbral_titulo_input),
+                                    "umbral_cuerpo": int(umbral_cuerpo_input),
+                                    "api_key": api_key if enable_ai else None,
+                                    "typesafe_api_key": typesafe_api_key if enable_ai else None,
+                                    "typesafe_model": "jev-latest",
+                                    "model": modelo_input,
+                                    "historial_dir": st.secrets.get("HISTORIAL_DIR"),
+                                    "tone_pkl_bytes": tone_bytes,
+                                    "theme_pkl_bytes": theme_bytes,
+                                }
+                            else:
+                                st.session_state["pending_ai_config"] = None
+
+                            st.session_state["procesando"] = True
+                            st.session_state["processing_complete"] = False
+                            st.rerun()
+            with tab_custom:
+                # v4.27 — Pestaña "Columnas personalizadas". El análisis (tono/tema/subtema)
+                # es exactamente el mismo que el de la pestaña estándar; lo único que cambia
+                # es que el usuario elige qué columnas del xlsx se usan como título y cuerpo
+                # (CuerpoEs). Esas columnas se renombran a "Título" y "Resumen - Aclaracion"
+                # antes de entrar al pipeline normal.
+                st.markdown('<div class="sec-label">1. Sube el archivo y elige las columnas</div>', unsafe_allow_html=True)
+                st.caption("Usa esta pestaña cuando las columnas de tu archivo no se llamen «Título» ni "
+                           "«Resumen - Aclaracion». El análisis de tono, tema y subtema es el mismo; solo cambia "
+                           "qué columnas se usan como título y cuerpo (CuerpoEs).")
+                f2 = st.file_uploader("Dossier con columnas personalizadas", type=["xlsx"],
+                                      label_visibility="collapsed", key="f2_columnas")
+                _cols_custom = leer_columnas_xlsx(f2.getvalue()) if f2 is not None else []
+                sel_titulo = sel_cuerpo = None
+                if f2 is not None:
+                    if not _cols_custom:
+                        st.error("No se pudieron leer las columnas del archivo.")
+                    else:
+                        _labels = [lbl for lbl, _ in _cols_custom]
+                        _sug_t = sugerir_columna(_labels, ("título", "titulo", "headline", "titular"))
+                        _sug_c = sugerir_columna(_labels, ("resumen - aclaracion", "resumen", "cuerpoes",
+                                                           "cuerpo", "body", "texto", "contenido"))
+                        c_ct, c_cc = st.columns(2)
+                        with c_ct:
+                            sel_titulo = st.selectbox(
+                                "Columna de título", _labels,
+                                index=_labels.index(_sug_t) if _sug_t in _labels else 0,
+                                key="custom_col_titulo",
+                                help="Esta columna se usará como «Título» en el análisis de tono, tema y subtema.")
+                        with c_cc:
+                            sel_cuerpo = st.selectbox(
+                                "Columna de cuerpo (CuerpoEs)", _labels,
+                                index=_labels.index(_sug_c) if _sug_c in _labels else 0,
+                                key="custom_col_cuerpo",
+                                help="Esta columna se usará como «Resumen - Aclaracion» (CuerpoEs) en el análisis.")
+
+                st.markdown('<div class="sec-label">2. Configuración del análisis (igual que la pestaña estándar)</div>', unsafe_allow_html=True)
+                enable_ai_c = st.checkbox("Activar análisis reputacional con IA + Jev para el tono",
+                                          value=True, key="enable_ai_custom")
+                cc_brand, cc_alias = st.columns(2)
+                with cc_brand:
+                    brand_c = st.text_input(
+                        "Marca o Cliente Principal*",
+                        placeholder="Ej: Universidad de Antioquia, Ecopetrol, Bancolombia",
+                        key="brand_custom",
+                        help="El tono se mide solo sobre esta marca, sus voceros y sus alias.")
+                with cc_alias:
+                    alias_c = st.text_input(
+                        "Alias o términos relacionados (separados por coma o punto y coma)",
+                        placeholder="Ej: UdeA; Alma Mater; rectoría; la universidad",
+                        key="alias_custom",
+                        help="Variantes del nombre que deban atribuirse al cliente.")
+                cc_crit, cc_voc = st.columns([3, 2])
+                with cc_crit:
+                    criterio_c = st.radio("Criterio del tono", list(CRITERIOS_TONO.keys()), index=0,
+                                          key="criterio_custom_radio")
+                with cc_voc:
+                    voceros_c = st.text_input(
+                        "Vocero(s) de la marca (opcional)",
+                        placeholder="Ej: Gonzalo Moreno; el rector",
+                        key="voceros_custom",
+                        help="Personas cuyo nombre se atribuye a la marca para el tono.")
+                _OPCIONES_TEMA_C = [
+                    "Solo Tono_IA + Subtema_IA (rápido)",
+                    "Agregar Tema_IA con IA (etapa adicional)",
+                ]
+                modo_tema_c = st.radio("Columna Tema_IA", _OPCIONES_TEMA_C, index=0, key="modo_tema_custom")
+                prominencia_c = st.checkbox(
+                    "Agregar columna Prominencia (presencia de la marca)",
+                    value=False, key="prominencia_custom",
+                    help="Igual que en la pestaña estándar: métrica determinista que va al final, "
+                         "después de «Contexto analizado».")
+
+                if st.button("▶ Iniciar Limpieza y Análisis", use_container_width=True,
+                             type="primary", key="btn_custom"):
+                    if f2 is None:
+                        st.error("Por favor, sube un archivo Excel.")
+                    elif not _cols_custom:
+                        st.error("No se pudieron leer las columnas del archivo.")
+                    elif sel_titulo == sel_cuerpo:
+                        st.error("La columna de título y la de cuerpo deben ser diferentes.")
+                    elif enable_ai_c and not (brand_c or "").strip():
+                        st.error("Por favor indica la Marca o Cliente Principal para realizar el análisis enfocado.")
+                    else:
+                        api_key = st.secrets.get("OPENAI_API_KEY")
+                        typesafe_api_key = st.secrets.get("TYPESAFE_API_KEY")
+                        if enable_ai_c and not api_key:
+                            st.error("❌ Falta configurar OPENAI_API_KEY en los Secrets de Streamlit: se usa para subtema y tema.")
+                            st.stop()
+                        if enable_ai_c and not typesafe_api_key:
+                            st.warning("Sin TYPESAFE_API_KEY la verificación de temas con Jev queda desactivada "
+                                       "(es opcional); el tono, el subtema y el tema se generan igual con la API de OpenAI.")
+                        try:
+                            blob_custom = renombrar_columnas_xlsx(f2.getvalue(), sel_titulo, sel_cuerpo)
+                        except ValueError as exc:
+                            st.error(str(exc))
+                            st.stop()
+                        aliases_c = [a.strip() for a in re.split(r"[,;]", alias_c or "") if a.strip()]
+                        st.session_state["pending_dossier"] = blob_custom
+                        st.session_state["pending_meta"] = {
+                            "name": f2.name,
+                            "size": len(blob_custom),
+                        }
+                        if enable_ai_c or prominencia_c:
                             st.session_state["pending_ai_config"] = {
-                                "enabled": bool(enable_ai),
-                                "brand": brand_input.strip(),
-                                "aliases": aliases_parsed,
-                                "voceros": [v.strip() for v in re.split(r"[,;]", voceros_input) if v.strip()],
-                                "criterio": criterio,
-                                "criterio_texto": criterio_texto,
-                                "taxonomia": tax_eff,
-                                "cubos_objetivo": int(cubos_objetivo_input),
-                                "votos": int(votos_input),
-                                "incluir_tema": modo_tema_input == _OPCIONES_TEMA[1],
-                                "incluir_prominencia": bool(prominencia_chk),
+                                "enabled": bool(enable_ai_c),
+                                "brand": (brand_c or "").strip(),
+                                "aliases": aliases_c,
+                                "voceros": [v.strip() for v in re.split(r"[,;]", voceros_c or "") if v.strip()],
+                                "criterio": criterio_c,
+                                "criterio_texto": "",
+                                "taxonomia": "Automática según el archivo (recomendada)",
+                                "cubos_objetivo": 16,
+                                "votos": 2,
+                                "incluir_tema": modo_tema_c == _OPCIONES_TEMA_C[1],
+                                "incluir_prominencia": bool(prominencia_c),
                                 "permitir_cubos_nuevos": True,
-                                "tam_lote": int(tam_lote_input),
-                                "workers": int(workers_input),
-                                "umbral_titulo": int(umbral_titulo_input),
-                                "umbral_cuerpo": int(umbral_cuerpo_input),
-                                "api_key": api_key if enable_ai else None,
-                                "typesafe_api_key": typesafe_api_key if enable_ai else None,
+                                "tam_lote": 10,
+                                "workers": 8,
+                                "umbral_titulo": 92,
+                                "umbral_cuerpo": 85,
+                                "api_key": api_key if enable_ai_c else None,
+                                "typesafe_api_key": typesafe_api_key if enable_ai_c else None,
                                 "typesafe_model": "jev-latest",
-                                "model": modelo_input,
+                                "model": "gpt-4.1-nano-2025-04-14",
                                 "historial_dir": st.secrets.get("HISTORIAL_DIR"),
-                                "tone_pkl_bytes": tone_bytes,
-                                "theme_pkl_bytes": theme_bytes,
+                                "tone_pkl_bytes": None,
+                                "theme_pkl_bytes": None,
                             }
                         else:
                             st.session_state["pending_ai_config"] = None
-
                         st.session_state["procesando"] = True
                         st.session_state["processing_complete"] = False
                         st.rerun()
