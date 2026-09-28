@@ -679,11 +679,18 @@ def construir_ai_config_custom(brand, alias_txt, voceros_txt, criterio,
                                incluir_tema, incluir_prominencia, enable_ai,
                                api_key, typesafe_api_key, historial_dir,
                                tone_pkl_bytes, theme_pkl_bytes,
-                               model="gpt-4.1-nano-2025-04-14"):
+                               model="gpt-4.1-nano-2025-04-14",
+                               criterio_texto="", taxonomia=None,
+                               cubos_objetivo=16, votos=2, tam_lote=10,
+                               workers=8, umbral_titulo=92, umbral_cuerpo=85):
     """ai_config de la pestaña "Columnas personalizadas" (v4.27/v4.28).
 
     Misma forma que el de la pestaña estándar. Devuelve None si no hay
     análisis que hacer (sin IA, sin PKL y sin prominencia).
+
+    v4.34: paridad total con la pestaña estándar — criterio personalizado,
+    taxonomía (dict de JSON o nombre), cubos/votos/lote/workers/umbrales y
+    modelo son parámetros en vez de valores fijos.
     """
     if not (enable_ai or incluir_prominencia or tone_pkl_bytes or theme_pkl_bytes):
         return None
@@ -693,17 +700,18 @@ def construir_ai_config_custom(brand, alias_txt, voceros_txt, criterio,
         "aliases": [a.strip() for a in re.split(r"[,;]", alias_txt or "") if a.strip()],
         "voceros": [v.strip() for v in re.split(r"[,;]", voceros_txt or "") if v.strip()],
         "criterio": criterio,
-        "criterio_texto": "",
-        "taxonomia": "Automática según el archivo (recomendada)",
-        "cubos_objetivo": 16,
-        "votos": 2,
+        "criterio_texto": (criterio_texto or "").strip(),
+        "taxonomia": taxonomia if taxonomia is not None
+                     else "Automática según el archivo (recomendada)",
+        "cubos_objetivo": int(cubos_objetivo),
+        "votos": int(votos),
         "incluir_tema": bool(incluir_tema),
         "incluir_prominencia": bool(incluir_prominencia),
         "permitir_cubos_nuevos": True,
-        "tam_lote": 10,
-        "workers": 8,
-        "umbral_titulo": 92,
-        "umbral_cuerpo": 85,
+        "tam_lote": int(tam_lote),
+        "workers": int(workers),
+        "umbral_titulo": int(umbral_titulo),
+        "umbral_cuerpo": int(umbral_cuerpo),
         "api_key": api_key if enable_ai else None,
         "typesafe_api_key": typesafe_api_key if enable_ai else None,
         "typesafe_model": "jev-latest",

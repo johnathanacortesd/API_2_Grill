@@ -81,11 +81,13 @@ class TestCopiaRealSeRepara(unittest.TestCase):
         self.assertNotIn('?', nuevo)
         self.assertNotIn('¿', nuevo)
 
-    def test_cita_parcial_en_etiqueta_nominal_no_se_toca(self):
-        # La cita es parte informativa de una etiqueta válida: se conserva.
+    def test_cita_parcial_en_etiqueta_nominal_se_descomilla(self):
+        # v4.34 (regla del usuario: el subtema jamás lleva comillas): la cita
+        # parcial informativa se conserva pero sin las comillas.
         s = "Lanzamiento de álbum 'Arriba La L'"
         t = "Ladrones supera la adversidad y consolida su sonido con 'Arriba La L'"
-        self.assertEqual(A.reparar_subtema_determinista(s, t), '')
+        self.assertEqual(A.reparar_subtema_determinista(s, t),
+                         "Lanzamiento de álbum Arriba La L")
 
     def test_sin_titulo_no_hay_reparacion(self):
         self.assertEqual(A.reparar_subtema_determinista("Algo", ""), '')

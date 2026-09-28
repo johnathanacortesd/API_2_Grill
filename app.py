@@ -826,6 +826,25 @@ def main():
                         placeholder="Ej: Gonzalo Moreno; el rector",
                         key="voceros_custom",
                         help="Personas cuyo nombre se atribuye a la marca para el tono.")
+                    tax_nombre_c = st.selectbox(
+                        "Lista de Temas",
+                        ["Automática según el archivo (recomendada)",
+                         "Gobierno territorial (21 cubos)",
+                         "Gremio o sector (16 cubos)"],
+                        index=0,
+                        key="tax_nombre_custom",
+                        help="Por defecto los Temas se arman bottom-up en ESTE lote. "
+                             "Si subes un PKL de tema, se usan las clases de ese modelo. "
+                             "Las listas fijas o un JSON solo se usan como nombres candidatos.",
+                    )
+                criterio_custom_c = st.text_area(
+                    "Criterio de tono personalizado (opcional)",
+                    key="criterio_custom_text_custom",
+                    height=80,
+                    placeholder="Si lo llenas, este texto reemplaza al criterio del catálogo para este cliente.",
+                    help="Texto libre con la regla de tono propia del cliente. Tiene prioridad sobre "
+                         "el criterio seleccionado arriba.",
+                )
                 _OPCIONES_TEMA_C = [
                     "Solo Tono_IA + Subtema_IA (rápido)",
                     "Agregar Tema_IA con IA (etapa adicional)",
@@ -836,6 +855,48 @@ def main():
                     value=False, key="prominencia_custom",
                     help="Igual que en la pestaña estándar: métrica determinista que va al final, "
                          "después de «Contexto analizado».")
+
+                with st.expander("⚙ Ajustes finos del análisis (opcional)"):
+                    cca, ccb, ccc, ccd = st.columns(4)
+                    with cca:
+                        tam_lote_c = st.slider("Grupos por llamada", 5, 30, 10, 1,
+                                               key="tam_lote_custom",
+                                               help="10 es un buen punto de partida.")
+                    with ccb:
+                        workers_c = st.slider("Llamadas en paralelo", 1, 16, 8, 1,
+                                               key="workers_custom",
+                                               help="Sube para dossiers grandes; más hilos, más velocidad.")
+                    with ccc:
+                        umbral_titulo_c = st.slider("Similitud de titulares (%)", 75, 100, 92, 1,
+                                                    key="umbral_titulo_custom",
+                                                    help="Bájalo para fusionar la misma noticia publicada por "
+                                                         "muchos medios con titulares distintos.")
+                    with ccd:
+                        umbral_cuerpo_c = st.slider("Similitud de resúmenes (%)", 70, 100, 85, 1,
+                                                    key="umbral_cuerpo_custom")
+                    tax_file_c = st.file_uploader(
+                        "Reutilizar la lista de Temas de un cliente (JSON, opcional)",
+                        type=["json"], key="tax_json_custom",
+                        help="Si subes la lista que descargaste de un período anterior del mismo cliente, "
+                             "los Temas se mantienen idénticos entre meses (mejor para comparar).",
+                    )
+                    cubos_objetivo_c = st.slider("Cubos objetivo cuando la lista es automática", 8, 25, 16, 1,
+                                                 key="cubos_objetivo_custom")
+                    votos_c = st.slider(
+                        "Verificaciones del tono por grupo", 1, 3, 2, 1,
+                        key="votos_custom",
+                        help="Cada grupo se etiqueta N veces y gana la mayoría; un empate cae a Neutro. "
+                             "Con 2 se reducen los vaivenes de los modelos pequeños; con 3 sube el costo "
+                             "una vez más.")
+                    modelo_sel_c = st.selectbox(
+                        "Modelo de IA",
+                        options=["gpt-4.1-nano-2025-04-14", "gpt-6-luna", "gpt-6-sol"],
+                        index=0,
+                        key="modelo_custom",
+                        help="gpt-6-luna (lanzado 2026-09-22) es el más rápido y económico "
+                             "($0.10 por 1M tokens de entrada): ideal para dossiers de alto volumen. "
+                             "gpt-6-sol es más capaz pero más costoso.",
+                    )
 
                 st.markdown('<div class="sec-label">3. Modelos PKL del cliente (opcional)</div>', unsafe_allow_html=True)
                 st.caption("Igual que la pestaña estándar: puedes subir el PKL de tono, el de tema, "
@@ -890,6 +951,19 @@ def main():
                             "name": f2.name,
                             "size": len(blob_custom),
                         }
+                        # v4.34: precedencia de la lista de Temas igual que la estándar
+                        # (JSON subido > opción elegida; sin perfiles en esta pestaña).
+                        tax_cargada_c = None
+                        if tax_file_c is not None:
+                            try:
+                                tax_cargada_c = json.loads(tax_file_c.getvalue().decode("utf-8"))
+                                if not isinstance(tax_cargada_c, dict) or not tax_cargada_c.get("temas"):
+                                    raise ValueError("el JSON debe traer la clave 'temas' con la lista de cubos")
+                                tax_cargada_c.setdefault("reglas", [])
+                            except Exception as exc:
+                                st.error(f"La lista de Temas (JSON) no es válida: {exc}")
+                                st.stop()
+                        tax_eff_c = tax_cargada_c if tax_cargada_c is not None else tax_nombre_c
                         st.session_state["pending_ai_config"] = construir_ai_config_custom(
                             brand_c, alias_c, voceros_c, criterio_c,
                             incluir_tema=(modo_tema_c == _OPCIONES_TEMA_C[1]),
@@ -900,6 +974,15 @@ def main():
                             historial_dir=st.secrets.get("HISTORIAL_DIR"),
                             tone_pkl_bytes=tone_bytes_c,
                             theme_pkl_bytes=theme_bytes_c,
+                            model=modelo_sel_c,
+                            criterio_texto=criterio_custom_c,
+                            taxonomia=tax_eff_c,
+                            cubos_objetivo=int(cubos_objetivo_c),
+                            votos=int(votos_c),
+                            tam_lote=int(tam_lote_c),
+                            workers=int(workers_c),
+                            umbral_titulo=int(umbral_titulo_c),
+                            umbral_cuerpo=int(umbral_cuerpo_c),
                         )
                         # v4.32: sin IA no hay Subtema_IA (ningún PKL lo genera).
                         if not enable_ai_c and (tone_bytes_c or theme_bytes_c):

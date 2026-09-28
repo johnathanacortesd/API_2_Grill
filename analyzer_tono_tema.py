@@ -632,7 +632,13 @@ def validar(sub_tema, tono, fuentes, min_pal=MIN_PAL, max_pal=MAX_PAL,
     # no copia ("Medicina multimodal y personalizada" ← "La medicina que viene
     # será multimodal y personalizada…"). El titular es fuentes[0].
     titulo = (fuentes or [''])[0] or ''
-    if _con_copia and _subtema_copia_titular(sub_tema, titulo) \
+    # v4.34: identidad total con el titular (normalizada) SIEMPRE es copia,
+    # aunque el titular "parezca etiqueta" (nominal corto). La excepción de
+    # v4.21 (etiqueta válida que coincide con PARTE del titular) solo vale
+    # para solapamiento parcial; el subtema jamás es el titular idéntico.
+    if _con_copia and titulo and nz(sub_tema) == nz(titulo):
+        p.append('copia_titular')
+    elif _con_copia and _subtema_copia_titular(sub_tema, titulo) \
             and not _es_etiqueta_valida(sub_tema):
         p.append('copia_titular')
     # Vago: solo evento genérico + sujeto genérico, sin objeto distintivo
@@ -2144,15 +2150,34 @@ def reparar_subtema_determinista(sub_tema: str, titulo: str) -> str:
     t = str(titulo or '').strip()
     if not s or not t:
         return ''
+    # v4.34: identidad total con el titular es mecánica (aunque el titular
+    # parezca etiqueta válida: el subtema jamás es el titular idéntico).
+    identico = nz(s) == nz(t)
     mecanico = (
         _subtema_envuelto_en_cita(s)
         or s.rstrip().endswith('?')
+        or identico
         or (_subtema_copia_titular(s, t) and not _es_etiqueta_valida(s))
     )
     if not mecanico:
+        # v4.34: cita parcial («Anuncio de "paz total" en pensiones»): se
+        # quitan las comillas conservando las palabras; si el resultado
+        # valida limpio (y no es el titular), es la reparación.
+        s_sin = re.sub(r'\s+', ' ', re.sub(r'["\'«»“”‘’]', '', s)).strip()
+        if s_sin and s_sin != s and nz(s_sin) != nz(t):
+            pr = validar(s_sin, 'Neutro', [t])
+            if not [x for x in pr if not x.startswith('revisar_anclaje')]:
+                return s_sin
         return ''
     nuevo = _subtema_desde_titulo(t)
     if not nuevo or nuevo == 'Hecho informativo':
+        return ''
+    # v4.34: solo en el caso de identidad, si la derivación es idéntica al
+    # titular (titular nominal corto), no hay reformulación honesta posible
+    # sin LLM: se deja a la vuelta de reparación («Si dice copia_titular,
+    # reformula»). En los demás casos (cita, pregunta) la derivación del
+    # titular sí es la reparación aunque coincida con él.
+    if identico and nz(nuevo) == nz(t):
         return ''
     pr = validar(nuevo, 'Neutro', [t])
     if [x for x in pr if not x.startswith('revisar_anclaje')]:

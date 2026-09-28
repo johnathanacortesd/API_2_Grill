@@ -1067,3 +1067,48 @@ Fix (pipeline.py + app.py, solo pestaña 2; la estándar queda intacta):
   conserva y que LINK/WEB salen como «Link» con hipervínculo real; más uno
   que confirma que sin el flag el esquema fijo de la estándar sigue
   mandando).
+
+## 40. v4.34 — El subtema jamás es el titular idéntico ni lleva comillas + paridad de la pestaña 2 (2026-09-28)
+
+Dos frentes, un mismo reporte del usuario («subtemas igual al título» y
+«subtemas con comillas»; la pestaña 1 estaba bien y la 2 no replicaba su
+precisión):
+
+1. Hueco real en el validador (general, ambas pestañas). v4.21 distinguía
+   «etiqueta válida que coincide con PARTE del titular» de «titular copiado»,
+   pero la identidad TOTAL normalizada pasaba limpia cuando el titular
+   «parecía etiqueta» (nominal corto): `validar` devolvía [] y el subtema
+   quedaba igual al título. Ahora:
+   - `validar`: `nz(sub_tema) == nz(titulo)` (normalizado: minúsculas, sin
+     tildes ni puntuación) SIEMPRE marca 'copia_titular'.
+   - `reparar_subtema_determinista`: la identidad es mecánica. Título largo
+     → rótulo honesto más corto vía `_subtema_desde_titulo` (validado, nunca
+     idéntico); título nominal corto → '' para que la vuelta LLM reformule
+     («Si dice copia_titular, reformula» ya estaba en el prompt).
+   - Cita parcial («Anuncio de "paz total" en pensiones»): antes se marcaba
+     'caracter_marcador' pero la reparación determinista la ignoraba y
+     dependía de la vuelta LLM. Ahora se descomilla conservando las palabras
+     («Anuncio de paz total en pensiones») si el resultado valida limpio.
+     La cita total sigue por `_subtema_desde_titulo`.
+   - El solapamiento parcial de una etiqueta válida («Estado de salud de
+     Yamid Amat» en «Actualización sobre el estado de salud…») sigue sin
+     marcarse: la excepción de v4.21 se preserva.
+
+2. Paridad de configuración de la pestaña 2 (el rótulo decía «igual que la
+   pestaña estándar» pero era un subconjunto fijo: criterio sin texto
+   personalizado, taxonomía forzada a automática, cubos 16, votos 2, lote 10,
+   workers 8, umbrales 92/85 y modelo fijo). Ahora la pestaña 2 expone los
+   mismos controles: criterio de tono personalizado (text area), lista de
+   Temas (selectora + JSON opcional, precedencia JSON > elegida) y el
+   expansor «⚙ Ajustes finos» (grupos por llamada, llamadas en paralelo,
+   similitud de titulares/resúmenes, cubos objetivo, verificaciones de tono
+   y modelo). `construir_ai_config_custom()` recibe todos esos parámetros
+   (con los mismos defaults de antes, así que el comportamiento por defecto
+   no cambia) y la pestaña estándar queda intacta.
+
+- Tests nuevos: `tests/test_v434_subtema_identidad.py` (9 pruebas: identidad
+  marcada incl. normalizada, parcial válido intacto, reparación de identidad
+  larga/corta, descomillado parcial, cita total sin comillas, y paridad de
+  parámetros + defaults del config custom). Se actualizó
+  `test_cita_parcial_en_etiqueta_nominal_no_se_toca` (v4.21) al nuevo
+  comportamiento exigido por el usuario (jamás comillas).
