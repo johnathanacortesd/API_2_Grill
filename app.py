@@ -755,6 +755,10 @@ def main():
                             else:
                                 st.session_state["pending_ai_config"] = None
 
+                            # v4.32: sin IA no hay Subtema_IA (ningún PKL lo genera).
+                            if not enable_ai and (tone_bytes or theme_bytes):
+                                st.warning("⚠️ IA desactivada: la columna Subtema_IA no se genera "
+                                           "(los PKL solo cubren tono y/o tema).")
                             st.session_state["procesando"] = True
                             st.session_state["processing_complete"] = False
                             st.rerun()
@@ -767,7 +771,9 @@ def main():
                 st.markdown('<div class="sec-label">1. Sube el archivo y elige las columnas</div>', unsafe_allow_html=True)
                 st.caption("Usa esta pestaña cuando las columnas de tu archivo no se llamen «Título» ni "
                            "«Resumen - Aclaracion». El análisis de tono, tema y subtema es el mismo; solo cambia "
-                           "qué columnas se usan como título y cuerpo (CuerpoEs).")
+                           "qué columnas se usan como título y cuerpo (CuerpoEs). El resultado conserva todas "
+                           "las columnas originales de tu archivo —incluidos los hipervínculos de la palabra "
+                           "«Link»— y agrega al final las columnas del análisis.")
                 f2 = st.file_uploader("Dossier con columnas personalizadas", type=["xlsx"],
                                       label_visibility="collapsed", key="f2_columnas")
                 _cols_custom = leer_columnas_xlsx(f2.getvalue()) if f2 is not None else []
@@ -895,6 +901,10 @@ def main():
                             tone_pkl_bytes=tone_bytes_c,
                             theme_pkl_bytes=theme_bytes_c,
                         )
+                        # v4.32: sin IA no hay Subtema_IA (ningún PKL lo genera).
+                        if not enable_ai_c and (tone_bytes_c or theme_bytes_c):
+                            st.warning("⚠️ IA desactivada: la columna Subtema_IA no se genera "
+                                       "(los PKL solo cubren tono y/o tema).")
                         st.session_state["procesando"] = True
                         st.session_state["processing_complete"] = False
                         st.rerun()

@@ -1002,3 +1002,68 @@ Pensional/Garantía de pagos pensionales y no hay Negativos que proteger).
   reales TP1/TP2, anti-casos nombramiento-vs-renuncia, una-sola-palabra,
   fecha-no-es-puente, Negativo preservado, empate→más largo, duplicadas,
   sin tema).
+
+## 38. v4.32 — Modo solo-PKL: Tema_IA no se pierde y Subtema_IA no sale vacío (2026-09-28)
+
+Bug reportado: en la pestaña «Columnas personalizadas», con PKL de tono +
+PKL de tema subidos, IA desactivada y el radio de Tema_IA en su defecto
+(«Solo Tono_IA + Subtema_IA»), el xlsx salía con Tono_IA lleno, Subtema_IA
+vacío («-») y SIN columna Tema_IA, aunque el PKL de tema había clasificado
+todo.
+
+Causa (preexistente, no de v4.31): en `process_dossier` hay dos caminos.
+Con IA (`has_ai`), `_ai_extra_con_pkl` fuerza `incluir_tema=True` cuando hay
+PKL de tema. En el camino solo-PKL (`has_pkl`, sin IA) se leía el ai_config
+crudo para `cols_to_export` y la columna Tema_IA se eliminaba aunque el
+modelo la hubiera clasificado. Además, sin IA el subtema nunca se genera
+(ningún PKL lo produce: `apply_pkl_classifiers` lo deja en «-»), así que la
+columna salía vacía.
+
+Fix (pipeline.py + app.py, general para ambas pestañas):
+- `ai_extra = _ai_extra_con_pkl(ai_config, theme_model)` se calcula ANTES
+  de la bifurcación y se usa para `cols_to_export` en ambos caminos: con PKL
+  de tema siempre hay columna Tema_IA.
+- `output_columns_for_export(..., include_subtema=False)` omite Subtema_IA;
+  `process_dossier` pasa `include_subtema=has_ai` (sin IA no hay subtema:
+  no se exporta una columna vacía).
+- Aviso en la UI de ambas pestañas al iniciar con PKLs e IA desactivada:
+  «la columna Subtema_IA no se genera (los PKL solo cubren tono y/o tema)».
+
+- Tests nuevos: `tests/test_v432_pkl_solo.py` (5 pruebas, incluyendo
+  end-to-end de `process_dossier` en modo solo-PKL: con tono+tema hay
+  Tono_IA y Tema_IA llenos y no hay Subtema_IA; con solo tono no hay
+  Tema_IA).
+
+## 39. v4.33 — Pestaña "Columnas personalizadas": conserva el xlsx como está (2026-09-28)
+
+Pedido del usuario: en la pestaña 2 el resultado debe conservar el xlsx como
+está —todas las columnas originales en su orden, incluida la data de la
+primera columna (p. ej. «ID») y los hipervínculos de la palabra «Link» en las
+columnas de enlaces— y agregar al final las columnas nuevas del análisis.
+
+Causa: `generate_output_excel` solo exportaba `BASE_OUTPUT_COLUMNS` (+ IA),
+un esquema fijo de la pestaña estándar. Cualquier columna personalizada
+(«ID», «LINK», «WEB», etc.) se recortaba en silencio; además los encabezados
+que no coincidían con el esquema salían vacíos.
+
+Fix (pipeline.py + app.py, solo pestaña 2; la estándar queda intacta):
+- `construir_ai_config_custom()` marca `"preservar_columnas": True`.
+- `process_dossier` captura `columnas_entrada` justo después de
+  `load_dossier_dataframe` (antes de normalizar, que puede agregar columnas
+  como «Tipo de Medio») y, si el flag está activo, usa
+  `_columnas_preservadas()`: columnas originales en su orden + al final
+  Tono_IA / Tema_IA / Subtema_IA (según include_tema/include_subtema),
+  «Contexto analizado» y «Prominencia».
+- Los hipervínculos ya viajaban en los dicts {"value","url"} por todo el
+  pipeline; el exportador los reescribe como palabra «Link» clicable en
+  cualquier columna (formato azul subrayado estándar).
+- Aviso en la UI de la pestaña 2: el resultado conserva todas las columnas
+  originales —incluidos los hipervínculos de «Link»— y agrega las del
+  análisis al final.
+
+- Tests nuevos: `tests/test_v433_preservar_columnas.py` (7 pruebas: orden y
+  agregados de `_columnas_preservadas`, dedup, sin IA/sin subtema, y dos
+  end-to-end con xlsx sintético estilo Colpensiones verificando que ID se
+  conserva y que LINK/WEB salen como «Link» con hipervínculo real; más uno
+  que confirma que sin el flag el esquema fijo de la estándar sigue
+  mandando).

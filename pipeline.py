@@ -57,12 +57,15 @@ CONTEXTO_ANALIZADO_COL = "Contexto analizado"
 
 
 def output_columns_for_export(include_ai: bool = False, include_tema: bool = True,
-                              include_prominencia: bool = False) -> List[str]:
+                              include_prominencia: bool = False,
+                              include_subtema: bool = True) -> List[str]:
     """Columnas del xlsx de salida.
 
     Con IA/PKL: inserta Tono_IA, Tema_IA, Subtema_IA después de Audiencia y deja
     Contexto analizado como última columna. Sin IA: solo BASE_OUTPUT_COLUMNS.
     v4.8: con include_tema=False se omite la columna Tema_IA (solo tono + subtema).
+    v4.32: con include_subtema=False se omite Subtema_IA (modo solo-PKL sin IA:
+    el subtema nunca lo genera un PKL y la columna saldría vacía).
     v4.23: con include_prominencia=True se agrega la columna Prominencia
     (métrica determinista de presencia de marca, sin LLM).
     v4.26: la columna Prominencia va al final del todo, después de
@@ -79,11 +82,44 @@ def output_columns_for_export(include_ai: bool = False, include_tema: bool = Tru
             cols.insert(audiencia_idx + 1 + offset, col)
     if not include_tema and "Tema_IA" in cols:
         cols.remove("Tema_IA")
+    if not include_subtema and "Subtema_IA" in cols:
+        cols.remove("Subtema_IA")
     if CONTEXTO_ANALIZADO_COL in cols:
         cols = [c for c in cols if c != CONTEXTO_ANALIZADO_COL]
     cols.append(CONTEXTO_ANALIZADO_COL)
     # v4.26: la prominencia va al final, después de "Contexto analizado".
     if include_prominencia:
+        cols.append("Prominencia")
+    return cols
+
+
+def _columnas_preservadas(columnas_entrada, include_ai: bool = False,
+                          include_tema: bool = True,
+                          include_subtema: bool = True,
+                          include_prominencia: bool = False) -> List[str]:
+    """Columnas de salida para la pestaña "Columnas personalizadas" (v4.33).
+
+    Conserva el xlsx como está: todas las columnas originales en su orden
+    (incluida la primera columna y las de enlaces con hipervínculos, que el
+    exportador reescribe como palabra "Link" clicable) y al final agrega las
+    columnas nuevas del análisis. Nunca usa el esquema fijo
+    BASE_OUTPUT_COLUMNS, que recortaba columnas personalizadas.
+    """
+    cols = [c for c in (columnas_entrada or []) if c]
+    vistos = set(cols)
+    if include_ai:
+        for col in ("Tono_IA", "Tema_IA", "Subtema_IA"):
+            if col == "Tema_IA" and not include_tema:
+                continue
+            if col == "Subtema_IA" and not include_subtema:
+                continue
+            if col not in vistos:
+                cols.append(col)
+                vistos.add(col)
+        if CONTEXTO_ANALIZADO_COL not in vistos:
+            cols.append(CONTEXTO_ANALIZADO_COL)
+            vistos.add(CONTEXTO_ANALIZADO_COL)
+    if include_prominencia and "Prominencia" not in vistos:
         cols.append("Prominencia")
     return cols
 
@@ -675,6 +711,10 @@ def construir_ai_config_custom(brand, alias_txt, voceros_txt, criterio,
         "historial_dir": historial_dir,
         "tone_pkl_bytes": tone_pkl_bytes,
         "theme_pkl_bytes": theme_pkl_bytes,
+        # v4.33: la pestaña "Columnas personalizadas" conserva el xlsx como
+        # está (todas las columnas originales en su orden) y agrega al final
+        # las columnas del análisis, en vez del esquema fijo de la estándar.
+        "preservar_columnas": True,
     }
 
 
@@ -1019,6 +1059,10 @@ def process_dossier(
 
     df_normalized = load_dossier_dataframe(file_bytes, progress=progress)
     del file_bytes
+    # v4.33: orden de columnas tal como venían en el archivo (antes de
+    # normalizar, que puede agregar columnas como "Tipo de Medio"). Solo se
+    # usa en la pestaña "Columnas personalizadas" (preservar_columnas=True).
+    columnas_entrada = [c for c in list(df_normalized.columns) if c]
     df_normalized = normalize_dossier_dataframe(df_normalized, region_map, internet_map, progress=progress)
 
     medios_sin_region = []
@@ -1040,12 +1084,16 @@ def process_dossier(
     tone_model, theme_model = _load_optional_pkl_models(ai_config)
     has_pkl = tone_model is not None or theme_model is not None
     analisis = {}
+    # v4.32: el forzado de incluir_tema por PKL de tema (_ai_extra_con_pkl)
+    # aplica en AMBOS caminos (con IA y solo-PKL). Antes, en modo solo-PKL
+    # se leía el ai_config crudo y la columna Tema_IA desaparecía aunque el
+    # PKL de tema hubiera clasificado todo (bug reportado 2026-09-28).
+    ai_extra = _ai_extra_con_pkl(ai_config, theme_model)
 
     if has_ai:
         # v4.13: el PKL de tema del cliente manda. La clasificación es local
         # (sin llamadas LLM ni demora), así que siempre se aplica aunque el
         # checkbox "Generar columna Tema_IA" venga desmarcado.
-        ai_extra = _ai_extra_con_pkl(ai_config, theme_model)
         emit_progress(progress, 70, "Iniciando análisis de Tono, Tema y Sub-tema…")
         rows = enrich_rows_with_ai(
             rows=rows,
@@ -1104,9 +1152,23 @@ def process_dossier(
 
     cols_to_export = output_columns_for_export(
         include_ai=has_ai or has_pkl,
-        include_tema=(ai_extra if has_ai else (ai_config or {})).get("incluir_tema", True),
+        include_tema=ai_extra.get("incluir_tema", True),
         include_prominencia=_incluir_prominencia,
+        # v4.32: sin IA no hay subtema (ningún PKL lo genera); la columna
+        # saldría vacía ("-"), así que no se exporta en modo solo-PKL.
+        include_subtema=has_ai,
     )
+    # v4.33: pestaña "Columnas personalizadas" — conservar el xlsx como está
+    # (todas las columnas originales, incluidos ID inicial e hipervínculos de
+    # la palabra "Link") y agregar al final las columnas del análisis.
+    if (ai_config or {}).get("preservar_columnas"):
+        cols_to_export = _columnas_preservadas(
+            columnas_entrada,
+            include_ai=has_ai or has_pkl,
+            include_tema=ai_extra.get("incluir_tema", True),
+            include_subtema=has_ai,
+            include_prominencia=_incluir_prominencia,
+        )
 
     emit_progress(progress, 94, "✓ Estructuración finalizada. Generando archivo Excel…")
 
