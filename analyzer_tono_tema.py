@@ -425,8 +425,21 @@ def construir_grupos(
         T = np.maximum(t1, np.maximum(t2, t3))
         for i in range(len(base)):
             for j in np.where(T[i] >= umbral_titulo / 100.0)[0]:
-                if j > i and _puente_distintivo(base[i]['ctit'], base[j]['ctit'],
-                                               MIN_PALABRAS_TITULO):
+                if j <= i:
+                    continue
+                # v4.30: titulares casi idénticos (scorers sensibles a orden y
+                # longitud) se agrupan con solo 2 palabras de contenido en
+                # común, aunque sean omnipresentes en el dossier (p. ej. la
+                # marca). Regla del usuario: título igual o similar => misma
+                # noticia => mismo tono/tema/subtema, aunque el cuerpo
+                # difiera. El puente distintivo de 3 palabras se conserva
+                # para la señal laxa token_set_ratio (subconjuntos), que no
+                # distingue diferencias de longitud.
+                if max(t1[i, j], t2[i, j]) >= umbral_titulo / 100.0 and \
+                        len(base[i]['ctit'] & base[j]['ctit']) >= 2:
+                    uni(i, j)
+                elif _puente_distintivo(base[i]['ctit'], base[j]['ctit'],
+                                        MIN_PALABRAS_TITULO):
                     uni(i, j)
 
         # --- Señal de bolsa de palabras (orden-independiente): dos noticias
@@ -4104,7 +4117,34 @@ def volcar_analisis_en_filas(rows: List[dict], mapa: Dict[int, int],
     No reescribe clases del cliente con el gate de frases del lote.
     `incluir_tema=False` (v4.8): deja Tema_IA vacío y omite el fallback, porque
     la columna no se exporta.
+
+    v4.30: el fallback de Tema_IA (`_asegurar_tema_texto`) se calcula UNA vez
+    por grupo —con el título representante—, no por fila: dos noticias del
+    mismo grupo no pueden quedar con distinto Tema_IA por usar cada una su
+    propio titular.
     """
+    # --- tema final por grupo (una sola vez por grupo) ---
+    tema_por_grupo: Dict[int, str] = {}
+    if incluir_tema:
+        filas_por_grupo: Dict[int, List[int]] = defaultdict(list)
+        for _i, _gid in mapa.items():
+            if _gid:
+                filas_por_grupo[_gid].append(_i)
+        for _gid, _idxs in filas_por_grupo.items():
+            _t = temas.get(_gid) or ''
+            _rep = rows[min(_idxs)]
+            _rep_titulo = _titulo_fila(_rep, {})
+            _falta = not _tema_util(_t)
+            _copia = _tema_copia_o_prefijo_titulo(_t, [_rep_titulo])
+            if _falta or (_copia and not preservar_tema):
+                _t = _asegurar_tema_texto(
+                    _t,
+                    [str((etiquetas.get(_gid) or {}).get('sub_tema') or '')],
+                    [_rep_titulo],
+                    [_rep.get('Contexto analizado') or _rep.get('CuerpoEs') or ''],
+                )
+            tema_por_grupo[_gid] = _t
+
     for i, row in enumerate(rows):
         if row.get('is_duplicate'):
             row['Tono_IA'] = 'Duplicada'
@@ -4114,19 +4154,8 @@ def volcar_analisis_en_filas(rows: List[dict], mapa: Dict[int, int],
         gid = mapa.get(i)
         e = etiquetas.get(gid, {}) if gid else {}
         row['Tono_IA'] = e.get('tono') or 'Neutro'
-        row['Tema_IA'] = (temas.get(gid) if gid is not None else '') if incluir_tema else ''
+        row['Tema_IA'] = tema_por_grupo.get(gid, '') if incluir_tema else ''
         row['Subtema_IA'] = e.get('sub_tema') or 'Hecho informativo'
-        if not incluir_tema:
-            continue
-        falta = not _tema_util(row['Tema_IA'])
-        copia_titulo = _tema_copia_o_prefijo_titulo(row['Tema_IA'], [_titulo_fila(row, {})])
-        if falta or (copia_titulo and not preservar_tema):
-            row['Tema_IA'] = _asegurar_tema_texto(
-                row['Tema_IA'],
-                [row['Subtema_IA']],
-                [_titulo_fila(row, {})],
-                [row.get('Contexto analizado') or row.get('CuerpoEs') or ''],
-            )
     return rows
 
 

@@ -926,3 +926,28 @@ cuerpo también empieza por "resumen".
 
 - Tests nuevos: `test_sugerir_columna_prioriza_exacta` en
   `tests/test_columnas_custom.py`.
+
+## 36. v4.30 — Título igual o similar => misma noticia (2026-09-28)
+
+Regla del usuario (aplica a pestaña 1 y 2, con PKL o sin PKL): si el título
+es igual o similar, las noticias se agrupan como una sola aunque el CuerpoEs
+difiera mucho, y comparten tono, tema y subtema.
+
+Dos fixes:
+
+1. `construir_grupos` (analyzer_tono_tema.py): titulares casi idénticos
+   (scorers sensibles a orden y longitud >= umbral_titulo) ahora se agrupan
+   con solo 2 palabras de contenido en común, aunque sean omnipresentes en
+   el dossier (p. ej. la marca). Antes se exigían 3 palabras DISTINTIVAS y,
+   como la marca suele ser omnipresente, titulares cortos casi iguales
+   quedaban en grupos separados con distinto subtema. El puente de 3 se
+   conserva para la señal laxa token_set_ratio (subconjuntos), que no
+   distingue longitud: "Ecopetrol" solo no absorbe un titular largo.
+
+2. `volcar_analisis_en_filas`: el fallback de Tema_IA (`_asegurar_tema_texto`)
+   se calcula UNA vez por grupo (título representante), no por fila: dos
+   noticias del mismo grupo ya no pueden quedar con distinto Tema_IA.
+
+- Tests nuevos: `TestTitulosCasiIgualesV430` en
+  `tests/test_tema_subtema_invariantes.py` (3 pruebas: agrupación con marca
+  omnipresente, subconjunto no absorbido, mismo tema en volcado).

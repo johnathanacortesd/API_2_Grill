@@ -734,5 +734,54 @@ class TestTemaNoCopiaTitular(unittest.TestCase):
         )
 
 
+class TestTitulosCasiIgualesV430(unittest.TestCase):
+    """v4.30: título igual o similar => misma noticia => mismo tono/tema/subtema."""
+
+    def _dossier_con_marca_omni(self):
+        # 10 noticias de relleno con la marca en el título: "ecopetrol" supera
+        # el corte de omnipresencia (max(8, 12%)) y NO cuenta para el puente
+        # distintivo del agrupamiento.
+        return [
+            _row("Ecopetrol noticia de relleno número %d sobre operaciones" % i,
+                 "Cuerpo de relleno %d con vocabulario único zeta%d." % (i, i))
+            for i in range(10)
+        ]
+
+    def test_titulos_casi_identicos_se_agrupan_con_marca_omni(self):
+        rows = self._dossier_con_marca_omni()
+        rows.append(_row("Paga Ecopetrol", "Cuerpo A totalmente distinto 111."))
+        rows.append(_row("Ecopetrol paga", "Cuerpo B totalmente distinto 222."))
+        grupos, mapa = construir_grupos(rows, KM, 92, 85)
+        # token_sort=100 con solo 2 palabras en común ({ecopetrol, paga});
+        # antes de v4.30 el puente distintivo ({paga}, 1 palabra) lo impedía.
+        self.assertEqual(mapa[10], mapa[11])
+
+    def test_subconjunto_no_absorbe_titular_largo(self):
+        # "Ecopetrol" solo no se fusiona con un titular largo que la contiene:
+        # token_set_ratio=100 pero los scorers sensibles a longitud << 92.
+        rows = self._dossier_con_marca_omni()
+        rows.append(_row("Ecopetrol", "Cuerpo A."))
+        rows.append(_row("Ecopetrol anuncia plan de inversiones 2026 en La Guajira",
+                         "Cuerpo B totalmente distinto."))
+        grupos, mapa = construir_grupos(rows, KM, 92, 85)
+        self.assertNotEqual(mapa[10], mapa[11])
+
+    def test_mismo_grupo_mismo_tema_en_volcado(self):
+        # v4.30: el fallback de Tema_IA se calcula por grupo (título
+        # representante), no por fila: dos noticias del mismo grupo no pueden
+        # quedar con distinto Tema_IA.
+        rows = [_row("Alcalde anuncia obra vial en el municipio", "Obra vial."),
+                _row("Concejo aprueba presupuesto para infraestructura",
+                     "Presupuesto.")]
+        volcar_analisis_en_filas(
+            rows, {0: 1, 1: 1},
+            {1: {"sub_tema": "Anuncio de obra vial", "tono": "Neutro"}},
+            {},  # sin tema de grupo: se activa el fallback
+        )
+        self.assertEqual(rows[0]["Tema_IA"], rows[1]["Tema_IA"])
+        self.assertEqual(rows[0]["Subtema_IA"], rows[1]["Subtema_IA"])
+        self.assertTrue(rows[0]["Tema_IA"] not in ("", "-"))
+
+
 if __name__ == "__main__":
     unittest.main()
