@@ -2542,6 +2542,160 @@ def unificar_subtemas_noticias_similares(grupos: Sequence[dict], etiquetas: Dict
     return cambios
 
 
+# Palabras de fecha que no sirven como puente entre titulares: los títulos
+# de noticieros («Noticias del 26 de septiembre») comparten fechas con
+# noticias específicas sin ser el mismo hecho.
+_FECHA_TITULO = set(
+    "enero febrero marzo abril mayo junio julio agosto septiembre octubre "
+    "noviembre diciembre lunes martes miercoles jueves viernes sabado "
+    "domingo".split())
+
+
+def _puente_titulos(a: set, b: set) -> int:
+    """Palabras de contenido compartidas que sí distinguen hechos (sin
+    fechas ni números)."""
+    return len((a & b) - _FECHA_TITULO -
+               {w for w in (a & b) if w and w[0].isdigit()})
+
+
+def unificar_etiquetas_titulos_similares(rows: List[dict], mapa: Dict[int, int],
+                                         etiquetas: Dict[int, dict],
+                                         temas: Dict[int, str], km: dict,
+                                         umbral: int = 80,
+                                         incluir_tema: bool = True) -> int:
+    """Garantía final de la regla del usuario (v4.31): título igual o similar
+    ⇒ misma noticia ⇒ mismo tono, tema y subtema.
+
+    Las unificaciones anteriores comparan REPRESENTANTES de grupo. Cuando un
+    grupo grande absorbe por cuerpo/contexto un titular casi idéntico al de
+    otro grupo, el par nunca se ve a nivel de representantes y las etiquetas
+    divergen (caso real Colpensiones 2026-09-28: «Gobierno avanza en ruta para
+    garantizar el pago de pensiones» quedó dentro de un grupo de 50 cuyo
+    representante era otro titular, mientras «Gobierno avanza en soluciones
+    para cumplir con el pago de las pensiones de final de año» quedó en otro
+    grupo: terminaron con distinto tono, tema y subtema).
+
+    Este pase corre al FINAL del pipeline (tras guardas de tono, temas y PKL)
+    y une a nivel de FILA, así nada posterior puede volver a separarlas.
+    Señal (la de `unificar_subtemas_noticias_similares` + banda «empiezan
+    igual»):
+      - token_set_ratio >= `umbral` (80) y >= 2 palabras de contenido en
+        común, o
+      - token_set_ratio >= 70 y >= 3 palabras de contenido en común.
+    Las palabras de fecha (números, meses, días) no cuentan como puente:
+    inflan token_set en títulos cortos genéricos («Noticias del 26 de
+    septiembre» vs «Esto es lo que cambia con la reforma pensional: Casa Blu
+    del 26 de septiembre»: 81.6 solo por {26, septiembre} → no se unen; son
+    noticias distintas). La banda 70–80 exige 3 palabras para no unir
+    noticias distintas que solo comparten el arranque («De la Espriella
+    nombra a Beatriz Vélez…» vs «De la Espriella pide renuncia al
+    presidente…»: 69.7 y 2 palabras → no se unen; «Director de
+    Colpensiones» vs «Relevo en Colpensiones»: 1 palabra en común → no se
+    unen).
+
+    Elección por frecuencia de FILA (el bloque mayoritario del hecho conserva
+    su etiqueta: cambio mínimo); en empate, la etiqueta MÁS LARGA (criterio
+    v4.15). El tono no se toca si alguna fila del hecho es Negativo (un
+    señalamiento deliberado no se borra por voto) y el empate de tono va a
+    Neutro (criterio de `unificar_tono_mismo_hecho`). Las filas del mismo
+    grupo ya comparten etiqueta, así que solo se evalúan pares de grupos
+    distintos (exacto y poda el caso patológico).
+    """
+    from rapidfuzz import fuzz
+    idx_validos = [i for i, r in enumerate(rows)
+                   if not r.get('is_duplicate') and sq(_titulo_fila(r, km))]
+    n = len(idx_validos)
+    if n < 2:
+        return 0
+    titulos = [sq(_titulo_fila(rows[i], km)) for i in idx_validos]
+    cont = [set(w for w in words(t) if w not in GENERIC_TITULO)
+            for t in titulos]
+    gid_de = [mapa.get(i) for i in idx_validos]
+    # Índice invertido: pares que comparten >= 2 palabras de contenido y
+    # pertenecen a grupos distintos.
+    inv: Dict[str, List[int]] = defaultdict(list)
+    for k, ws in enumerate(cont):
+        for w in ws:
+            inv[w].append(k)
+    par = list(range(n))
+
+    def find(x):
+        while par[x] != x:
+            par[x] = par[par[x]]
+            x = par[x]
+        return x
+
+    def uni(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            par[max(ra, rb)] = min(ra, rb)
+
+    for k in range(n):
+        conteo: Dict[int, int] = defaultdict(int)
+        gk = gid_de[k]
+        for w in cont[k]:
+            for j in inv[w]:
+                if j > k and gid_de[j] != gk:
+                    conteo[j] += 1
+        for j, inter in conteo.items():
+            if inter < 2:
+                continue
+            puente = _puente_titulos(cont[k], cont[j])
+            if puente < 2:
+                continue
+            s = fuzz.token_set_ratio(titulos[k], titulos[j], score_cutoff=70)
+            if (s >= umbral) or (s >= 70 and puente >= 3):
+                uni(k, j)
+
+    def _elegir(vals):
+        c = Counter(vals)
+        top = c.most_common()
+        me = top[0][1]
+        cand = [v for v, q in top if q == me]
+        return max(cand, key=lambda s: (len(s.split()), len(s)))
+
+    cambios = 0
+    buckets: Dict[int, List[int]] = defaultdict(list)
+    for k in range(n):
+        buckets[find(k)].append(k)
+    for miembros in buckets.values():
+        if len(miembros) < 2:
+            continue
+        filas = [idx_validos[k] for k in miembros]
+        gids = [gid_de[k] for k in miembros]
+        tonos, tems, subs = [], [], []
+        for i, gid in zip(filas, gids):
+            e = etiquetas.get(gid) or {}
+            tonos.append(e.get('tono') or 'Neutro')
+            if incluir_tema:
+                tems.append(temas.get(gid) or '')
+            subs.append(e.get('sub_tema') or '')
+        tems = [t for t in tems if t]
+        subs = [s for s in subs if s]
+        canon_sub = _elegir(subs) if subs else ''
+        canon_tema = _elegir(tems) if tems else ''
+        canon_tono = ''
+        cton = Counter(t for t in tonos if t in TONOS)
+        if cton and not any(t == 'Negativo' for t in tonos):
+            top = cton.most_common()
+            canon_tono = (top[0][0] if len(top) == 1 or top[0][1] > top[1][1]
+                          else 'Neutro')
+        for gid in set(gids):
+            if gid is None:
+                continue
+            e = etiquetas.setdefault(gid, {})
+            if canon_sub and e.get('sub_tema') != canon_sub:
+                e['sub_tema'] = canon_sub
+                cambios += 1
+            if canon_tema and temas.get(gid) != canon_tema:
+                temas[gid] = canon_tema
+                cambios += 1
+            if canon_tono and e.get('tono') != canon_tono:
+                e['tono'] = canon_tono
+                cambios += 1
+    return cambios
+
+
 def _sanitizar_fusiones(fusiones, n):
     """Limpia la respuesta del modelo: >=2 índices distintos por grupo y sin
     repetir un índice en dos grupos (mapeo determinista).
@@ -4356,6 +4510,15 @@ def enrich_rows_with_ai(
         grupos, rows, etiquetas, temas, origen,
         tone_model=tone_model, theme_model=theme_model if incluir_tema else None,
     )
+
+    # v4.31: garantía final de la regla del usuario (título igual o similar ⇒
+    # misma noticia ⇒ mismo tono, tema y subtema), a nivel de FILA. Corre al
+    # final para que nada posterior vuelva a separarlas; cubre pestaña
+    # estándar y personalizada, con PKL o sin PKL.
+    uni_tit = unificar_etiquetas_titulos_similares(
+        rows, mapa, etiquetas, temas, km, incluir_tema=incluir_tema)
+    if uni_tit:
+        _ULTIMO_RESUMEN['etiquetas_unificadas_titulo_similar'] = uni_tit
 
     volcar_analisis_en_filas(
         rows, mapa, etiquetas, temas,

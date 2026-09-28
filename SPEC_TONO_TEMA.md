@@ -951,3 +951,54 @@ Dos fixes:
 - Tests nuevos: `TestTitulosCasiIgualesV430` en
   `tests/test_tema_subtema_invariantes.py` (3 pruebas: agrupación con marca
   omnipresente, subconjunto no absorbido, mismo tema en volcado).
+
+## 37. v4.31 — Garantía final: título similar a nivel de FILA (2026-09-28)
+
+Motivo: el dossier Colpensiones 2026-09-28 (input
+`Base_Modelo_-_Colpensiones_-_jc.xlsx`, 316 noticias) mostró que v4.30 no
+bastaba. Dos pares reales quedaron con distinto tono, tema y subtema:
+
+- «Gobierno avanza en ruta para garantizar el pago de pensiones»
+  (Positivo/Entorno Pensional/Garantía de pagos pensionales) vs «Gobierno
+  avanza en soluciones para cumplir con el pago de las pensiones de final
+  de año» (Neutro/Tipos de Pensión/Soluciones para pago de pensiones):
+  token_set_ratio 84.6.
+- «¿Se pueden comprar semanas de cotización para lograr la pensión por
+  vejez? Esto señala la ley» (Neutro/Normativa y Regulación/Compra de
+  semanas cotizadas) vs «¿Se pueden comprar semanas para pensionarse en
+  Colombia? Esto dice la reforma pensional» (Positivo/Afiliación y
+  Cotización/Reforma pensional y compra de semanas): token_set_ratio 71.2.
+
+Causa raíz: las unificaciones comparan el TÍTULO REPRESENTANTE del grupo.
+El primer titular quedó absorbido (por cuerpo/contexto) dentro de un grupo
+de 50 cuyo representante era otro titular; el segundo quedó en un grupo de
+6. Similitud entre representantes: 48.9. El par real (84.6) nunca se vio.
+
+Fix: `unificar_etiquetas_titulos_similares()` (analyzer_tono_tema.py), pase
+FINAL del pipeline (después del PKL y de todas las guardas), a nivel de
+FILA: compara todos los titulares entre sí aunque estén en grupos
+distintos. Señal: token_set_ratio >= 80 con >= 2 palabras de contenido en
+común, o >= 70 con >= 3 (banda «empiezan igual», calibrada con el caso
+real 71.2/4 palabras). Las palabras de fecha (números, meses, días) no
+cuentan como puente: inflan token_set en titulares cortos genéricos
+(«Noticias del 26 de septiembre» vs «Esto es lo que cambia con la reforma
+pensional: Casa Blu del 26 de septiembre»: 81.6 solo por {26, septiembre}
+→ no se unen; son noticias distintas).
+
+Elección por frecuencia de FILA (el bloque mayoritario conserva su
+etiqueta: cambio mínimo); empate → etiqueta MÁS LARGA (criterio v4.15). El
+tono no se toca si alguna fila del hecho es Negativo (un señalamiento
+deliberado no se borra por voto); empate de tono → Neutro (criterio de
+`unificar_tono_mismo_hecho`). Solo evalúa pares de grupos distintos
+(exacto y poda el caso patológico). Corre en pestaña estándar y
+personalizada, con PKL o sin PKL.
+
+Validación empírica sobre las 316 noticias: 33 bloques multi-fila, sin
+falsos positivos tras el descuento de fechas (el bloque de 66 filas sobre
+mesadas/faltante no tiene outliers; la elección da Positivo/Entorno
+Pensional/Garantía de pagos pensionales y no hay Negativos que proteger).
+
+- Tests nuevos: `tests/test_v431_titulos_fila.py` (9 pruebas: los dos casos
+  reales TP1/TP2, anti-casos nombramiento-vs-renuncia, una-sola-palabra,
+  fecha-no-es-puente, Negativo preservado, empate→más largo, duplicadas,
+  sin tema).
