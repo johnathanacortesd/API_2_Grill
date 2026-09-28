@@ -88,9 +88,21 @@ class TestColumnasCustom(unittest.TestCase):
         self.assertEqual(
             sugerir_columna(["Headline", "Resumen"], ("titulo", "headline")), "Headline")
         self.assertEqual(
-            sugerir_columna(["Headline", "Resumen"], ("resumen - aclaracion", "cuerpoes")),
+            sugerir_columna(["Headline", "Resumen"], ("resumen", "resumen - aclaracion",
+                                                     "cuerpoes")),
             "Resumen")
         self.assertIsNone(sugerir_columna(["A", "B"], ("titulo",)))
+
+    def test_sugerir_columna_prioriza_exacta(self):
+        # v4.29: "Subtitulo" no le gana a "Título" aunque venga antes.
+        self.assertEqual(
+            sugerir_columna(["Subtitulo", "Título"], ("título", "titulo", "headline")),
+            "Título")
+        self.assertEqual(
+            sugerir_columna(["Titulo", "Resumen"], ("título", "titulo")), "Titulo")
+        self.assertEqual(
+            sugerir_columna(["TITULO", "RESUMEN"], ("resumen", "resumen - aclaracion")),
+            "RESUMEN")
 
     def test_renombrado_pasa_por_el_loader_del_pipeline(self):
         # El xlsx renombrado debe ser legible por load_dossier_dataframe con

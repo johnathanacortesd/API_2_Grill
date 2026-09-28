@@ -913,3 +913,16 @@ hacer (sin IA, sin PKL y sin prominencia), igual que la pestaña estándar.
 - Tests nuevos: clase `TestConfigCustom` en `tests/test_columnas_custom.py`
   (4 pruebas: None sin análisis, PKL de tono+tema con IA, solo PKL sin IA,
   solo prominencia sin IA ni PKL).
+
+## 35. v4.29 — Preselección prioriza Título/Titulo y Resumen/resumen (2026-09-28)
+
+En la pestaña "🗂 Columnas personalizadas", los nombres habituales son
+"Título"/"Titulo" (título) y "Resumen"/"resumen" (cuerpo). `sugerir_columna`
+ahora trabaja en dos pasadas: primero coincidencia exacta y luego parcial.
+Así, si el archivo trae "Título" (o "Titulo") queda preseleccionado como
+título, y "Resumen" (o "resumen") como cuerpo, sin que un "Subtitulo" u otra
+columna parcial les gane por orden de aparición. La lista de candidatos del
+cuerpo también empieza por "resumen".
+
+- Tests nuevos: `test_sugerir_columna_prioriza_exacta` en
+  `tests/test_columnas_custom.py`.

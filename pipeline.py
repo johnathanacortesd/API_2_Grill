@@ -580,16 +580,25 @@ def leer_columnas_xlsx(file_bytes: bytes) -> List[Tuple[str, int]]:
 
 
 def sugerir_columna(etiquetas: List[str], candidatos) -> Optional[str]:
-    """Primera etiqueta cuyo nombre normalizado coincide (total o parcial)
-    con algún candidato."""
+    """Primera etiqueta cuyo nombre normalizado coincide con un candidato.
+
+    v4.29: dos pasadas — primero coincidencia exacta (p. ej. "Título"/"Titulo"
+    para el título, "Resumen"/"resumen" para el cuerpo), luego parcial. Así un
+    "Subtitulo" no le gana a un "Título" que venga después en la lista.
+    """
     cands = [unidecode(str(c)).lower().strip() for c in candidatos if str(c).strip()]
+    norm = []
     for lbl in etiquetas:
         base = re.sub(r"\s*\(\d+\)$", "", str(lbl))
-        nbase = unidecode(base).lower().strip()
+        norm.append((lbl, unidecode(base).lower().strip()))
+    for lbl, nbase in norm:  # pasada 1: exacta
+        if nbase and nbase in cands:
+            return lbl
+    for lbl, nbase in norm:  # pasada 2: parcial
         if not nbase:
             continue
         for cand in cands:
-            if nbase == cand or nbase in cand or cand in nbase:
+            if nbase in cand or cand in nbase:
                 return lbl
     return None
 
