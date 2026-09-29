@@ -1248,3 +1248,22 @@ gráficos, a pedido del usuario. Solo presentación: relee el xlsx ya generado
 detección defensiva de columnas (si la corrida no generó columnas IA, muestra
 aviso en vez de la tabla). Lógica verificada con 5 casos (orden de columnas,
 filtros combinados, aviso sin IA, Link como LinkColumn).
+
+### v4.39 — Sin vista previa + refinamiento estilo Muse AI (2026-09-29, pedido del usuario)
+(1) Eliminada la "Vista previa de resultados" de v4.38 (función
+`_render_preview_resultados`, su llamada y el caché `preview_df` en
+session_state): el usuario prefirió quitarla. (2) Refinamiento visual hacia
+la estética de Muse AI: fondo papel más cálido (#f5f2ec), tarjetas planas
+con bordes hairline y sombras casi imperceptibles, sin barra degradada en
+el encabezado ni barras de color en las métricas; etiquetas de sección en
+Inter semibold (ya no mono/uppercase); botón primario terracota plano;
+indicador de pestaña fino (2px) sin glow; más aire vertical. Motor intacto.
+
+### v4.40 — Fuentes unificadas + casillas marcadas (2026-09-29, pedido del usuario)
+Tipografía unificada a Inter en toda la interfaz (estilo Muse/Meta):
+eliminados Roboto Mono, Source Serif 4 y Google Sans del CSS — encabezado,
+etiquetas de sección, métricas, badges, panel en vivo y pie ahora usan
+Inter con jerarquía por peso/tamaño, no por familia. Casillas de Marca,
+Alias y Voceros mejor marcadas: nueva variable --border-input (#c6b898,
+beige cálido bien visible) en inputs de texto, selects y textareas, con
+anillo de foco terracota un poco más presente. Motor intacto.
