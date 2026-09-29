@@ -1267,3 +1267,13 @@ Inter con jerarquía por peso/tamaño, no por familia. Casillas de Marca,
 Alias y Voceros mejor marcadas: nueva variable --border-input (#c6b898,
 beige cálido bien visible) en inputs de texto, selects y textareas, con
 anillo de foco terracota un poco más presente. Motor intacto.
+
+### v4.41 — Rediseño moderno 2026 estilo Claude Code (2026-09-29, pedido del usuario)
+(1) Línea de versión en minúsculas ("v4.41 · tono/tema/subtema por reglas +
+IA · realizado por Johnathan Cortés"): quitado el text-transform uppercase.
+(2) Pestañas convertidas en control segmentado moderno tipo pill:
+track redondeado en beige, pestaña activa como píldora blanca con sombra
+suave, indicador react-aria/baseweb oculto. (3) Encabezado más compacto
+(padding e icono reducidos). (4) Letra base 16px→15px con ajustes
+proporcionales (secciones 0.95rem, pestañas 0.92rem). (5) Casillas de datos
+bien marcadas: --border-input más visible (#b3a075). Motor intacto.

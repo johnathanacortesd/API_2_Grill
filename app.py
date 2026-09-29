@@ -17,7 +17,7 @@ from pipeline import (process_dossier, leer_columnas_xlsx, sugerir_columna,
 from pkl_classifier import PklClassifierError, load_sklearn_estimator
 
 # Versión visible de la app (se muestra en el encabezado). Actualizar en cada release.
-APP_VERSION = "v4.40"
+APP_VERSION = "v4.41"
 
 logger = logging.getLogger("limpieza_grill")
 if not logging.getLogger().handlers:
@@ -33,7 +33,7 @@ THEME_CLARO = """
 :root,[data-testid="stApp"]{
     color-scheme:light;
     --bg:#f5f2ec;--s1:#ffffff;--s2:#fdfcfa;--s3:#f0ece4;
-    --border:#e8e2d4;--border2:#d9cfba;--border-input:#c6b898;--border-focus:#c15f3c;
+    --border:#e8e2d4;--border2:#d9cfba;--border-input:#b3a075;--border-focus:#c15f3c;
     --text:#201d1a;--text2:#57504a;--text3:#7c746b;--text4:#a49b8f;--text-label:#201d1a;
     --acento:#c15f3c;--acento-hover:#a94e30;--acento-soft:rgba(193,95,60,0.10);--acento-line:rgba(193,95,60,0.38);
     --naranja:#d97e4a;--rojo:#c0392b;
@@ -60,7 +60,7 @@ def load_custom_css():
 html,body,[data-testid="stApp"]{
     background:var(--bg)!important;color:var(--text)!important;
     font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
-    font-size:16px;-webkit-font-smoothing:antialiased;letter-spacing:0.002em;
+    font-size:15px;-webkit-font-smoothing:antialiased;letter-spacing:0.002em;
 }
 [data-testid="stApp"]{
     background:var(--bg)!important;
@@ -74,35 +74,36 @@ html,body,[data-testid="stApp"]{
    (div[data-testid="stTab"], .react-aria-SelectionIndicator) en vez de
    baseweb (button[data-baseweb="tab"]); se cubren ambos DOM. */
 [data-testid="stTabs"] [role="tablist"],
-div[data-baseweb="tab-list"]{gap:0.4rem!important;border-bottom:1px solid var(--border)!important;}
+div[data-baseweb="tab-list"]{gap:2px!important;border-bottom:none!important;background:#e9e2d2;border:1px solid var(--border);border-radius:999px;padding:4px!important;display:inline-flex!important;}
 div[data-testid="stTab"],
-button[data-baseweb="tab"]{font-size:1.05rem!important;letter-spacing:0.02em;transition:var(--transition);}
-button[data-baseweb="tab"]{padding:0.65rem 1.15rem!important;}
+button[data-baseweb="tab"]{font-size:0.92rem!important;letter-spacing:0.01em;transition:var(--transition);border-radius:999px!important;border-bottom:none!important;}
+button[data-baseweb="tab"]{padding:0.45rem 1.2rem!important;}
+div[data-testid="stTab"]{padding:0.45rem 1.2rem!important;}
 div[data-testid="stTab"] p,
 div[data-testid="stTab"] div[data-testid="stMarkdownContainer"] p,
 button[data-baseweb="tab"] p,
 button[data-baseweb="tab"] div[data-testid="stMarkdownContainer"] p{color:#7c746b!important;font-weight:600!important;}
 div[data-testid="stTab"]:hover,
-button[data-baseweb="tab"]:hover{background:rgba(193,95,60,0.07)!important;}
+button[data-baseweb="tab"]:hover{background:rgba(255,255,255,0.65)!important;}
 div[data-testid="stTab"]:hover p,
-button[data-baseweb="tab"]:hover p{color:#c15f3c!important;}
+button[data-baseweb="tab"]:hover p{color:#5c554c!important;}
 div[data-testid="stTab"][data-selected="true"],
 div[data-testid="stTab"][aria-selected="true"],
-button[data-baseweb="tab"][aria-selected="true"]{font-weight:700!important;}
+button[data-baseweb="tab"][aria-selected="true"]{font-weight:600!important;background:#ffffff!important;box-shadow:var(--shadow-sm)!important;}
 div[data-testid="stTab"][data-selected="true"] p,
 div[data-testid="stTab"][aria-selected="true"] p,
-button[data-baseweb="tab"][aria-selected="true"] p{color:#201d1a!important;font-weight:700!important;}
+button[data-baseweb="tab"][aria-selected="true"] p{color:#201d1a!important;font-weight:600!important;}
+div.react-aria-SelectionIndicator,
 div[data-testid="stTab"] .react-aria-SelectionIndicator,
-div[data-baseweb="tab-highlight"]{background:var(--acento)!important;height:2px!important;border-radius:2px;
-    box-shadow:0 1px 3px rgba(193,95,60,0.30);}
-div[data-baseweb="tab-border"]{background:var(--border)!important;}
+div[data-baseweb="tab-highlight"]{display:none!important;}
+div[data-baseweb="tab-border"]{display:none!important;}
 [data-testid="stStatusWidget"]{background:var(--s2)!important;color:var(--text2)!important;border:1px solid var(--border)!important;}
-.app-header{background:#ffffff;border:1px solid var(--border);border-radius:var(--r3);padding:1.1rem 1.5rem;margin-bottom:1.4rem;display:flex;align-items:center;gap:1rem;box-shadow:var(--shadow-sm);}
+.app-header{background:#ffffff;border:1px solid var(--border);border-radius:var(--r3);padding:0.8rem 1.25rem;margin-bottom:1.1rem;display:flex;align-items:center;gap:0.85rem;box-shadow:var(--shadow-sm);}
 .app-header-legacy::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--grad-br);box-shadow:0 2px 8px rgba(193,95,60,0.35);}
-.app-header-icon{width:40px;height:40px;background:#f5f2ec;border:1px solid var(--acento-line);border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:1.1rem;color:var(--acento);flex-shrink:0;box-shadow:none;}
+.app-header-icon{width:36px;height:36px;background:#f5f2ec;border:1px solid var(--acento-line);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:1.1rem;color:var(--acento);flex-shrink:0;box-shadow:none;}
 .app-header-text{flex:1}
-.app-header-title{font-family:'Inter',sans-serif;font-size:1.2rem;font-weight:700;color:var(--text);letter-spacing:-0.015em;line-height:1.3}
-.app-header-version{font-family:'Inter',sans-serif;font-size:0.68rem;font-weight:600;color:var(--text3);letter-spacing:0.14em;margin-top:0.2rem;text-transform:uppercase}
+.app-header-title{font-family:'Inter',sans-serif;font-size:1.08rem;font-weight:700;color:var(--text);letter-spacing:-0.015em;line-height:1.3}
+.app-header-version{font-family:'Inter',sans-serif;font-size:0.72rem;font-weight:500;color:var(--text3);letter-spacing:0.02em;margin-top:0.2rem}
 .app-header-badge{background:var(--acento-soft);border:1px solid var(--acento-line);color:var(--acento);font-family:'Inter',sans-serif;font-size:0.66rem;font-weight:600;padding:0.28rem 0.75rem;border-radius:6px;letter-spacing:0.12em;text-transform:uppercase;white-space:nowrap;}
 .metrics-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:0.75rem;margin:0.9rem 0}
 .metric-card{background:var(--s1);border:1px solid var(--border);border-radius:var(--r2);padding:1rem 0.6rem;text-align:center;box-shadow:var(--shadow-sm);}
@@ -114,7 +115,7 @@ div[data-baseweb="tab-border"]{background:var(--border)!important;}
 .metric-val{font-family:'Inter',sans-serif;font-size:1.55rem;font-weight:700;line-height:1;margin-bottom:0.3rem;letter-spacing:-0.02em;color:var(--text)}
 .metric-lbl{font-family:'Inter',sans-serif;font-size:0.64rem;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.12em;font-weight:500}
 [data-testid="stForm"]{background:var(--s1)!important;border:1px solid var(--border)!important;border-radius:var(--r3)!important;padding:1.5rem 1.75rem!important;box-shadow:var(--shadow-sm)!important;}
-.sec-label{font-family:'Inter',sans-serif;font-size:1.02rem;font-weight:600;color:var(--text);letter-spacing:0.005em;padding-bottom:0.45rem;border-bottom:1px solid var(--border);margin:1.2rem 0 0.8rem;display:flex;align-items:center;gap:0.6rem;}
+.sec-label{font-family:'Inter',sans-serif;font-size:0.95rem;font-weight:600;color:var(--text);letter-spacing:0.005em;padding-bottom:0.45rem;border-bottom:1px solid var(--border);margin:1.2rem 0 0.8rem;display:flex;align-items:center;gap:0.6rem;}
 .sec-label::before{content:'';display:inline-block;width:3px;height:15px;background:var(--acento);border-radius:2px;box-shadow:none}
 .upload-zone{display:grid;grid-template-columns:1fr;gap:0.6rem;margin:0.3rem 0}
 .upload-zone-card{background:var(--s2);border:1px dashed var(--border2);border-radius:var(--r2);padding:0.65rem 0.85rem;display:flex;align-items:center;gap:0.65rem;transition:var(--transition);}
@@ -437,7 +438,7 @@ def main():
                 <div class="app-header-icon">◈</div>
                 <div class="app-header-text">
                     <div class="app-header-title">Limpieza y Análisis de Noticias</div>
-                    <div class="app-header-version">{APP_VERSION} · Tono/Tema/Subtema por reglas + IA · Realizado por Johnathan Cortés</div>
+                    <div class="app-header-version">{APP_VERSION} · tono/tema/subtema por reglas + IA · realizado por Johnathan Cortés</div>
                 </div>
                 <div class="app-header-badge">Estructurador + IA</div>
             </div>""", unsafe_allow_html=True)
