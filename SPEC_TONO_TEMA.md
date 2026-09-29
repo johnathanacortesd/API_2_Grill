@@ -1183,3 +1183,47 @@ ausente, nombre en primera posición, mayoría infiel → canon fiel, ningún
 candidato fiel → sin unificación, red de seguridad por fila, cuerpo
 idéntico/contenido/distinto, contexto antepuesto y deduplicado, columna de
 cuerpo elegida manda). Suite: 396/396 OK. ZIP regenerado (44 archivos).
+
+## 42. v4.36 — Pestañas visibles de verdad: selectores react-aria + versión en el encabezado (2026-09-29)
+
+Causa raíz del reporte "no quedó la nueva interfaz ni colores y sigue sin
+verse bien la pestaña de Columnas personalizadas":
+
+1. Streamlit >=1.47 renderiza `st.tabs` con react-aria, no con baseweb: el
+   DOM real es `div[data-testid="stTab"][role="tab"]` (con
+   `div[data-testid="stMarkdownContainer"] > p` adentro y
+   `div.react-aria-SelectionIndicator` como subrayado de la activa) en vez
+   de `button[data-baseweb="tab"]`. Todo el CSS de pestañas de v4.35
+   apuntaba a selectores muertos: la pestaña inactiva quedaba con el gris
+   oscuro de Streamlit (rgb(49,51,63), ilegible sobre negro) y la activa con
+   el rojo plano por defecto. Verificado con Chromium headless contra la
+   app real: antes del fix, `p` inactivo = rgb(49,51,63); después,
+   rgb(216,213,207) (#d8d5cf) y el indicador con degradado
+   linear-gradient(90deg,#ff2d2d,#ff9e2c).
+2. El encabezado mostraba "v4.30" hardcodeado desde versiones anteriores,
+   así que el usuario no podía distinguir la versión corriendo.
+
+Cambios (solo `app.py`, sin tocar el motor):
+
+- Bloque CSS de pestañas reescrito con los selectores react-aria reales
+  (`[data-testid="stTabs"] [role="tablist"]`, `div[data-testid="stTab"]`,
+  `div[data-testid="stTab"] p`, `[data-selected="true"]`,
+  `.react-aria-SelectionIndicator`), conservando los selectores baseweb
+  antiguos como fallback para Streamlit viejos. Inactiva: #d8d5cf;
+  hover: #ffd9c4; activa: blanco en negrita con subrayado degradado
+  rojo→naranja y glow.
+- Constante `APP_VERSION = "v4.36"` y encabezado como f-string para que la
+  versión visible siempre coincida con el release.
+
+Verificación: capturas con Chromium headless (login de prueba) de ambas
+pestañas: nombres legibles en los dos estados, degradado aplicado, tema
+oscuro intacto. Suite: 395/396 OK en este entorno (1 fallo preexistente
+por deriva de dependencias del sandbox: pandas 3.x/calamine 0.8.2 instalados
+aquí vs `pandas>=2.0.0,<3.0.0` del requirements; el código tocado por v4.36
+no participa en esa ruta).
+
+### v4.36b — Letra más grande en general (2026-09-29, pedido del usuario)
+Base de 14px → 16px (todo lo definido en `rem` escala proporcionalmente);
+pestañas 0.95rem → 1.05rem; etiquetas de widgets 0.82rem → 0.92rem; inputs
+0.9rem → 1rem; botones 0.88/0.9rem → 0.95/1rem; títulos de sección 0.68rem →
+0.78rem; textos del uploader 0.78/0.7/0.75rem → 0.88/0.8/0.85rem.

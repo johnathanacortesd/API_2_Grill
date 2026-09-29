@@ -16,6 +16,9 @@ from pipeline import (process_dossier, leer_columnas_xlsx, sugerir_columna,
                       renombrar_columnas_xlsx, construir_ai_config_custom)
 from pkl_classifier import PklClassifierError, load_sklearn_estimator
 
+# Versión visible de la app (se muestra en el encabezado). Actualizar en cada release.
+APP_VERSION = "v4.36"
+
 logger = logging.getLogger("limpieza_grill")
 if not logging.getLogger().handlers:
     logging.basicConfig(
@@ -58,7 +61,7 @@ def load_custom_css():
 html,body,[data-testid="stApp"]{
     background:var(--bg)!important;color:var(--text)!important;
     font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
-    font-size:14px;-webkit-font-smoothing:antialiased;letter-spacing:0.002em;
+    font-size:16px;-webkit-font-smoothing:antialiased;letter-spacing:0.002em;
 }
 [data-testid="stApp"]{
     background:var(--bg)!important;
@@ -67,12 +70,30 @@ html,body,[data-testid="stApp"]{
 #MainMenu,footer,header{visibility:hidden}.stDeployButton{display:none}
 .block-container{padding-top:1.25rem!important;padding-bottom:0!important;max-width:1100px!important}
 [data-testid="stAppViewBlockContainer"]{padding-top:1.25rem!important}
-/* v4.35: pestañas visibles estilo Blade Runner (nombres siempre legibles) */
+/* v4.36: pestañas visibles estilo Blade Runner (nombres siempre legibles).
+   Streamlit >=1.47 renderiza las pestañas con react-aria
+   (div[data-testid="stTab"], .react-aria-SelectionIndicator) en vez de
+   baseweb (button[data-baseweb="tab"]); se cubren ambos DOM. */
+[data-testid="stTabs"] [role="tablist"],
 div[data-baseweb="tab-list"]{gap:0.4rem!important;border-bottom:1px solid var(--border)!important;}
-button[data-baseweb="tab"]{color:#d8d5cf!important;font-weight:600!important;font-size:0.95rem!important;
-    padding:0.65rem 1.15rem!important;letter-spacing:0.02em;transition:var(--transition);}
-button[data-baseweb="tab"]:hover{color:#ffd9c4!important;background:rgba(255,77,28,0.06)!important;}
-button[data-baseweb="tab"][aria-selected="true"]{color:#ffffff!important;font-weight:700!important;}
+div[data-testid="stTab"],
+button[data-baseweb="tab"]{font-size:1.05rem!important;letter-spacing:0.02em;transition:var(--transition);}
+button[data-baseweb="tab"]{padding:0.65rem 1.15rem!important;}
+div[data-testid="stTab"] p,
+div[data-testid="stTab"] div[data-testid="stMarkdownContainer"] p,
+button[data-baseweb="tab"] p,
+button[data-baseweb="tab"] div[data-testid="stMarkdownContainer"] p{color:#d8d5cf!important;font-weight:600!important;}
+div[data-testid="stTab"]:hover,
+button[data-baseweb="tab"]:hover{background:rgba(255,77,28,0.06)!important;}
+div[data-testid="stTab"]:hover p,
+button[data-baseweb="tab"]:hover p{color:#ffd9c4!important;}
+div[data-testid="stTab"][data-selected="true"],
+div[data-testid="stTab"][aria-selected="true"],
+button[data-baseweb="tab"][aria-selected="true"]{font-weight:700!important;}
+div[data-testid="stTab"][data-selected="true"] p,
+div[data-testid="stTab"][aria-selected="true"] p,
+button[data-baseweb="tab"][aria-selected="true"] p{color:#ffffff!important;font-weight:700!important;}
+div[data-testid="stTab"] .react-aria-SelectionIndicator,
 div[data-baseweb="tab-highlight"]{background:var(--grad-br)!important;height:3px!important;border-radius:2px;
     box-shadow:0 0 12px rgba(255,80,30,0.55);}
 div[data-baseweb="tab-border"]{background:var(--border)!important;}
@@ -94,7 +115,7 @@ div[data-baseweb="tab-border"]{background:var(--border)!important;}
 .metric-val{font-family:'Inter',sans-serif;font-size:1.55rem;font-weight:700;line-height:1;margin-bottom:0.3rem;letter-spacing:-0.02em;color:var(--text)}
 .metric-lbl{font-family:'Roboto Mono',monospace;font-size:0.6rem;color:var(--text3);text-transform:uppercase;letter-spacing:0.12em;font-weight:500}
 [data-testid="stForm"]{background:var(--s1)!important;border:1px solid var(--border)!important;border-radius:var(--r3)!important;padding:1.25rem 1.5rem!important;box-shadow:var(--shadow-md)!important;}
-.sec-label{font-family:'Roboto Mono',monospace;font-size:0.68rem;font-weight:500;color:var(--text2);letter-spacing:0.16em;text-transform:uppercase;padding-bottom:0.35rem;border-bottom:1px solid var(--border);margin:0.9rem 0 0.6rem;display:flex;align-items:center;gap:0.55rem;}
+.sec-label{font-family:'Roboto Mono',monospace;font-size:0.78rem;font-weight:500;color:var(--text2);letter-spacing:0.16em;text-transform:uppercase;padding-bottom:0.35rem;border-bottom:1px solid var(--border);margin:0.9rem 0 0.6rem;display:flex;align-items:center;gap:0.55rem;}
 .sec-label::before{content:'';display:inline-block;width:3px;height:13px;background:var(--acento);border-radius:1px;box-shadow:none}
 .upload-zone{display:grid;grid-template-columns:1fr;gap:0.6rem;margin:0.3rem 0}
 .upload-zone-card{background:var(--s2);border:1px dashed var(--border2);border-radius:var(--r2);padding:0.65rem 0.85rem;display:flex;align-items:center;gap:0.65rem;transition:var(--transition);}
@@ -106,17 +127,17 @@ div[data-baseweb="tab-border"]{background:var(--border)!important;}
 [data-testid="stFileUploader"]{background:var(--s2)!important;border:1px dashed var(--border2)!important;border-radius:var(--r)!important;padding:0.45rem 0.65rem!important;transition:var(--transition)!important;min-height:auto!important;}
 [data-testid="stFileUploader"]:hover{border-color:var(--acento-line)!important;background:#111113!important;}
 [data-testid="stFileUploader"] section{padding:0.2rem!important}
-[data-testid="stFileUploader"] section>div{font-size:0.78rem!important;color:var(--text2)!important}
-[data-testid="stFileUploader"] section small{font-size:0.7rem!important;color:var(--text3)!important}
-[data-testid="stFileUploader"] button{background:var(--s1)!important;border:1px solid var(--border2)!important;color:var(--text)!important;font-weight:500!important;font-size:0.75rem!important;border-radius:6px!important;padding:0.3rem 0.85rem!important;font-family:'Inter',sans-serif!important;transition:var(--transition)!important;}
+[data-testid="stFileUploader"] section>div{font-size:0.88rem!important;color:var(--text2)!important}
+[data-testid="stFileUploader"] section small{font-size:0.8rem!important;color:var(--text3)!important}
+[data-testid="stFileUploader"] button{background:var(--s1)!important;border:1px solid var(--border2)!important;color:var(--text)!important;font-weight:500!important;font-size:0.85rem!important;border-radius:6px!important;padding:0.3rem 0.85rem!important;font-family:'Inter',sans-serif!important;transition:var(--transition)!important;}
 [data-testid="stFileUploader"] button:hover{background:var(--acento)!important;color:#1c0b06!important;border-color:var(--acento)!important}
-[data-testid="stTextInput"] input,[data-testid="stNumberInput"] input{background:#000000!important;border:1px solid var(--border2)!important;color:var(--text)!important;border-radius:var(--r)!important;font-family:'Inter',sans-serif!important;font-size:0.9rem!important;padding:0.5rem 0.75rem!important;transition:var(--transition)!important;}
+[data-testid="stTextInput"] input,[data-testid="stNumberInput"] input{background:#000000!important;border:1px solid var(--border2)!important;color:var(--text)!important;border-radius:var(--r)!important;font-family:'Inter',sans-serif!important;font-size:1rem!important;padding:0.5rem 0.75rem!important;transition:var(--transition)!important;}
 [data-testid="stTextInput"] input:focus,[data-testid="stNumberInput"] input:focus{border-color:var(--acento)!important;box-shadow:0 0 0 3px rgba(255,77,28,0.15)!important;outline:none!important;}
-label[data-testid="stWidgetLabel"] p{font-family:'Inter',sans-serif!important;color:var(--text-label)!important;font-size:0.82rem!important;font-weight:600!important;margin-bottom:0.15rem!important;}
+label[data-testid="stWidgetLabel"] p{font-family:'Inter',sans-serif!important;color:var(--text-label)!important;font-size:0.92rem!important;font-weight:600!important;margin-bottom:0.15rem!important;}
 [data-testid="stTextInput"] input::placeholder,[data-baseweb="input"]::placeholder{color:var(--text4)!important;opacity:1!important;}
-.stButton>button,[data-testid="stDownloadButton"]>button{background:var(--s2)!important;border:1px solid var(--border2)!important;color:var(--text)!important;border-radius:8px!important;font-family:'Inter',sans-serif!important;font-weight:500!important;font-size:0.88rem!important;transition:var(--transition)!important;padding:0.5rem 1.2rem!important;box-shadow:var(--shadow-sm)!important;}
+.stButton>button,[data-testid="stDownloadButton"]>button{background:var(--s2)!important;border:1px solid var(--border2)!important;color:var(--text)!important;border-radius:8px!important;font-family:'Inter',sans-serif!important;font-weight:500!important;font-size:0.95rem!important;transition:var(--transition)!important;padding:0.5rem 1.2rem!important;box-shadow:var(--shadow-sm)!important;}
 .stButton>button:hover,[data-testid="stDownloadButton"]>button:hover{border-color:var(--acento-line)!important;background:#17171a!important;color:var(--text)!important;}
-.stButton>button[kind="primary"],[data-testid="stDownloadButton"]>button[kind="primary"]{background:var(--grad-br)!important;border:none!important;color:#14080a!important;font-weight:700!important;font-size:0.9rem!important;padding:0.55rem 1.4rem!important;border-radius:8px!important;box-shadow:0 0 14px rgba(255,90,30,0.35)!important;letter-spacing:0.02em}
+.stButton>button[kind="primary"],[data-testid="stDownloadButton"]>button[kind="primary"]{background:var(--grad-br)!important;border:none!important;color:#14080a!important;font-weight:700!important;font-size:1rem!important;padding:0.55rem 1.4rem!important;border-radius:8px!important;box-shadow:0 0 14px rgba(255,90,30,0.35)!important;letter-spacing:0.02em}
 .stButton>button[kind="primary"]:hover,[data-testid="stDownloadButton"]>button[kind="primary"]:hover{background:linear-gradient(90deg,#ff5a2d,#ffb03d)!important;border:none!important;color:#14080a!important;box-shadow:0 0 20px rgba(255,110,40,0.55)!important;}
 .success-banner{background:var(--success-bg);border:1px solid var(--green-bdr);border-left:3px solid var(--green);border-radius:var(--r2);padding:0.8rem 1.1rem;margin:0.5rem 0 0.8rem;display:flex;align-items:center;gap:0.8rem;}
 .success-icon{width:32px;height:32px;background:rgba(61,220,151,0.15);border:1px solid var(--green-bdr);border-radius:50%;display:flex;align-items:center;justify-content:center;color:var(--green);font-size:0.95rem;flex-shrink:0;}
@@ -412,12 +433,12 @@ def main():
         pass
     elif not st.session_state.get("processing_complete", False):
         with ui.container():
-            st.markdown("""
+            st.markdown(f"""
             <div class="app-header">
                 <div class="app-header-icon">◈</div>
                 <div class="app-header-text">
                     <div class="app-header-title">Limpieza y Análisis de Noticias</div>
-                    <div class="app-header-version">v4.30 · Tono/Tema/Subtema por reglas + IA · Realizado por Johnathan Cortés</div>
+                    <div class="app-header-version">{APP_VERSION} · Tono/Tema/Subtema por reglas + IA · Realizado por Johnathan Cortés</div>
                 </div>
                 <div class="app-header-badge">Estructurador + IA</div>
             </div>""", unsafe_allow_html=True)
