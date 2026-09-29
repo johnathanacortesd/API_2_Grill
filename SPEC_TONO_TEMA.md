@@ -1227,3 +1227,24 @@ Base de 14px → 16px (todo lo definido en `rem` escala proporcionalmente);
 pestañas 0.95rem → 1.05rem; etiquetas de widgets 0.82rem → 0.92rem; inputs
 0.9rem → 1rem; botones 0.88/0.9rem → 0.95/1rem; títulos de sección 0.68rem →
 0.78rem; textos del uploader 0.78/0.7/0.75rem → 0.88/0.8/0.85rem.
+
+### v4.37 — Tema claro estilo Muse AI (2026-09-29, pedido del usuario)
+Reemplazo total del tema oscuro Blade Runner por un tema claro: fondo
+cálido #f7f5f1, tarjetas blancas con sombras suaves, texto café oscuro,
+acento terracota #c15f3c (botones primarios con degradado coral y texto
+blanco), títulos del encabezado y login en serifada (Source Serif 4).
+Pestañas: inactiva en gris medio, activa en negro con indicador coral.
+Se eliminó todo residuo oscuro hardcodeado (selects, menús, inputs,
+textarea, scrollbar). Constante renombrada THEME_OSCURO → THEME_CLARO.
+Verificado con capturas en ambas pestañas. Motor de análisis intacto.
+
+### v4.38 — Vista previa de resultados en la app (2026-09-29, pedido del usuario)
+Nueva sección "Vista previa de resultados" tras el análisis (ambas pestañas,
+antes de los botones de descarga): tabla interactiva con Tono_IA / Tema_IA /
+Subtema_IA + Título, Medio, Fecha y Link clicable ("Abrir ↗"), con filtros por
+texto en título, tono y tema, y conteo "Mostrando X de Y noticias". Sin
+gráficos, a pedido del usuario. Solo presentación: relee el xlsx ya generado
+(`output_data`), no toca el motor de análisis ni el archivo de descarga;
+detección defensiva de columnas (si la corrida no generó columnas IA, muestra
+aviso en vez de la tabla). Lógica verificada con 5 casos (orden de columnas,
+filtros combinados, aviso sin IA, Link como LinkColumn).
