@@ -1112,3 +1112,74 @@ precisión):
   parámetros + defaults del config custom). Se actualizó
   `test_cita_parcial_en_etiqueta_nominal_no_se_toca` (v4.21) al nuevo
   comportamiento exigido por el usuario (jamás comillas).
+
+## 41. v4.35 — Similitud por título Y cuerpo + guarda de fidelidad de subtemas + pestañas visibles (2026-09-29)
+
+Revisión profunda pedida por el usuario (2026-09-29): noticias realmente
+iguales o similares deben compartir tono, tema y subtema —por Título O por
+CuerpoEs— con o sin PKL; pero el subtema debe corresponder al título y/o
+cuerpo de CADA noticia (sin agrupación forzada; la noticia específica
+conserva su especificidad). Motiva: «Designación de Vélez en Colpensiones»
+aparecía en noticias que no mencionaban a Vélez.
+
+1. Similitud por cuerpo (construir_grupos). Tres señales fuertes, sin
+   encadenamiento débil:
+   - Cuerpo idéntico: hash MD5 del cuerpo normalizado (≥120 chars) → mismo
+     grupo aunque el título sea distinto. Vía rápida O(n).
+   - Cuerpo contenido: texto menor ≥200 chars contenido en el mayor (el mayor
+     ≤6× el menor) con prefiltro de 5-gramas → mismo grupo.
+   - Solapamiento de 5-gramas del cuerpo: ≥0.85 agrupa SIN puente de título;
+     entre 0.70 y 0.85 exige puente distintivo de título (≥2 palabras de
+     contenido). Las señales débiles ya no encadenan.
+   La regla del usuario se mantiene: título igual/similar ⇒ mismo grupo
+   (y el cuerpo muy diferente no invalida títulos equivalentes).
+
+2. Guarda de fidelidad de etiquetas (el subtema corresponde a LA noticia):
+   - `_nombres_propios_en_etiqueta`: detecta nombres propios intercalados en
+     la etiqueta (palabra capitalizada no inicial; la marca/alias/voceros se
+     eximen); la primera palabra gramatical no cuenta.
+   - `_etiqueta_fiel_a_texto`: exige que cada nombre propio aparezca en el
+     título o cuerpo de la noticia. Cotejo insensible a singular/plural
+     (raíz): «Tipos de Pensión» es fiel si el texto habla de «pensiones».
+   - `_elegir_canon_fiel`: el canon del bloque se elige por mayoría solo
+     entre candidatos fieles a TODAS las filas; si ninguno lo es, el subtema
+     NO se unifica (cada noticia conserva el suyo).
+   - `aplicar_guarda_fidelidad_subtema`: red de seguridad por FILA tras el
+     pase final —si el Subtema_IA nombra a alguien ausente del título/cuerpo
+     de esa fila, lo reemplaza por un rótulo derivado de su propio titular.
+   Conectada en `unificar_subtemas_noticias_similares()`, el pase final
+   `unificar_etiquetas_titulos_similares()` y `volcar_analisis_en_filas()`
+   (parámetro `ajustes_subtema`).
+   - Alcance deliberado: la guarda aplica al SUBTEMA, no al TEMA. El tema es
+     la taxonomía cerrada del cliente y una clase genérica («Afiliación y
+     Cotización») categoriza bien noticias que no contienen la palabra
+     literal («comprar semanas para pensionarse»); la guarda literal
+     rompería esa categorización legítima (caso TP2 de v4.31). El tono sigue
+     la regla del usuario: título igual/similar ⇒ mismo tono.
+
+3. Contexto analizado como prioridad: el titular abre el contexto cuando
+   menciona marca/alias/vocero; deduplicación normalizada de oraciones; el
+   prompt del sistema declara el contexto literal de marca como fuente
+   prioritaria de tono, tema y subtema; instrucción de fidelidad al LLM
+   («no menciones personas ni lugares que no aparezcan en el titular y el
+   contexto»).
+
+4. Paridad pestaña personalizada: `renombrar_columnas_xlsx` aparta también
+   'CuerpoEs', 'Cuerpo', 'Texto', 'Texto completo', 'Resumen' y 'resumen
+   corto' preexistentes como '(original)', para que `_texto_fila` (elige el
+   texto más largo disponible) honre la columna de cuerpo ELEGIDA por el
+   usuario. El análisis usa exactamente las columnas elegidas; sin limpieza,
+   pero con el mismo motor y la misma precisión.
+
+5. Tema oscuro Blade Runner: variables de texto aclaradas (--text2 #c9c9d2,
+   --text3 #a3a3ad, --text4 #7e7e88; ningún gris/negro ilegible sobre fondo
+   oscuro), estilos explícitos para las pestañas (inactivas legibles,
+   activa en blanco con indicador rojo→naranja), y degradado rojo→naranja
+   (#ff2d2d→#ff9e2c) en botones primarios, barras de progreso y líneas de
+   acento del encabezado y panel de estado. Fondo negro puro conservado.
+
+Tests: 22 nuevos en `tests/test_v435_fidelidad_similitud.py` (caso Vélez
+ausente, nombre en primera posición, mayoría infiel → canon fiel, ningún
+candidato fiel → sin unificación, red de seguridad por fila, cuerpo
+idéntico/contenido/distinto, contexto antepuesto y deduplicado, columna de
+cuerpo elegida manda). Suite: 396/396 OK. ZIP regenerado (44 archivos).

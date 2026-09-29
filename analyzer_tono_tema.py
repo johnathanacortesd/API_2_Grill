@@ -30,6 +30,7 @@ señalamiento DIRIGIDO a la marca o a su vocero.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import threading
@@ -204,10 +205,19 @@ def _contexto_exacto_marca(texto: str, titulo: str, brand: str,
 
     es_rtv = nz(tipo_medio) in MEDIOS_RADIODIFUSION
     tope = TOPE_CTX_RADIODIFUSION if es_rtv else TOPE_CTX_GENERAL
+    # v4.35: el titular abre el contexto cuando menciona la marca/alias/vocero:
+    # es el ancla más informativa de la noticia y el análisis (tono/tema/
+    # subtema) lo usa como fuente prioritaria. No se duplica si el cuerpo ya
+    # lo contiene.
+    tit = str(titulo or '').strip()
     vistas = []
+    if tit and menciona(tit):
+        vistas.append(re.sub(r'\s+', ' ', tit).strip())
     for o in hits:
         o = re.sub(r'\s+', ' ', o).strip()
-        if o and o not in vistas:
+        # v4.35: deduplicación normalizada (el mismo cable repetido con
+        # distinta puntuación no aporta información).
+        if o and nz(o) not in {nz(v) for v in vistas}:
             vistas.append(o)
     # Oraciones completas hasta el tope; al menos la primera mención va
     # entera (si una sola oración supera el tope, se corta ahí).
@@ -373,10 +383,16 @@ def construir_grupos(
         txt = _texto_fila(rows[i], km)
         ctx = str(rows[i].get('Contexto analizado') or '')
         ctx = '' if ctx.strip() in ('', '-') else ctx
+        # v4.35: hash del cuerpo normalizado para la señal de cuerpo idéntico
+        # (vía rápida O(n): mismo CuerpoEs => misma noticia aunque el título
+        # difiera). Solo cuerpos con sustancia (>=120 caracteres).
+        _nz_txt = nz(txt)
         base.append({
             'idx': i,
             'titulo': sq(tit),
             'texto': sq(txt),
+            'hash_cuerpo': (hashlib.md5(_nz_txt.encode('utf-8')).hexdigest()
+                            if len(_nz_txt) >= 120 else ''),
             'ctit': set(w for w in words(tit) if w not in GENERIC_TITULO),
             'g5': grams(words(txt), K_BODY),
             # Contexto analizado de la marca: párrafos donde aparece la marca.
@@ -479,10 +495,48 @@ def construir_grupos(
                         and t3[i, j] >= 0.90:
                     uni(i, j)
 
+    # --- v4.35: CUERPO IDÉNTICO (vía rápida O(n)) ---
+    # Mismo CuerpoEs normalizado => misma noticia aunque el título difiera
+    # (el exportador a veces cambia el titular pero conserva el texto).
+    # Señal fuerte: no exige puente de título.
+    por_hash_cuerpo = defaultdict(list)
+    for k, b in enumerate(base):
+        if b.get('hash_cuerpo'):
+            por_hash_cuerpo[b['hash_cuerpo']].append(k)
+    for ks in por_hash_cuerpo.values():
+        if len(ks) > 1:
+            for a in range(len(ks)):
+                for c in range(a + 1, len(ks)):
+                    uni(ks[a], ks[c])
+
     inv = defaultdict(set)
     for j, b in enumerate(base):
         for g in b['g5']:
             inv[g].add(j)
+
+    # --- v4.35: CUERPO CONTENIDO (una noticia dentro de otra) ---
+    # El cuerpo más corto (>=200 caracteres) contenido literalmente en el más
+    # largo => misma noticia (agregadores que pegan la noticia con encabezado
+    # o cola propios). Prefiltro: solo pares que comparten >=3 5-gramas (vía
+    # el índice `inv`), para no hacer O(n^2) búsquedas de subcadena.
+    for i, b in enumerate(base):
+        ti = nz(b['texto'])
+        if len(ti) < 200 or len(b['g5']) < MIN_GRAMAS:
+            continue
+        hits = Counter()
+        for g in b['g5']:
+            for j in inv.get(g, ()):
+                if j != i:
+                    hits[j] += 1
+        for j, inter in hits.items():
+            if j <= i or inter < 3 or find(i) == find(j):
+                continue
+            tj = nz(base[j]['texto'])
+            if len(tj) < 200:
+                continue
+            lo, hi = (ti, tj) if len(ti) <= len(tj) else (tj, ti)
+            if len(hi) <= 6 * len(lo) and lo in hi:
+                uni(i, j)
     for i, b in enumerate(base):
         if len(b['g5']) < MIN_GRAMAS:
             continue
@@ -515,8 +569,12 @@ def construir_grupos(
             if len(bj['g5']) < 8:
                 continue
             same_g = len(b['g5'] & bj['g5']) / max(1, min(len(b['g5']), len(bj['g5'])))
-            if same_g >= 0.70 and _puente_distintivo(b['ctit'], bj['ctit'],
-                                                    MIN_PALABRAS_TITULO):
+            # v4.35: cuerpo casi idéntico (>=0.85) agrupa SIN puente de título:
+            # igual o similar texto en CuerpoEs, aunque el título sea
+            # diferente, puede ser la misma noticia. El puente distintivo de
+            # título se conserva para el rango 0.70-0.85 (señal más débil).
+            if same_g >= 0.85 or (same_g >= 0.70 and _puente_distintivo(
+                    b['ctit'], bj['ctit'], MIN_PALABRAS_TITULO)):
                 uni(i, j)
 
     # --- señal de CONTEXTO ANALIZADO: mismo hecho, título y cuerpo distintos ---
@@ -1264,6 +1322,11 @@ def prompt_sistema(cfg: dict) -> str:
         '',
         'REGLA DE SUB-TEMA',
         REGLAS_SUBTEMA,
+        # v4.35: fidelidad — el sub-tema debe corresponder al titular y al
+        # contexto literal del grupo (caso real 2026-09-28: «Designación de
+        # Vélez» en noticias que no la mencionaban).
+        'El sub-tema corresponde al TITULAR y al CONTEXTO LITERAL del grupo: no menciones '
+        'personas, cargos con nombre propio ni lugares que no aparezcan en ellos.',
         '',
         'EJEMPLOS YA ETIQUETADOS (imita el criterio, la brevedad y las mayusculas)',
     ]
@@ -1291,7 +1354,9 @@ def prompt_lote(grupos_lote: Sequence[dict], candidatos: Sequence[str]) -> str:
         if g.get('titulos_alt'):
             b.append('OTROS TITULARES DEL MISMO GRUPO: %s'
                      % ' // '.join(sq(t)[:120] for t in g['titulos_alt']))
-        b.append('CONTEXTO LITERAL DE LA MARCA (fuente principal para el tono): %s'
+        b.append('CONTEXTO LITERAL DE LA MARCA (fuente PRIORITARIA para tono, tema y subtema: '
+                 'analiza la noticia desde lo que dice de la marca/alias/voceros, no desde el todo '
+                 'de la noticia): %s'
                  % sq(g.get('contexto') or g.get('texto', ''))[:6000])
         bloques.append('\n'.join(b))
     msg = '\n\n'.join(bloques)
@@ -2120,6 +2185,121 @@ def reparar_subtemas_ajenos(grupos: Sequence[dict],
 
 
 # ============================================================================
+# v4.35: guarda de fidelidad de etiquetas (el subtema corresponde a LA noticia).
+#
+# Intención del usuario (2026-09-29): «El subtema debe corresponder al título
+# y/o cuerpoes, no debe haber agrupación forzada. Puede haber noticias
+# específicas sin un tema o subtema similar a otros y se debe respetar esa
+# especificidad.»
+#
+# Caso real que la motiva (2026-09-28): el subtema «Designación de Vélez en
+# Colpensiones» apareció en noticias cuyo título y resumen no mencionaban a
+# Vélez: la unificación por similitud de título impuso el subtema mayoritario
+# del bloque sin verificar que el nombre existiera en cada noticia.
+#
+# Regla: un subtema (o tema) no puede afirmar un nombre propio que el título
+# o el cuerpo de ESA fila no contiene. La marca y sus alias están exentos
+# (son el sujeto del dossier); los voceros no: son personas y nombrarlos
+# exige evidencia textual.
+# ============================================================================
+def _nombres_propios_en_etiqueta(etiqueta: str, brand: str = '',
+                                 aliases: Sequence[str] = ()) -> List[str]:
+    """Palabras con mayúscula inicial dentro de la etiqueta (excluida la
+    primera palabra y la marca/alias): candidatos a nombre propio."""
+    s = str(etiqueta or '').strip()
+    if not s:
+        return []
+    excl = {nz(w) for x in [brand, *(aliases or [])] for w in str(x or '').split()}
+    excl.add(nz(brand))
+    out = []
+    for i, tok in enumerate(re.findall(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ']+", s)):
+        if i == 0 or not tok[0].isupper():
+            continue
+        nzt = nz(tok)
+        if not nzt or nzt in excl:
+            continue
+        if tok.isupper() and len(tok) > 4:
+            # Mayúsculas sostenidas largas: énfasis tipográfico, no nombre.
+            continue
+        out.append(nzt)
+    return list(dict.fromkeys(out))
+
+
+def _etiqueta_fiel_a_texto(etiqueta: str, titulo: str, texto: str,
+                           brand: str = '',
+                           aliases: Sequence[str] = ()) -> bool:
+    """True si cada nombre propio de la etiqueta aparece en el título o el
+    cuerpo de la noticia. Sin nombres propios, siempre es fiel.
+
+    El cotejo es insensible a singular/plural (raíz): «Tipos de Pensión» es
+    fiel si el texto habla de «pensiones»; lo que se exige es el concepto,
+    no la forma exacta. Un apellido como «Vélez» solo calza si aparece tal
+    cual en el texto.
+    """
+    nombres = _nombres_propios_en_etiqueta(etiqueta, brand, aliases)
+    if not nombres:
+        return True
+    hay = nz(str(titulo or '') + ' ' + str(texto or ''))
+    raices = {raiz(w) for w in re.findall(r'[a-z0-9]+', hay)}
+    return all(raiz(n) in raices for n in nombres)
+
+
+def _elegir_canon_fiel(valores: Sequence[str],
+                       textos: Sequence[Tuple[str, str]],
+                       brand: str = '',
+                       aliases: Sequence[str] = ()) -> str:
+    """Canon de un bloque: el más frecuente (empate: el más largo) que sea
+    fiel al título/cuerpo de TODAS las filas del bloque. Si ninguno lo es,
+    devuelve '': el bloque no se unifica y cada noticia conserva su
+    especificidad (v4.35: sin agrupación forzada)."""
+    frec = Counter(nz(v) for v in valores if nz(v))
+    if not frec:
+        return ''
+    forma: Dict[str, str] = {}
+    for v in valores:
+        k = nz(v)
+        if k and k not in forma:
+            forma[k] = str(v)
+    orden = sorted(frec, key=lambda k: (-frec[k], -len(k.split()), -len(k)))
+    for k in orden:
+        s = forma[k]
+        if all(_etiqueta_fiel_a_texto(s, t, x, brand, aliases)
+               for t, x in textos):
+            return s
+    return ''
+
+
+def aplicar_guarda_fidelidad_subtema(rows: List[dict], mapa: Dict[int, int],
+                                     etiquetas: Dict[int, dict], km: dict,
+                                     brand: str = '',
+                                     aliases: Sequence[str] = ()) -> Dict[int, str]:
+    """Red de seguridad final (v4.35): recorre cada fila y verifica que el
+    subtema heredado de su grupo sea fiel a SU título y SU cuerpo. Si no lo
+    es, la fila conserva su especificidad con un rótulo derivado de su propio
+    titular (determinista, fiel por construcción).
+
+    Devuelve {índice_fila: subtema} para aplicar en volcar_analisis_en_filas.
+    Corre al final del pipeline, tras todas las unificaciones.
+    """
+    ajustes: Dict[int, str] = {}
+    for i, row in enumerate(rows):
+        if row.get('is_duplicate'):
+            continue
+        gid = mapa.get(i)
+        e = etiquetas.get(gid) or {} if gid else {}
+        sub = (e.get('sub_tema') or '').strip()
+        if not sub:
+            continue
+        tit = _titulo_fila(row, km)
+        if not _etiqueta_fiel_a_texto(sub, tit, _texto_fila(row, km),
+                                      brand, aliases):
+            nuevo = _subtema_desde_titulo(tit)
+            if nz(nuevo) != nz(sub):
+                ajustes[i] = nuevo
+    return ajustes
+
+
+# ============================================================================
 # v4.21: el subtema nunca es el titular (reparación determinista).
 #
 # Cuando el modelo devuelve el titular tal cual como subtema, o usa una cita
@@ -2487,8 +2667,14 @@ def unificar_hecho_por_ancla(grupos: Sequence[dict], etiquetas: Dict[int, dict],
 
 
 def unificar_subtemas_noticias_similares(grupos: Sequence[dict], etiquetas: Dict[int, dict],
-                                         umbral: int = 80) -> int:
-    """Si dos grupos siguen separados pero son el mismo hecho, comparten subtema."""
+                                         umbral: int = 80, brand: str = '',
+                                         aliases: Sequence[str] = ()) -> int:
+    """Si dos grupos siguen separados pero son el mismo hecho, comparten subtema.
+
+    v4.35: el canon debe ser fiel al título/cuerpo de TODOS los grupos del
+    bloque (_elegir_canon_fiel). Si ningún candidato lo es, el bloque no se
+    unifica: cada noticia conserva su especificidad (sin agrupación forzada).
+    """
     from rapidfuzz import fuzz
     n = len(grupos)
     if n < 2:
@@ -2540,13 +2726,14 @@ def unificar_subtemas_noticias_similares(grupos: Sequence[dict], etiquetas: Dict
         validos = [s for s in validos if s]
         if not validos:
             continue
-        c = Counter(nz(s) for s in validos)
-        maxrep = max(c.values())
-        cand = [s for s in validos if c[nz(s)] == maxrep]
-        # En empate de frecuencia, el canon es el MAS LARGO (más específico),
-        # mismo criterio que v4.15 para el pase LLM: «Conversatorio» no le gana
-        # a «Participación en el conversatorio de salud mental».
-        canon = max(cand, key=lambda s: (len(s.split()), len(s)))
+        # v4.35: canon fiel a todos los grupos del bloque (título + texto de
+        # cada grupo). '' = ningún candidato es fiel a todos: no se unifica.
+        textos_bloque = [(str(grupos[k].get('titulo') or ''),
+                          str(grupos[k].get('texto') or ''))
+                         for k in miembros]
+        canon = _elegir_canon_fiel(validos, textos_bloque, brand, aliases)
+        if not canon:
+            continue
         # Quiénes ya llevan el canon (antes de reescribir): solo se adopta el
         # canon si hay evidencia FUERTE de mismo hecho con alguno de ellos.
         # La unión por señales débiles no autoriza a renombrar. Caso real
@@ -2587,9 +2774,18 @@ def unificar_etiquetas_titulos_similares(rows: List[dict], mapa: Dict[int, int],
                                          etiquetas: Dict[int, dict],
                                          temas: Dict[int, str], km: dict,
                                          umbral: int = 80,
-                                         incluir_tema: bool = True) -> int:
+                                         incluir_tema: bool = True,
+                                         brand: str = '',
+                                         aliases: Sequence[str] = ()) -> int:
     """Garantía final de la regla del usuario (v4.31): título igual o similar
     ⇒ misma noticia ⇒ mismo tono, tema y subtema.
+
+    v4.35: el canon de subtema debe ser fiel al título/cuerpo de TODAS
+    las filas del bloque (_elegir_canon_fiel). Si ningún candidato lo es, el
+    subtema no se unifica en el bloque: cada noticia conserva su
+    especificidad (sin agrupación forzada; caso real 2026-09-28: «Designación
+    de Vélez en Colpensiones» impuesto a noticias que no mencionaban a Vélez).
+    El tema sigue por mayoría simple (taxonomía del cliente).
 
     Las unificaciones anteriores comparan REPRESENTANTES de grupo. Cuando un
     grupo grande absorbe por cuerpo/contexto un titular casi idéntico al de
@@ -2697,7 +2893,16 @@ def unificar_etiquetas_titulos_similares(rows: List[dict], mapa: Dict[int, int],
             subs.append(e.get('sub_tema') or '')
         tems = [t for t in tems if t]
         subs = [s for s in subs if s]
-        canon_sub = _elegir(subs) if subs else ''
+        # v4.35: el canon de SUBTEMA debe ser fiel al título/cuerpo de TODAS
+        # las filas del bloque; si ningún candidato lo es, el subtema no se
+        # unifica (cada noticia conserva su especificidad). El TEMA sigue por
+        # mayoría simple: es la taxonomía cerrada del cliente y una clase
+        # genérica («Afiliación y Cotización») categoriza bien noticias que no
+        # contienen la palabra literal.
+        textos_bloque = [(_titulo_fila(rows[i], km), _texto_fila(rows[i], km))
+                         for i in filas]
+        canon_sub = _elegir_canon_fiel(subs, textos_bloque, brand, aliases) \
+            if subs else ''
         canon_tema = _elegir(tems) if tems else ''
         canon_tono = ''
         cton = Counter(t for t in tonos if t in TONOS)
@@ -4289,8 +4494,13 @@ def aplicar_pkl_del_cliente(
 def volcar_analisis_en_filas(rows: List[dict], mapa: Dict[int, int],
                              etiquetas: Dict[int, dict], temas: Dict[int, str],
                              preservar_tema: bool = False,
-                             incluir_tema: bool = True) -> List[dict]:
+                             incluir_tema: bool = True,
+                             ajustes_subtema: Optional[Dict[int, str]] = None) -> List[dict]:
     """Propaga etiqueta de GRUPO. No reasigna tema por fila.
+
+    `ajustes_subtema` (v4.35): {índice_fila: subtema} de la guarda de
+    fidelidad; esas filas conservan su especificidad en vez del subtema
+    heredado del grupo.
 
     `preservar_tema=True` (PKL de tema): solo rellena si la celda quedó vacía.
     No reescribe clases del cliente con el gate de frases del lote.
@@ -4334,7 +4544,12 @@ def volcar_analisis_en_filas(rows: List[dict], mapa: Dict[int, int],
         e = etiquetas.get(gid, {}) if gid else {}
         row['Tono_IA'] = e.get('tono') or 'Neutro'
         row['Tema_IA'] = tema_por_grupo.get(gid, '') if incluir_tema else ''
-        row['Subtema_IA'] = e.get('sub_tema') or 'Hecho informativo'
+        # v4.35: la guarda de fidelidad puede darle a la fila su subtema
+        # propio (especificidad) en vez del heredado del grupo.
+        if ajustes_subtema and i in ajustes_subtema:
+            row['Subtema_IA'] = ajustes_subtema[i]
+        else:
+            row['Subtema_IA'] = e.get('sub_tema') or 'Hecho informativo'
     return rows
 
 
@@ -4424,7 +4639,9 @@ def enrich_rows_with_ai(
     etiquetas = etiquetar_grupos(cfg, grupos, progreso, tam_lote=tam_lote, workers=workers,
                                  votos=votos, uso=uso)
     cambios = canonizar_subtemas(etiquetas)
-    extra_uni = unificar_subtemas_noticias_similares(grupos, etiquetas)
+    extra_uni = unificar_subtemas_noticias_similares(grupos, etiquetas,
+                                                    brand=brand,
+                                                    aliases=aliases)
     # v4.14: pase final entre lotes (1 llamada LLM): caza paráfrasis que la
     # canonización determinista no ve («Apertura…» vs «Inauguración…»).
     # Corre antes de las guardas de tono para que el voto por subtema use
@@ -4540,15 +4757,27 @@ def enrich_rows_with_ai(
     # misma noticia ⇒ mismo tono, tema y subtema), a nivel de FILA. Corre al
     # final para que nada posterior vuelva a separarlas; cubre pestaña
     # estándar y personalizada, con PKL o sin PKL.
+    # v4.35: con guarda de fidelidad (el canon debe corresponder al título y
+    # cuerpo de cada fila del bloque).
     uni_tit = unificar_etiquetas_titulos_similares(
-        rows, mapa, etiquetas, temas, km, incluir_tema=incluir_tema)
+        rows, mapa, etiquetas, temas, km, incluir_tema=incluir_tema,
+        brand=brand, aliases=aliases)
     if uni_tit:
         _ULTIMO_RESUMEN['etiquetas_unificadas_titulo_similar'] = uni_tit
+
+    # v4.35: red de seguridad final — ningún Subtema_IA menciona un nombre
+    # propio ausente en el título/cuerpo de ESA fila. Las filas infieles
+    # conservan su especificidad (ajuste por fila, no por grupo).
+    ajustes_fieles = aplicar_guarda_fidelidad_subtema(
+        rows, mapa, etiquetas, km, brand=brand, aliases=aliases)
+    if ajustes_fieles:
+        _ULTIMO_RESUMEN['subtemas_fidelidad_por_fila'] = len(ajustes_fieles)
 
     volcar_analisis_en_filas(
         rows, mapa, etiquetas, temas,
         preservar_tema=(theme_model is not None) and incluir_tema,
         incluir_tema=incluir_tema,
+        ajustes_subtema=ajustes_fieles,
     )
 
     temas_lote: List[str] = []

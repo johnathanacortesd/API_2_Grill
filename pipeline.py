@@ -658,6 +658,14 @@ def renombrar_columnas_xlsx(file_bytes: bytes, etiqueta_titulo: str,
     wb = load_workbook(io.BytesIO(file_bytes))
     try:
         ws = wb.active
+        # v4.35: además de 'Título' y 'Resumen - Aclaracion', se apartan otras
+        # columnas conocidas de cuerpo ('CuerpoEs', 'Cuerpo', 'Texto', ...).
+        # Así `_texto_fila` (que elige el texto más largo disponible) honra la
+        # columna de cuerpo ELEGIDA por el usuario en vez de una preexistente
+        # más larga: el análisis de la pestaña personalizada usa exactamente
+        # las columnas elegidas, igual que la estándar usa las suyas.
+        _APARTAR_CUERPO = {'CuerpoEs', 'Cuerpo', 'Texto', 'Texto completo',
+                           'Resumen', 'resumen corto'}
         for celda in ws[1]:
             if celda.column in (idx_t, idx_c):
                 continue
@@ -666,6 +674,8 @@ def renombrar_columnas_xlsx(file_bytes: bytes, etiqueta_titulo: str,
                 celda.value = "Título (original)"
             elif v == "Resumen - Aclaracion":
                 celda.value = "Resumen - Aclaracion (original)"
+            elif v in _APARTAR_CUERPO:
+                celda.value = v + " (original)"
         ws.cell(row=1, column=idx_t).value = "Título"
         ws.cell(row=1, column=idx_c).value = "Resumen - Aclaracion"
         bio = io.BytesIO()
