@@ -230,7 +230,9 @@ def _contexto_exacto_marca(texto: str, titulo: str, brand: str,
     texto_out = ' '.join(salida).strip()
     return texto_out[:tope] if len(texto_out) > tope else texto_out
 BASE_URL_DEFECTO = "https://api.openai.com/v1"
-MODELO_DEFECTO = "gpt-4.1-nano-2025-04-14"
+# v4.42: gpt-6-luna es el default. gpt-4.1-nano-2025-04-14 se descontinúa
+# en la API de OpenAI el 2026-10-23 (aviso de deprecación).
+MODELO_DEFECTO = "gpt-6-luna"
 JEV_URL_DEFECTO = "https://api.typesafe.ai/v1/systemone"
 TAM_LOTE_DEFECTO = 10
 WORKERS_DEFECTO = 8

@@ -1277,3 +1277,21 @@ suave, indicador react-aria/baseweb oculto. (3) Encabezado más compacto
 (padding e icono reducidos). (4) Letra base 16px→15px con ajustes
 proporcionales (secciones 0.95rem, pestañas 0.92rem). (5) Casillas de datos
 bien marcadas: --border-input más visible (#b3a075). Motor intacto.
+
+### v4.42 — gpt-6-luna pasa a ser el modelo por defecto (2026-10-08, aviso de deprecación OpenAI)
+OpenAI descontinúa en la API el 2026-10-23: gpt-3.5-turbo-0125, gpt-4-0613,
+gpt-4-1106-preview, gpt-4-turbo, gpt-4.1-nano, gpt-4o-2024-05-13, gpt-image-1,
+o1-2024-12-17, o1-pro-2025-03-19, o3-mini-2025-01-31, o4-mini-2025-04-16 y los
+finetuned de gpt-3.5-turbo, gpt-4.1-nano-2025-04-14, babbage-002, davinci-002,
+o4-mini-2025-04-16 y gpt-4. La app usaba gpt-4.1-nano-2025-04-14 por defecto:
+ahora el default es gpt-6-luna (lanzado 2026-09-22, $0.10/$0.50 por 1M
+tokens in/out, pensado para clasificación/extracción de alto volumen).
+Cambios: `MODELO_DEFECTO` en analyzer_tono_tema.py, defaults de
+`construir_ai_config_custom` (pipeline.py) y `enrich_rows_with_ai`
+(ai_analyzer.py), y `index=1` en los dos selectores de modelo de app.py
+(nano sigue elegible hasta el apagado; el help avisa la fecha). El modelo
+explícito se respeta tal cual. Nuevo `tools/evaluar_modelos_ab.py`:
+comparador A/B que corre el mismo flujo (construir_grupos +
+etiquetar_grupos) con dos modelos y reporta acuerdo tono/tema/subtema,
+precisión vs columnas esperadas y costo aproximado, para validar la
+calidad del cambio sobre dossiers propios. Suite: 401/401 OK.

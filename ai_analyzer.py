@@ -620,7 +620,7 @@ def enrich_rows_with_ai(
     brand: str,
     aliases: List[str],
     api_key: str,
-    model: str = "gpt-4.1-nano-2025-04-14",
+    model: str = "gpt-6-luna",
     progress_callback: Optional[Callable[[int, str], None]] = None,
     tone_model=None,
     theme_model=None,

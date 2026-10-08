@@ -110,7 +110,8 @@ class TestConfigCustomParidad(unittest.TestCase):
         self.assertEqual(cfg["workers"], 8)
         self.assertEqual(cfg["umbral_titulo"], 92)
         self.assertEqual(cfg["umbral_cuerpo"], 85)
-        self.assertEqual(cfg["model"], "gpt-4.1-nano-2025-04-14")
+        # v4.42: el default pasó a gpt-6-luna (nano se descontinúa el 2026-10-23).
+        self.assertEqual(cfg["model"], "gpt-6-luna")
 
 
 if __name__ == "__main__":
