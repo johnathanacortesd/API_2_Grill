@@ -1295,3 +1295,13 @@ comparador A/B que corre el mismo flujo (construir_grupos +
 etiquetar_grupos) con dos modelos y reporta acuerdo tono/tema/subtema,
 precisión vs columnas esperadas y costo aproximado, para validar la
 calidad del cambio sobre dossiers propios. Suite: 401/401 OK.
+
+### v4.43 — Costo aproximado en el correo de auditoría (2026-10-08, pedido del usuario)
+El correo de auditoría de uso (`auditoria_mail.py`, que llega tras cada
+dossier con IA) ahora incluye el costo aproximado: `construir_mensaje` lee
+de `analisis` (el `_ULTIMO_RESUMEN` de la corrida) las claves
+`costo_aprox_usd`, `costo_modelo` y `uso_tokens`, ya calculadas por el motor
+para la tarjeta de resultados, y agrega las líneas "Modelo" y
+"Costo IA aprox" (USD + tokens in/out + llamadas). Si la corrida no usó IA
+(sin `costo_aprox_usd`), esas líneas no aparecen. Best-effort como el resto
+del módulo: nunca interrumpe la corrida.

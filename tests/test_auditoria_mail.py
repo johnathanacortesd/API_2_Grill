@@ -64,6 +64,29 @@ class TestAuditoriaMail(unittest.TestCase):
         self.assertEqual(msg["To"], "dueno@gmail.com")
         self.assertIn("Universidad Simón Bolívar", msg["Subject"])
 
+    def test_mensaje_incluye_costo_aproximado(self):
+        # v4.43: el correo de auditoria trae modelo + costo aprox + tokens.
+        cfg = dict(self.env)
+        result = {"total_rows": 63, "process_duration": "45.2s",
+                  "analisis": {"costo_aprox_usd": 0.0456,
+                               "costo_modelo": "gpt-6-luna",
+                               "uso_tokens": {"input": 123456, "output": 7890,
+                                              "llamadas": 42}}}
+        msg = am.construir_mensaje(result, {"brand": "Brigard & Urrutia"}, cfg)
+        cuerpo = msg.get_content()
+        self.assertIn("Modelo        : gpt-6-luna", cuerpo)
+        self.assertIn("Costo IA aprox: $0.05 USD", cuerpo)
+        self.assertIn("123.456 in / 7.890 out", cuerpo)
+        self.assertIn("42 llamadas", cuerpo)
+
+    def test_mensaje_sin_costo_cuando_no_hubo_ia(self):
+        # Corrida sin IA (sin analisis): no aparecen las lineas de costo.
+        cfg = dict(self.env)
+        msg = am.construir_mensaje({"total_rows": 10}, {"brand": "Fenavi"}, cfg)
+        cuerpo = msg.get_content()
+        self.assertNotIn("Costo IA aprox", cuerpo)
+        self.assertNotIn("Modelo        :", cuerpo)
+
     def test_envia_por_smtp_con_starttls(self):
         with patch.dict(os.environ, self.env, clear=True), \
              patch.object(am.smtplib, "SMTP", FakeSMTP):

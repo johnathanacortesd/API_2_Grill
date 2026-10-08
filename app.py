@@ -17,7 +17,7 @@ from pipeline import (process_dossier, leer_columnas_xlsx, sugerir_columna,
 from pkl_classifier import PklClassifierError, load_sklearn_estimator
 
 # Versión visible de la app (se muestra en el encabezado). Actualizar en cada release.
-APP_VERSION = "v4.42"
+APP_VERSION = "v4.43"
 
 logger = logging.getLogger("limpieza_grill")
 if not logging.getLogger().handlers:

@@ -78,6 +78,20 @@ def construir_mensaje(result, ai_config, cfg):
         "Duplicadas    : %s" % (filas.get("duplicates") if filas.get("duplicates") is not None else "-"),
         "Duracion      : %s" % (filas.get("process_duration") or "-"),
     ]
+    # v4.43: costo aproximado de IA en el correo (viene de _ULTIMO_RESUMEN).
+    analisis_c = filas.get("analisis") or {}
+    ult_c = analisis_c.get("_ULTIMO_RESUMEN") or analisis_c
+    costo = (ult_c or {}).get("costo_aprox_usd")
+    if costo is not None:
+        uso_t = (ult_c or {}).get("uso_tokens") or {}
+        modelo_c = (ult_c or {}).get("costo_modelo") or "-"
+        costo_txt = "$%.2f USD" % costo if costo >= 0.01 else "$%.4f USD" % costo
+        lineas.append("Modelo        : %s" % modelo_c)
+        lineas.append("Costo IA aprox: %s (%s in / %s out · %d llamadas)" % (
+            costo_txt,
+            f"{uso_t.get('input', 0):,}".replace(",", "."),
+            f"{uso_t.get('output', 0):,}".replace(",", "."),
+            uso_t.get("llamadas", 0) or 0))
     if tonos:
         lineas.append("")
         lineas.append("Tonos: " + ", ".join("%s=%s" % (k, v) for k, v in sorted(tonos.items())))
