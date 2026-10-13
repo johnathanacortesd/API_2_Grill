@@ -40,6 +40,10 @@ TIPO_MEDIO_MAP = {
     "revista": "Revistas", "revistas": "Revistas",
 }
 
+# v4.44: tipos de medio (ya normalizados) cuyos enlaces de streaming van a la
+# columna "Audio". "Aire"/"Cable" -> "Televisión"; "AM"/"FM" -> "Radio".
+TIPOS_MEDIO_AUDIO = frozenset({"Radio", "Televisión"})
+
 # Columnas base (sin las 11 manuales obsoletas).
 # No exportar `revalorización` ni `resumen corto`; este último sí puede leerse
 # como fallback de entrada si el dossier fuente lo trae.
@@ -70,11 +74,15 @@ def output_columns_for_export(include_ai: bool = False, include_tema: bool = Tru
     (métrica determinista de presencia de marca, sin LLM).
     v4.26: la columna Prominencia va al final del todo, después de
     "Contexto analizado" (con o sin IA).
+    v4.44: la columna "Audio" (URL de streaming solo para Radio/Televisión)
+    va al final de todo, en todos los modos.
     """
     cols = list(BASE_OUTPUT_COLUMNS)
     if not include_ai:
         if include_prominencia:
             cols.append("Prominencia")
+        # v4.44: la columna "Audio" va al final en todos los modos.
+        cols.append("Audio")
         return cols
     audiencia_idx = cols.index("Audiencia")
     for offset, col in enumerate(AI_COLUMNS_AFTER_AUDIENCIA):
@@ -90,6 +98,8 @@ def output_columns_for_export(include_ai: bool = False, include_tema: bool = Tru
     # v4.26: la prominencia va al final, después de "Contexto analizado".
     if include_prominencia:
         cols.append("Prominencia")
+    # v4.44: la columna "Audio" va al final de todo, después de la última columna.
+    cols.append("Audio")
     return cols
 
 
@@ -121,6 +131,9 @@ def _columnas_preservadas(columnas_entrada, include_ai: bool = False,
             vistos.add(CONTEXTO_ANALIZADO_COL)
     if include_prominencia and "Prominencia" not in vistos:
         cols.append("Prominencia")
+    # v4.44: columna "Audio" siempre al final (no duplica si el xlsx ya la trae).
+    if "Audio" not in vistos:
+        cols.append("Audio")
     return cols
 
 
@@ -859,6 +872,14 @@ def normalize_dossier_dataframe(df, region_map, internet_map, progress: Progress
 
     df["Link (Streaming - Imagen)"] = link_stream_final
 
+    # v4.44: columna "Audio" — lleva la URL (Streaming - Imagen) solo para los
+    # tipos de medio de audio/video (Radio, Televisión); el resto queda vacío.
+    df["Audio"] = np.where(
+        df["Tipo de Medio"].isin(TIPOS_MEDIO_AUDIO),
+        url_streaming.map(_extract_url),
+        "",
+    )
+
     menciones_av = df.get("Menciones - Empresa", pd.Series([""] * len(df))).fillna("").astype(str).apply(clean_text)
     menciones_grafica = df.get("Empresa rel.", pd.Series([""] * len(df))).fillna("").astype(str).apply(clean_text)
     df["Menciones - Empresa"] = np.where(is_av, menciones_av, np.where(is_grafica, menciones_grafica, menciones_av))
@@ -913,7 +934,7 @@ def generate_output_excel(rows, km, progress: ProgressCb = None, columns_to_use:
     fmt_plain_id = wb.add_format({"num_format": "0"})
 
     for i, col_name in enumerate(cols):
-        if col_name in ["Título", "Resumen - Aclaracion", "Contexto analizado"]:
+        if col_name in ["Título", "Resumen - Aclaracion", "Contexto analizado", "Audio"]:
             ws.set_column(i, i, 55)
         elif col_name in ["Link Nota", "Link (Streaming - Imagen)"]:
             ws.set_column(i, i, 15)
@@ -977,6 +998,14 @@ def _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_plain_hlink,
                 cv = val.get("value", "Link")
                 if val.get("url"):
                     url = val["url"]
+            elif h == "Audio":
+                # v4.44: la URL se muestra completa (clicable), no colapsada a "Link".
+                audio_url = _extract_url(val)
+                if audio_url:
+                    cv = audio_url
+                    url = audio_url
+                else:
+                    cv = None
             elif val is not None:
                 if isinstance(val, str) and val.startswith("http"):
                     cv = "Link"

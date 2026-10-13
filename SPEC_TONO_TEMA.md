@@ -1305,3 +1305,19 @@ para la tarjeta de resultados, y agrega las líneas "Modelo" y
 "Costo IA aprox" (USD + tokens in/out + llamadas). Si la corrida no usó IA
 (sin `costo_aprox_usd`), esas líneas no aparecen. Best-effort como el resto
 del módulo: nunca interrumpe la corrida.
+
+### v4.44 — Columna "Audio" al final del xlsx (2026-10-13, pedido del usuario)
+El xlsx final ahora incluye una columna "Audio" como última columna, en todos
+los modos (con/sin IA, con/sin prominencia, y pestaña "Columnas
+personalizadas"): lleva la URL (Streaming - Imagen) solo para Tipo de Medio
+Radio y Televisión (Aire/AM/Cable/FM normalizan a esos dos); el resto de tipos
+queda vacío. La URL se muestra completa y clicable (no colapsada a la palabra
+"Link"). Cambios en `pipeline.py`: constante `TIPOS_MEDIO_AUDIO`, cálculo en
+`normalize_dossier_dataframe`, "Audio" al final en `output_columns_for_export`
+y `_columnas_preservadas` (sin duplicar si el xlsx ya la trae), ancho 55 en
+`generate_output_excel` y rama dedicada en `_write_xlsx_rows`. Tests: nuevo
+`tests/test_v444_columna_audio.py` (5 tests); actualizados
+`test_sin_tema.py`, `test_prominencia.py` y `test_v433_preservar_columnas.py`
+para la nueva última columna. Suite: 406/407 OK (el fallo restante es el
+histórico ambiental de `test_e2e_conserva_id_e_hipervinculos`: 61142010.0 vs
+61142010).
