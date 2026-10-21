@@ -1321,3 +1321,17 @@ y `_columnas_preservadas` (sin duplicar si el xlsx ya la trae), ancho 55 en
 para la nueva última columna. Suite: 406/407 OK (el fallo restante es el
 histórico ambiental de `test_e2e_conserva_id_e_hipervinculos`: 61142010.0 vs
 61142010).
+
+### v4.45 — Límite de seguridad de 1.000 filas por dossier (2026-10-21, pedido del usuario)
+Capa de seguridad para evitar llamadas masivas a la API: `process_dossier`
+cuenta las filas leídas del XLSX (tras `load_dossier_dataframe`, que ya
+descarta las filas vacías) y, si superan `MAX_FILAS_POR_DOSSIER = 1000`,
+detiene el proceso ANTES de normalizar/clasificar lanzando
+`LimiteFilasError` con un mensaje que indica cuántas filas trae el archivo y
+que se debe dividir el XLSX en partes de hasta 1.000 filas. En `app.py`,
+`run_cleaning_process` captura esa excepción y muestra el mensaje directo
+con `st.error` (sin el prefijo genérico "El proceso se interrumpió"); el
+hint del panel en vivo se actualizó al nuevo límite. Tests:
+`tests/test_v445_limite_filas.py` (1.001 filas → error con el mensaje;
+1.000 filas exactas → procesa normal). Suite: 410/411 OK (el fallo restante
+es el histórico ambiental de `test_e2e_conserva_id_e_hipervinculos`).

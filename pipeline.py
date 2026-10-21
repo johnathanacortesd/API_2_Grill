@@ -171,6 +171,20 @@ PLAIN_HYPERLINK_COLUMNS = frozenset({"Link Nota", "Link (Streaming - Imagen)"})
 REL_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 HYPERLINK_TAIL_BYTES = 4 * 1024 * 1024
 
+# v4.45 — Capa de seguridad: máximo de filas leídas por dossier. Evita
+# llamadas masivas a la API si se sube un XLSX demasiado grande; el usuario
+# debe dividir el archivo en partes de hasta este número de filas.
+MAX_FILAS_POR_DOSSIER = 1000
+
+
+class LimiteFilasError(ValueError):
+    """El dossier supera MAX_FILAS_POR_DOSSIER filas leídas."""
+
+
+def _fmt_miles(n: int) -> str:
+    """Formatea un entero con punto como separador de miles (es)."""
+    return f"{int(n):,}".replace(",", ".")
+
 
 def emit_progress(progress: ProgressCb, pct: int, msg: str) -> None:
     pct = max(0, min(100, int(pct)))
@@ -1106,6 +1120,19 @@ def process_dossier(
 
     df_normalized = load_dossier_dataframe(file_bytes, progress=progress)
     del file_bytes
+
+    # v4.45: límite de seguridad, antes de cualquier procesamiento o
+    # análisis. Si el XLSX trae más filas de las permitidas, se detiene con
+    # un mensaje claro en vez de disparar llamadas masivas a la API.
+    n_filas = len(df_normalized)
+    if n_filas > MAX_FILAS_POR_DOSSIER:
+        raise LimiteFilasError(
+            f"El archivo tiene {_fmt_miles(n_filas)} filas y el máximo por "
+            f"corrida es {_fmt_miles(MAX_FILAS_POR_DOSSIER)}. Divide el XLSX "
+            f"en partes de hasta {_fmt_miles(MAX_FILAS_POR_DOSSIER)} filas y "
+            "procesa cada parte por separado. Este límite evita llamadas "
+            "masivas a la API."
+        )
     # v4.33: orden de columnas tal como venían en el archivo (antes de
     # normalizar, que puede agregar columnas como "Tipo de Medio"). Solo se
     # usa en la pestaña "Columnas personalizadas" (preservar_columnas=True).

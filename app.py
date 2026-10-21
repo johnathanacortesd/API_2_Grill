@@ -13,11 +13,12 @@ import pandas as pd
 from catalogo_tono_tema import CRITERIOS_TONO
 from perfil_cliente import cargar_perfil, guardar_perfil, listar_perfiles, perfil_a_resumen, slugify
 from pipeline import (process_dossier, leer_columnas_xlsx, sugerir_columna,
-                      renombrar_columnas_xlsx, construir_ai_config_custom)
+                      renombrar_columnas_xlsx, construir_ai_config_custom,
+                      LimiteFilasError)
 from pkl_classifier import PklClassifierError, load_sklearn_estimator
 
 # Versión visible de la app (se muestra en el encabezado). Actualizar en cada release.
-APP_VERSION = "v4.44"
+APP_VERSION = "v4.45"
 
 logger = logging.getLogger("limpieza_grill")
 if not logging.getLogger().handlers:
@@ -342,7 +343,7 @@ def _render_live_html(pct, msg, elapsed, file_label, active_key):
         <div class="live-metric"><div class="live-metric-val">en curso</div><div class="live-metric-lbl">Estado</div></div>
       </div>
       <div class="step-list">{''.join(steps_html)}</div>
-      <div class="live-hint">La deduplicación previa agrupa notas idénticas para procesar hasta 2.000 filas con alta velocidad.</div>
+      <div class="live-hint">Límite de seguridad: máximo 1.000 filas por archivo. La deduplicación previa agrupa las notas idénticas antes del análisis.</div>
       <div class="live-detail">{safe_msg}</div>
     </div>
     """
@@ -383,6 +384,12 @@ def run_cleaning_process(df_file, file_meta=None, ai_config=None):
             paint(100, "Limpieza completada")
             status_widget.update(label="✓ Limpieza completada con éxito", state="complete")
             time.sleep(0.4)
+        except LimiteFilasError as exc:
+            # v4.45: mensaje directo al usuario, sin el prefijo genérico de
+            # interrupción: el archivo supera el máximo de filas permitido.
+            status_widget.update(label="Límite de seguridad de filas superado", state="error")
+            st.error(f"⚠️ {exc}")
+            return
         except Exception as exc:
             logger.exception("Fallo en el proceso de limpieza")
             status_widget.update(label="Error durante el procesamiento", state="error")
