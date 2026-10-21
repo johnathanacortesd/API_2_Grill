@@ -3,6 +3,7 @@
 # ======================================
 import datetime
 import gc
+import html
 import io
 import logging
 import math
@@ -354,10 +355,31 @@ def clean_cuerpo(text):
     return text.strip()
 
 
+def decode_html_entities(text):
+    """Decodifica las entidades HTML de un texto (numéricas hex/dec y con
+    nombre) a su carácter real: "&#x201C;" -> “ , "&#xF3;" -> ó, "&amp;" -> &.
+
+    Los exports de algunas plataformas traen los títulos con las entidades
+    sin decodificar. Solo se convierten las entidades: no se quita, recorta
+    ni reordena nada más del texto (un "|" o un "-" del título se conserva).
+    Hasta 3 pasadas por si la entidad viene doblemente codificada
+    ("&amp;#xF3;" -> "&#xF3;" -> "ó").
+    """
+    if not isinstance(text, str):
+        return text
+    out = text
+    for _ in range(3):
+        decoded = html.unescape(out)
+        if decoded == out:
+            break
+        out = decoded
+    return out
+
+
 def clean_title_for_output(title):
     if not isinstance(title, str):
         return ""
-    return re.sub(r"\s+", " ", str(title)).strip()
+    return re.sub(r"\s+", " ", decode_html_entities(str(title))).strip()
 
 
 def terminar_en_punto(text):
@@ -816,7 +838,8 @@ def normalize_dossier_dataframe(df, region_map, internet_map, progress: Progress
     df["Sección - Programa"] = df.get("Sección - Programa", pd.Series(dtype=str)).astype(str).apply(clean_text)
 
     titulo_col = "Título" if "Título" in df.columns else "Titulo"
-    df["Título"] = df.get(titulo_col, pd.Series(dtype=str)).astype(str).apply(clean_text)
+    # v4.46: el título además decodifica entidades HTML (clean_title_for_output).
+    df["Título"] = df.get(titulo_col, pd.Series(dtype=str)).astype(str).apply(clean_title_for_output)
     df["Autor - Conductor"] = df.get("Autor - Conductor", pd.Series(dtype=str)).astype(str).apply(clean_text)
     df["Nro. Pagina"] = df.get("Nro. Pagina", pd.Series(dtype=str))
 

@@ -1335,3 +1335,16 @@ hint del panel en vivo se actualizó al nuevo límite. Tests:
 `tests/test_v445_limite_filas.py` (1.001 filas → error con el mensaje;
 1.000 filas exactas → procesa normal). Suite: 410/411 OK (el fallo restante
 es el histórico ambiental de `test_e2e_conserva_id_e_hipervinculos`).
+
+### v4.46 — Títulos con entidades HTML decodificadas (2026-10-21, pedido del usuario)
+Los exports de algunas plataformas traen títulos con entidades HTML sin
+decodificar ("&#x201C;La revaluaci&#xF3;n..."). Nueva función
+`decode_html_entities` en `pipeline.py` (html.unescape, hasta 3 pasadas por
+doble codificación) aplicada SOLO al título: en `normalize_dossier_dataframe`
+(la columna "Título" pasa por `clean_title_for_output`) y en la escritura del
+xlsx (misma función). No se quita ni se recorta nada más: un "|" o un "-"
+del título se conserva completo. Tests:
+`tests/test_v446_titulos_entidades.py` (los 5 ejemplos del usuario, título
+con "|" intacto, doble codificación y proceso completo). Suite: 415/416 OK
+(el fallo restante es el histórico ambiental de
+`test_e2e_conserva_id_e_hipervinculos`).
