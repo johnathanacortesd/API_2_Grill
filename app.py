@@ -18,7 +18,7 @@ from pipeline import (process_dossier, leer_columnas_xlsx, sugerir_columna,
 from pkl_classifier import PklClassifierError, load_sklearn_estimator
 
 # Versión visible de la app (se muestra en el encabezado). Actualizar en cada release.
-APP_VERSION = "v4.48"
+APP_VERSION = "v4.49"
 
 logger = logging.getLogger("limpieza_grill")
 if not logging.getLogger().handlers:
@@ -612,13 +612,13 @@ def main():
                             help="Cada grupo se etiqueta N veces y gana la mayoría; un empate cae a Neutro. "
                                  "Con 2 se reducen los vaivenes de los modelos pequeños; con 3 sube el costo "
                                  "una vez más.")
-                        modelo_input = st.selectbox(
+                        modelo_input = st.text_input(
                             "Modelo de IA",
-                            options=["gpt-6-luna", "gpt-6-sol"],
-                            index=0,
-                            help="gpt-6-luna (lanzado 2026-09-22) es el más rápido y económico "
-                                 "($0.10 por 1M tokens de entrada): ideal para dossiers de alto volumen. "
-                                 "gpt-6-sol es más capaz pero más costoso.",
+                            value="gpt-6-luna",
+                            disabled=True,
+                            key="modelo_fijo",
+                            help="Único modelo habilitado: gpt-6-luna (el más rápido y económico, "
+                                 "$0.10 por 1M tokens de entrada; ideal para dossiers de alto volumen).",
                         )
                         st.markdown("**💾 Perfil de cliente**")
                         guardar_chk = st.checkbox(
@@ -927,14 +927,13 @@ def main():
                         help="Cada grupo se etiqueta N veces y gana la mayoría; un empate cae a Neutro. "
                              "Con 2 se reducen los vaivenes de los modelos pequeños; con 3 sube el costo "
                              "una vez más.")
-                    modelo_sel_c = st.selectbox(
+                    modelo_sel_c = st.text_input(
                         "Modelo de IA",
-                        options=["gpt-6-luna", "gpt-6-sol"],
-                        index=0,
+                        value="gpt-6-luna",
+                        disabled=True,
                         key="modelo_custom",
-                        help="gpt-6-luna (lanzado 2026-09-22) es el más rápido y económico "
-                             "($0.10 por 1M tokens de entrada): ideal para dossiers de alto volumen. "
-                             "gpt-6-sol es más capaz pero más costoso.",
+                        help="Único modelo habilitado: gpt-6-luna (el más rápido y económico, "
+                             "$0.10 por 1M tokens de entrada; ideal para dossiers de alto volumen).",
                     )
 
                 st.markdown('<div class="sec-label">3. Modelos PKL del cliente (opcional)</div>', unsafe_allow_html=True)
