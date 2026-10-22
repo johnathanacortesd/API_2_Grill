@@ -352,7 +352,10 @@ def clean_cuerpo(text):
         return ""
     text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
     text = re.sub(r"<[^>]+>", "", text)
-    return text.strip()
+    # v4.47: el cuerpo (Resumen - Aclaracion / CuerpoEs) se mantiene exacto:
+    # la única limpieza es decodificar las entidades HTML, igual que en los
+    # títulos (v4.46). No se quita, recorta ni reordena ninguna palabra.
+    return decode_html_entities(text).strip()
 
 
 def decode_html_entities(text):
@@ -390,15 +393,22 @@ def terminar_en_punto(text):
 
 
 def corregir_texto(text):
+    """Limpieza de salida del Resumen - Aclaracion.
+
+    v4.47: el texto se mantiene EXACTO. La versión anterior buscaba la
+    primera letra mayúscula y descartaba todo lo que hubiera antes, así
+    que un resumen que empieza con un número o en minúscula perdía
+    palabras (p. ej. "2026 arranca con ventas récord en Colombia" salía
+    como "Colombia."), y borraba los "[...]" y colapsaba los párrafos.
+    Ahora la limpieza es solo la misma de los títulos (v4.46):
+    decodificar las entidades HTML ("creci&#xF3;" -> "creció"), sin
+    quitar ni recortar ninguna palabra, y el cierre de siempre: el texto
+    termina en UN solo punto, nunca en tres ("..."), con
+    `terminar_en_punto`.
+    """
     if not isinstance(text, str) or text.strip() in ("", "nan", "None"):
         return ""
-    text = re.sub(r"(<br>|\[\.\.\.\]|\s+)", " ", text).strip()
-    m = re.search(r"[A-ZÁÉÍÓÚÑ]", text)
-    if m:
-        text = text[m.start():]
-    if text:
-        text = terminar_en_punto(text)
-    return text
+    return terminar_en_punto(decode_html_entities(text).strip())
 
 
 def normalizar_tipo_medio(tipo_raw):
@@ -862,19 +872,11 @@ def normalize_dossier_dataframe(df, region_map, internet_map, progress: Progress
 
     cuerpo_cleaned = raw_resumen_orig.astype(str).apply(clean_cuerpo)
 
-    def fmt_grafica(text):
-        if not isinstance(text, str) or not text.strip():
-            return text
-        parrafos = [p.strip() for p in text.split("\n") if p.strip()]
-        joined = "\n\n".join(parrafos) if len(parrafos) > 1 else text
-        return terminar_en_punto(joined)
-
+    # v4.47: el Resumen - Aclaracion queda tal como viene del cuerpo (solo
+    # con las entidades HTML decodificadas por clean_cuerpo), para TODOS
+    # los tipos de medio. Antes, a Prensa/Internet/Revistas se les
+    # rearmaban los párrafos y se les forzaba un punto final.
     df["Resumen - Aclaracion"] = cuerpo_cleaned
-    grafica_mask = is_grafica.fillna(False)
-    if grafica_mask.any():
-        df.loc[grafica_mask, "Resumen - Aclaracion"] = (
-            df.loc[grafica_mask, "Resumen - Aclaracion"].apply(fmt_grafica)
-        )
 
     url_nota_av = df.get("URL Nota AV", df.get("Link Nota AV", pd.Series([""] * len(df))))
     url_streaming = df.get("URL (Streaming - Imagen)", pd.Series([""] * len(df)))
@@ -1004,6 +1006,12 @@ def _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_plain_hlink,
         rk = km.get("resumen")
         if rk and rk in row:
             row[rk] = corregir_texto(row.get(rk))
+        # v4.47: si el xlsx trae su propia columna CuerpoEs (p. ej. en la
+        # pestaña de columnas personalizadas, que conserva las columnas de
+        # entrada), recibe la misma limpieza del resumen: texto exacto,
+        # solo entidades HTML decodificadas y cierre en un solo punto.
+        if "CuerpoEs" in row and isinstance(row.get("CuerpoEs"), str) and row["CuerpoEs"].strip():
+            row["CuerpoEs"] = corregir_texto(row["CuerpoEs"])
 
         excel_row = i + 1
         for cidx, h in enumerate(cols):
