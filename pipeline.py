@@ -17,6 +17,7 @@ from xml.etree import ElementTree as ET
 import numpy as np
 import pandas as pd
 import xlsxwriter
+from xlsxwriter.utility import xl_col_to_name
 from openpyxl import load_workbook
 from openpyxl.utils.cell import column_index_from_string, coordinate_from_string, range_boundaries
 from unidecode import unidecode
@@ -100,6 +101,12 @@ def output_columns_for_export(include_ai: bool = False, include_tema: bool = Tru
     "Contexto analizado" (con o sin IA).
     v4.44: la columna "Audio" (URL de streaming solo para Radio/Televisión)
     va al final de todo, en todos los modos.
+    v4.55: la columna "texto" va al final de todo, después de "Audio", en
+    todos los modos. Lleva la fórmula =ESPACIOS(SUSTITUIR(Contexto; Título; ""))
+    (guardada en inglés como TRIM(SUBSTITUTE(...)); Excel en español la
+    muestra traducida). El escritor resuelve las letras por nombre de columna,
+    así que en la exportación estándar con IA son exactamente X (Contexto
+    analizado) y H (Título).
     """
     cols = list(BASE_OUTPUT_COLUMNS)
     if not include_ai:
@@ -108,7 +115,11 @@ def output_columns_for_export(include_ai: bool = False, include_tema: bool = Tru
         # v4.44: la columna "Audio" va al final en todos los modos.
         cols.append("Audio")
         # v4.52: Audiencia antes de Tier, salvo Fenavi.
-        return _audiencia_antes_de_tier(cols) if audiencia_antes_de_tier else cols
+        cols = _audiencia_antes_de_tier(cols) if audiencia_antes_de_tier else cols
+        # v4.55: "texto" al final de todo.
+        if "texto" not in cols:
+            cols.append("texto")
+        return cols
     audiencia_idx = cols.index("Audiencia")
     for offset, col in enumerate(AI_COLUMNS_AFTER_AUDIENCIA):
         if col not in cols:
@@ -126,7 +137,11 @@ def output_columns_for_export(include_ai: bool = False, include_tema: bool = Tru
     # v4.44: la columna "Audio" va al final de todo, después de la última columna.
     cols.append("Audio")
     # v4.52: Audiencia antes de Tier, salvo Fenavi.
-    return _audiencia_antes_de_tier(cols) if audiencia_antes_de_tier else cols
+    cols = _audiencia_antes_de_tier(cols) if audiencia_antes_de_tier else cols
+    # v4.55: "texto" al final de todo.
+    if "texto" not in cols:
+        cols.append("texto")
+    return cols
 
 
 def _columnas_preservadas(columnas_entrada, include_ai: bool = False,
@@ -162,7 +177,11 @@ def _columnas_preservadas(columnas_entrada, include_ai: bool = False,
     if "Audio" not in vistos:
         cols.append("Audio")
     # v4.52: Audiencia antes de Tier, salvo Fenavi (igual que la pestaña estándar).
-    return _audiencia_antes_de_tier(cols) if audiencia_antes_de_tier else cols
+    cols = _audiencia_antes_de_tier(cols) if audiencia_antes_de_tier else cols
+    # v4.55: "texto" al final de todo (misma fórmula que en la estándar).
+    if "texto" not in cols:
+        cols.append("texto")
+    return cols
 
 
 KEY_MAP = {
@@ -1000,7 +1019,7 @@ def generate_output_excel(rows, km, progress: ProgressCb = None, columns_to_use:
     fmt_plain_id = wb.add_format({"num_format": "0"})
 
     for i, col_name in enumerate(cols):
-        if col_name in ["Título", "Resumen - Aclaracion", "Contexto analizado", "Audio"]:
+        if col_name in ["Título", "Resumen - Aclaracion", "Contexto analizado", "Audio", "texto"]:
             ws.set_column(i, i, 55)
         elif col_name in ["Link Nota", "Link (Streaming - Imagen)"]:
             ws.set_column(i, i, 15)
@@ -1042,6 +1061,28 @@ def _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_plain_hlink,
 
         excel_row = i + 1
         for cidx, h in enumerate(cols):
+            # v4.55: columna final "texto" con fórmula. En la exportación
+            # estándar con IA las letras resuelven exactamente a X (Contexto
+            # analizado) y H (Título); en la personalizada se adaptan a las
+            # posiciones reales para que el cálculo sea el mismo. El archivo
+            # guarda la fórmula en inglés (TRIM/SUBSTITUTE) y Excel en español
+            # la muestra como =ESPACIOS(SUSTITUIR(X2; H2; "")). El valor en
+            # caché se calcula en Python para que se vea bien antes de
+            # recalcular. Sin "Contexto analizado" (modo sin IA) queda vacía.
+            if h == "texto":
+                if "Título" in cols and CONTEXTO_ANALIZADO_COL in cols:
+                    ctx_l = xl_col_to_name(cols.index(CONTEXTO_ANALIZADO_COL))
+                    tit_l = xl_col_to_name(cols.index("Título"))
+                    fila_xl = excel_row + 1
+                    formula = f"=TRIM(SUBSTITUTE({ctx_l}{fila_xl},{tit_l}{fila_xl},\"\"))"
+                    ctx_v = row.get(CONTEXTO_ANALIZADO_COL) or ""
+                    tit_v = row.get("Título") or ""
+                    base = str(ctx_v).replace(str(tit_v), "") if str(tit_v) else str(ctx_v)
+                    cache = " ".join(base.split())
+                    ws.write_formula(excel_row, cidx, formula, None, cache)
+                else:
+                    ws.write_blank(excel_row, cidx, None)
+                continue
             val = row.get(h)
             cv = None
             url = None
