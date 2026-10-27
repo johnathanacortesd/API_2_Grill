@@ -107,6 +107,7 @@ def output_columns_for_export(include_ai: bool = False, include_tema: bool = Tru
     sin el Título, con espacios sobrantes limpiados).
     v4.57: al final de todo, después de "Audio", van "Link Ext" y "Web Ext"
     (enlace completo a la noticia; "Web Ext" solo para Online/Internet).
+    v4.58: "Web Ext" toma su valor de la columna "URL Nota" (no de "Link Ext").
     """
     cols = list(BASE_OUTPUT_COLUMNS)
     if not include_ai:
@@ -581,10 +582,12 @@ def _url_link_ext(row) -> str:
 
 
 def _url_web_ext(row) -> str:
-    """Enlace para la columna "Web Ext" (v4.57): solo Online/Internet
-    (normalizado a "Internet"); los demás tipos quedan vacíos."""
+    """Enlace para la columna "Web Ext" (v4.58): solo Online/Internet
+    (normalizado a "Internet") y tomado de la columna "URL Nota" (el enlace
+    al artículo en el medio, distinto del Validar de GlobalNews que lleva
+    "Link Ext"); los demás tipos quedan vacíos."""
     if _tipo_medio_norm(row) == "Internet":
-        return _url_link_ext(row)
+        return _extract_url(row.get("URL Nota"))
     return ""
 
 
