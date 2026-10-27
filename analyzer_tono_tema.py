@@ -233,10 +233,12 @@ BASE_URL_DEFECTO = "https://api.openai.com/v1"
 # v4.42: gpt-6-luna es el default. gpt-4.1-nano-2025-04-14 se descontinúa
 # en la API de OpenAI el 2026-10-23 (aviso de deprecación).
 MODELO_DEFECTO = "gpt-6-luna"
-# v4.51: sello del analizador. El encabezado de la app lo muestra junto a
+# v4.53: sello del analizador. El encabezado de la app lo muestra junto a
 # APP_VERSION; si el despliegue muestra un sello distinto (o "sin-sello"),
 # el contenedor NO corre este archivo aunque el encabezado diga otra versión.
-ANALYZER_BUILD = "v4.52-guarda-asunto"
+ANALYZER_BUILD = "v4.53-guarda-asunto"
+# v4.53: solo cambia el sello (la lógica del analizador no se toca en esta versión;
+# el cambio es de interfaz).
 JEV_URL_DEFECTO = "https://api.typesafe.ai/v1/systemone"
 TAM_LOTE_DEFECTO = 10
 WORKERS_DEFECTO = 8
