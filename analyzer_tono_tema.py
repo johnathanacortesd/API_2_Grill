@@ -236,7 +236,7 @@ MODELO_DEFECTO = "gpt-6-luna"
 # v4.53: sello del analizador. El encabezado de la app lo muestra junto a
 # APP_VERSION; si el despliegue muestra un sello distinto (o "sin-sello"),
 # el contenedor NO corre este archivo aunque el encabezado diga otra versión.
-ANALYZER_BUILD = "v4.56-guarda-asunto"  # v4.56: solo sello; la lógica es la de v4.54
+ANALYZER_BUILD = "v4.59-agrupa-similares"  # v4.56: solo sello; la lógica es la de v4.54
 # v4.53: solo cambia el sello (la lógica del analizador no se toca en esta versión;
 # el cambio es de interfaz).
 JEV_URL_DEFECTO = "https://api.typesafe.ai/v1/systemone"
@@ -2255,6 +2255,21 @@ def _etiqueta_fiel_a_texto(etiqueta: str, titulo: str, texto: str,
     return all(raiz(n) in raices for n in nombres)
 
 
+def _emparentado(a: str, b: str) -> bool:
+    """Cotejo tolerante a la familia morfológica (verbo/sustantivo:
+    «fortalece» ~ «fortalecimiento» comparten la raíz «fortalec»): el
+    stemmer del módulo solo quita plurales, así que exigir igualdad exacta
+    rechazaría generalizaciones legítimas."""
+    if a == b:
+        return True
+    k = 0
+    for ca, cb in zip(a, b):
+        if ca != cb:
+            break
+        k += 1
+    return k >= 6
+
+
 def _asunto_fiel_a_texto(etiqueta: str, titulo: str, texto: str,
                          brand: str = '',
                          aliases: Sequence[str] = ()) -> bool:
@@ -2283,21 +2298,24 @@ def _asunto_fiel_a_texto(etiqueta: str, titulo: str, texto: str,
     if not dist:
         return True
     hay = _contenido_discriminante(str(titulo or '') + ' ' + str(texto or ''))
-    # Cotejo tolerante a la familia morfológica (verbo/sustantivo: «fortalece»
-    # ~ «fortalecimiento» comparten la raíz «fortalec»): el stemmer del módulo
-    # solo quita plurales, así que exigir igualdad exacta rechazaría
-    # generalizaciones legítimas.
-    def _emparentado(a: str, b: str) -> bool:
-        if a == b:
-            return True
-        k = 0
-        for ca, cb in zip(a, b):
-            if ca != cb:
-                break
-            k += 1
-        return k >= 6
     presentes = sum(1 for d in dist if any(_emparentado(d, t) for t in hay))
     return presentes >= min(2, len(dist))
+
+
+def _anclaje_titulo(etiqueta: str, titulo: str,
+                    brand: str = '',
+                    aliases: Sequence[str] = ()) -> bool:
+    """True si el asunto de la etiqueta está anclado en el TITULAR: al
+    menos 1 stem distintivo de la etiqueta aparece en el título (mismo
+    cotejo tolerante que `_asunto_fiel_a_texto`, pero en el titular y con
+    umbral 1). Solo se usa como desempate en `_elegir_canon_fiel`, nunca
+    como filtro de fidelidad."""
+    marca = _contenido_discriminante(' '.join([brand or ''] + list(aliases or [])))
+    dist = (_contenido_discriminante(etiqueta) - GENERICO_NO_UNEN) - marca
+    if not dist:
+        return False
+    hay = _contenido_discriminante(str(titulo or ''))
+    return any(any(_emparentado(d, t) for t in hay) for d in dist)
 
 
 def _elegir_canon_fiel(valores: Sequence[str],
@@ -2307,7 +2325,16 @@ def _elegir_canon_fiel(valores: Sequence[str],
     """Canon de un bloque: el más frecuente (empate: el más largo) que sea
     fiel al título/cuerpo de TODAS las filas del bloque. Si ninguno lo es,
     devuelve '': el bloque no se unifica y cada noticia conserva su
-    especificidad (v4.35: sin agrupación forzada)."""
+    especificidad (v4.35: sin agrupación forzada).
+
+    v4.59: en el desempate, antes del largo, se prefiere el candidato
+    anclado en MÁS titulares del bloque (`_anclaje_titulo`): el canon debe
+    describir el hecho compartido tal como lo titulan las noticias, no un
+    aspecto lateral que solo aparece en los cuerpos. Caso real Comfenalco
+    2026-10-27: «Galardón a concesionaria vial» (anclado en los 2 titulares:
+    reconocimiento/galardones + vial) gana a «Organización de encuentro
+    empresarial» (anclado en 1: solo el primer titular menciona el
+    encuentro; el segundo no), aunque este sea más largo."""
     frec = Counter(nz(v) for v in valores if nz(v))
     if not frec:
         return ''
@@ -2316,7 +2343,11 @@ def _elegir_canon_fiel(valores: Sequence[str],
         k = nz(v)
         if k and k not in forma:
             forma[k] = str(v)
-    orden = sorted(frec, key=lambda k: (-frec[k], -len(k.split()), -len(k)))
+    anclaje = {k: sum(1 for t, _x in textos
+                      if _anclaje_titulo(forma[k], t, brand, aliases))
+               for k in frec}
+    orden = sorted(frec, key=lambda k: (-frec[k], -anclaje[k],
+                                        -len(k.split()), -len(k)))
     for k in orden:
         s = forma[k]
         if all(_etiqueta_fiel_a_texto(s, t, x, brand, aliases)
@@ -2953,6 +2984,22 @@ def unificar_etiquetas_titulos_similares(rows: List[dict], mapa: Dict[int, int],
             s = fuzz.token_set_ratio(titulos[k], titulos[j], score_cutoff=70)
             if (s >= umbral) or (s >= 70 and puente >= 3):
                 uni(k, j)
+            elif puente >= 5:
+                # v4.59: mismo hecho con redacción distinta en la cola del
+                # titular. El corte 70 dejaba fuera pares que comparten
+                # sujeto + verbo (5 palabras distintivas) pero difieren en
+                # el resto («Unión Vial Camino del Pacífico recibe doble
+                # reconocimiento en Encuentro de Líderes Empresariales» vs
+                # «...recibe dos galardones por su labor social»: puente 5
+                # y token_set 67.9 → no se unían y quedaban con subtemas
+                # distintos). Con puente >= 5 y token_set >= 60 se agrupan
+                # sin abrir la puerta a los casos v4.50 (allí el puente
+                # tras excluir marca/omnipresentes era 0). El 60 evita el
+                # extremo contrario: 5 palabras en común en titulares muy
+                # largos y por lo demás distintos no bastan.
+                s2 = fuzz.token_set_ratio(titulos[k], titulos[j])
+                if s2 >= 60:
+                    uni(k, j)
 
     def _elegir(vals):
         c = Counter(vals)
@@ -3279,9 +3326,6 @@ def proponer_taxonomia(cfg: dict, grupos: List[dict], etiquetas: Dict[int, dict]
             data = {}
         for c in data.get('cubos', []) or []:
             v = cubo_valido(c, {'temas': propuestas}, permitir_nuevos=True)
-            if v and not any(_mismo_cubo(v, p) for p in propuestas):
-                propuestas.append(v)
-
     if not propuestas:
         return taxonomia_por_nombre('Gobierno territorial')
 
