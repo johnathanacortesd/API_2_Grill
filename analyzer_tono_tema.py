@@ -2246,6 +2246,51 @@ def _etiqueta_fiel_a_texto(etiqueta: str, titulo: str, texto: str,
     return all(raiz(n) in raices for n in nombres)
 
 
+def _asunto_fiel_a_texto(etiqueta: str, titulo: str, texto: str,
+                         brand: str = '',
+                         aliases: Sequence[str] = ()) -> bool:
+    """True si el ASUNTO de la etiqueta aparece en el título/cuerpo de ESTA
+    noticia: al menos 2 stems distintivos de la etiqueta (o todos, si
+    tiene menos de 2) están en el texto. La marca y sus alias no cuentan
+    (son el sujeto del dossier, no el asunto) y los genéricos tampoco.
+    Sin stems distintivos no hay nada que falsar: fiel, como antes.
+
+    Solo la usa la guarda final por fila (`aplicar_guarda_fidelidad_subtema`):
+    es el último recurso antes de volcar, y solo RECHAZA etiquetas, nunca
+    crea una unión. Por eso NO se usa en `_elegir_canon_fiel`: un canon de
+    bloque es una generalización legítima («Fortalecimiento del PAE en
+    Soledad» para variantes del mismo hecho) y no debe exigírsele la misma
+    literalidad que a la etiqueta final de una fila.
+
+    Caso real Unisimón 2026-10-27: «Diplomado para formación de
+    cuidadores» impuesto a la noticia de la Cátedra América Latina y
+    «Innovación educativa en colegios públicos» impuesto a EcoFest 2026.
+    Ambas pasaban el cotejo de nombres propios (no contienen ninguno);
+    este cotejo las rechaza (cero stems distintivos en común con su
+    noticia).
+    """
+    marca = _contenido_discriminante(' '.join([brand or ''] + list(aliases or [])))
+    dist = (_contenido_discriminante(etiqueta) - GENERICO_NO_UNEN) - marca
+    if not dist:
+        return True
+    hay = _contenido_discriminante(str(titulo or '') + ' ' + str(texto or ''))
+    # Cotejo tolerante a la familia morfológica (verbo/sustantivo: «fortalece»
+    # ~ «fortalecimiento» comparten la raíz «fortalec»): el stemmer del módulo
+    # solo quita plurales, así que exigir igualdad exacta rechazaría
+    # generalizaciones legítimas.
+    def _emparentado(a: str, b: str) -> bool:
+        if a == b:
+            return True
+        k = 0
+        for ca, cb in zip(a, b):
+            if ca != cb:
+                break
+            k += 1
+        return k >= 6
+    presentes = sum(1 for d in dist if any(_emparentado(d, t) for t in hay))
+    return presentes >= min(2, len(dist))
+
+
 def _elegir_canon_fiel(valores: Sequence[str],
                        textos: Sequence[Tuple[str, str]],
                        brand: str = '',
@@ -2280,6 +2325,12 @@ def aplicar_guarda_fidelidad_subtema(rows: List[dict], mapa: Dict[int, int],
     es, la fila conserva su especificidad con un rótulo derivado de su propio
     titular (determinista, fiel por construcción).
 
+    v4.50: además del nombre propio ausente, se exige el asunto: los stems
+    distintivos de la etiqueta deben aparecer en el título/cuerpo de ESA
+    fila (`_asunto_fiel_a_texto`). Caso real Unisimón 2026-10-27: «Diplomado
+    para formación de cuidadores» en la noticia de la Cátedra América Latina
+    y «Innovación educativa en colegios públicos» en EcoFest 2026.
+
     Devuelve {índice_fila: subtema} para aplicar en volcar_analisis_en_filas.
     Corre al final del pipeline, tras todas las unificaciones.
     """
@@ -2293,8 +2344,9 @@ def aplicar_guarda_fidelidad_subtema(rows: List[dict], mapa: Dict[int, int],
         if not sub:
             continue
         tit = _titulo_fila(row, km)
-        if not _etiqueta_fiel_a_texto(sub, tit, _texto_fila(row, km),
-                                      brand, aliases):
+        txt = _texto_fila(row, km)
+        if not _etiqueta_fiel_a_texto(sub, tit, txt, brand, aliases) \
+                or not _asunto_fiel_a_texto(sub, tit, txt, brand, aliases):
             nuevo = _subtema_desde_titulo(tit)
             if nz(nuevo) != nz(sub):
                 ajustes[i] = nuevo
@@ -2816,6 +2868,14 @@ def unificar_etiquetas_titulos_similares(rows: List[dict], mapa: Dict[int, int],
     Colpensiones» vs «Relevo en Colpensiones»: 1 palabra en común → no se
     unen).
 
+    v4.50: tampoco cuentan como puente la marca/alias (el sujeto del
+    dossier, no el asunto: «Universidad Simón Bolívar realiza cátedra»
+    vs «...ponen en marcha diplomado para formar a 70 cuidadores»
+    compartían SOLO la marca y se unían por la banda 70–80) ni las
+    palabras omnipresentes en el lote (df > max(8, 12% de los titulares),
+    misma regla OMNI de construir_grupos: «barranquilla» unía EcoFest
+    2026 con «Más ciencia, tecnología, emprendimiento»).
+
     Elección por frecuencia de FILA (el bloque mayoritario del hecho conserva
     su etiqueta: cambio mínimo); en empate, la etiqueta MÁS LARGA (criterio
     v4.15). El tono no se toca si alguna fila del hecho es Negativo (un
@@ -2834,10 +2894,25 @@ def unificar_etiquetas_titulos_similares(rows: List[dict], mapa: Dict[int, int],
     cont = [set(w for w in words(t) if w not in GENERIC_TITULO)
             for t in titulos]
     gid_de = [mapa.get(i) for i in idx_validos]
-    # Índice invertido: pares que comparten >= 2 palabras de contenido y
+    # v4.50: la marca/alias y las palabras omnipresentes del lote NO son
+    # puente entre titulares. En un dossier de una sola marca, casi todo
+    # titular contiene la marca: contar «universidad simón bolívar» como
+    # 3 palabras de puente unía hechos distintos («...realiza cátedra»
+    # con «...diplomado para formar a 70 cuidadores»: token_set 75.8 +
+    # puente 3). Igual para la ciudad omnipresente («barranquilla» en
+    # 38/173 titulares unía EcoFest 2026 con «Más ciencia, tecnología,
+    # emprendimiento»: token_set 70.6 + puente 3). Misma regla OMNI que
+    # construir_grupos: df > max(8, 12% del lote).
+    marca_toks = _tokens_marca(brand, aliases)
+    _df = Counter()
+    for ws in cont:
+        _df.update(ws)
+    _omni = {w for w, c in _df.items() if c > max(8, int(n * 0.12))}
+    puente_ws = [ws - _omni - marca_toks for ws in cont]
+    # Índice invertido: pares que comparten >= 2 palabras DISTINTIVAS y
     # pertenecen a grupos distintos.
     inv: Dict[str, List[int]] = defaultdict(list)
-    for k, ws in enumerate(cont):
+    for k, ws in enumerate(puente_ws):
         for w in ws:
             inv[w].append(k)
     par = list(range(n))
@@ -2856,14 +2931,14 @@ def unificar_etiquetas_titulos_similares(rows: List[dict], mapa: Dict[int, int],
     for k in range(n):
         conteo: Dict[int, int] = defaultdict(int)
         gk = gid_de[k]
-        for w in cont[k]:
+        for w in puente_ws[k]:
             for j in inv[w]:
                 if j > k and gid_de[j] != gk:
                     conteo[j] += 1
         for j, inter in conteo.items():
             if inter < 2:
                 continue
-            puente = _puente_titulos(cont[k], cont[j])
+            puente = _puente_titulos(puente_ws[k], puente_ws[j])
             if puente < 2:
                 continue
             s = fuzz.token_set_ratio(titulos[k], titulos[j], score_cutoff=70)
@@ -4768,8 +4843,10 @@ def enrich_rows_with_ai(
         _ULTIMO_RESUMEN['etiquetas_unificadas_titulo_similar'] = uni_tit
 
     # v4.35: red de seguridad final — ningún Subtema_IA menciona un nombre
-    # propio ausente en el título/cuerpo de ESA fila. Las filas infieles
-    # conservan su especificidad (ajuste por fila, no por grupo).
+    # propio ausente en el título/cuerpo de ESA fila. v4.50: tampoco un
+    # asunto ausente (stems distintivos de la etiqueta en título/cuerpo).
+    # Las filas infieles conservan su especificidad (ajuste por fila, no
+    # por grupo).
     ajustes_fieles = aplicar_guarda_fidelidad_subtema(
         rows, mapa, etiquetas, km, brand=brand, aliases=aliases)
     if ajustes_fieles:
