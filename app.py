@@ -18,7 +18,7 @@ from pipeline import (process_dossier, leer_columnas_xlsx, sugerir_columna,
 from pkl_classifier import PklClassifierError, load_sklearn_estimator
 
 # Versión visible de la app (se muestra en el encabezado). Actualizar en cada release.
-APP_VERSION = "v4.56"
+APP_VERSION = "v4.57"
 
 # v4.51: sello del analizador que realmente corre en el contenedor. Se lee
 # del módulo del analizador (ya importado vía pipeline); si el despliegue
@@ -247,7 +247,7 @@ def check_password():
                     st.rerun()
                 else:
                     st.error("Contraseña incorrecta")
-        st.markdown(f"<div class=\"auth-foot\">{APP_VERSION} · analizador {SELLO_ANALIZADOR}</div>",
+        st.markdown(f"<div class=\"auth-foot\">{APP_VERSION}</div>",
                     unsafe_allow_html=True)
     return False
 
@@ -468,7 +468,7 @@ def main():
                 <div class="app-header-icon">◈</div>
                 <div class="app-header-text">
                     <div class="app-header-title">Limpieza y Análisis de Noticias</div>
-                    <div class="app-header-version">{APP_VERSION} · analizador {SELLO_ANALIZADOR} · tono/tema/subtema por reglas + IA · realizado por Johnathan Cortés</div>
+                    <div class="app-header-version">{APP_VERSION}</div>
                 </div>
                 <div class="app-header-badge">Estructurador + IA</div>
             </div>""", unsafe_allow_html=True)

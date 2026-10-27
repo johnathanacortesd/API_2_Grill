@@ -105,6 +105,8 @@ def output_columns_for_export(include_ai: bool = False, include_tema: bool = Tru
     columna, después de "texto", en todos los modos). "texto" ya NO lleva
     fórmula: queda como texto plano con el mismo cálculo (Contexto analizado
     sin el Título, con espacios sobrantes limpiados).
+    v4.57: al final de todo, después de "Audio", van "Link Ext" y "Web Ext"
+    (enlace completo a la noticia; "Web Ext" solo para Online/Internet).
     """
     cols = list(BASE_OUTPUT_COLUMNS)
     if not include_ai:
@@ -114,6 +116,9 @@ def output_columns_for_export(include_ai: bool = False, include_tema: bool = Tru
         if "texto" not in cols:
             cols.append("texto")
         cols.append("Audio")
+        # v4.57: "Link Ext" y "Web Ext" al final de todo.
+        cols.append("Link Ext")
+        cols.append("Web Ext")
         # v4.52: Audiencia antes de Tier, salvo Fenavi.
         cols = _audiencia_antes_de_tier(cols) if audiencia_antes_de_tier else cols
         return cols
@@ -135,6 +140,9 @@ def output_columns_for_export(include_ai: bool = False, include_tema: bool = Tru
     if "texto" not in cols:
         cols.append("texto")
     cols.append("Audio")
+    # v4.57: "Link Ext" y "Web Ext" al final de todo.
+    cols.append("Link Ext")
+    cols.append("Web Ext")
     # v4.52: Audiencia antes de Tier, salvo Fenavi.
     cols = _audiencia_antes_de_tier(cols) if audiencia_antes_de_tier else cols
     return cols
@@ -171,9 +179,12 @@ def _columnas_preservadas(columnas_entrada, include_ai: bool = False,
         cols.append("Prominencia")
     # v4.56: "texto" y "Audio" siempre al final, en ese orden (aunque el
     # xlsx de entrada ya trajera alguna de las dos, se reubica al final).
-    cols = [c for c in cols if c not in ("texto", "Audio")]
+    # v4.57: "Link Ext" y "Web Ext" después de "Audio", al final de todo.
+    cols = [c for c in cols if c not in ("texto", "Audio", "Link Ext", "Web Ext")]
     cols.append("texto")
     cols.append("Audio")
+    cols.append("Link Ext")
+    cols.append("Web Ext")
     # v4.52: Audiencia antes de Tier, salvo Fenavi (igual que la pestaña estándar).
     cols = _audiencia_antes_de_tier(cols) if audiencia_antes_de_tier else cols
     return cols
@@ -532,6 +543,49 @@ def _extract_url(val) -> str:
     if s.lower() in ("", "nan", "none", "link"):
         return ""
     return s
+
+
+def _tipo_medio_norm(row) -> str:
+    """Tipo de Medio normalizado de la fila (misma regla que la app)."""
+    t = row.get("Tipo de Medio")
+    if t is None:
+        return ""
+    s = str(t).strip()
+    if not s:
+        return ""
+    return TIPO_MEDIO_MAP.get(s.lower(), s)
+
+
+def _url_link_ext(row) -> str:
+    """Enlace completo de la noticia para la columna "Link Ext" (v4.57).
+
+    - Radio/Televisión (AM/FM/Aire/Cable): la URL incrustada en "Link Nota"
+      (viene de "Link Nota AV": news.globalnews.com.co/Validar.aspx?...).
+    - Internet/Online: la URL de "URL (Streaming - Imagen)" (con respaldo en
+      "Link Nota", que para estas filas trae la misma URL).
+    - Prensa/Revistas (Diario/Prensa/Revista): la URL de "Link (Streaming -
+      Imagen)" (con respaldo en "Link Nota" y en "URL (Streaming - Imagen)",
+      que para estas filas traen el mismo enlace Validar).
+    - Otros tipos: vacío.
+    """
+    tipo = _tipo_medio_norm(row)
+    if tipo in TIPOS_MEDIO_AUDIO:
+        return _extract_url(row.get("Link Nota"))
+    if tipo == "Internet":
+        return _extract_url(row.get("URL (Streaming - Imagen)")) or _extract_url(row.get("Link Nota"))
+    if tipo in ("Prensa", "Revistas"):
+        return (_extract_url(row.get("Link (Streaming - Imagen)"))
+                or _extract_url(row.get("Link Nota"))
+                or _extract_url(row.get("URL (Streaming - Imagen)")))
+    return ""
+
+
+def _url_web_ext(row) -> str:
+    """Enlace para la columna "Web Ext" (v4.57): solo Online/Internet
+    (normalizado a "Internet"); los demás tipos quedan vacíos."""
+    if _tipo_medio_norm(row) == "Internet":
+        return _url_link_ext(row)
+    return ""
 
 
 def _normalizar_hora(val) -> str:
@@ -1014,7 +1068,7 @@ def generate_output_excel(rows, km, progress: ProgressCb = None, columns_to_use:
     fmt_plain_id = wb.add_format({"num_format": "0"})
 
     for i, col_name in enumerate(cols):
-        if col_name in ["Título", "Resumen - Aclaracion", "Contexto analizado", "Audio", "texto"]:
+        if col_name in ["Título", "Resumen - Aclaracion", "Contexto analizado", "Audio", "texto", "Link Ext", "Web Ext"]:
             ws.set_column(i, i, 55)
         elif col_name in ["Link Nota", "Link (Streaming - Imagen)"]:
             ws.set_column(i, i, 15)
@@ -1056,6 +1110,15 @@ def _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_plain_hlink,
 
         excel_row = i + 1
         for cidx, h in enumerate(cols):
+            # v4.57: "Link Ext" y "Web Ext" con el enlace completo a la
+            # noticia, mostrado completo y clicable (como "Audio").
+            if h in ("Link Ext", "Web Ext"):
+                url_ext = _url_link_ext(row) if h == "Link Ext" else _url_web_ext(row)
+                if url_ext:
+                    ws.write_url(excel_row, cidx, url_ext, fmt_link, string=url_ext)
+                else:
+                    ws.write_blank(excel_row, cidx, None)
+                continue
             # v4.56: columna "texto" como TEXTO PLANO (sin fórmula, por
             # pedido del usuario): Contexto analizado sin el Título, con
             # espacios sobrantes limpiados. Es el mismo cálculo que hacía la
