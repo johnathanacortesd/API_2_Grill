@@ -233,6 +233,10 @@ BASE_URL_DEFECTO = "https://api.openai.com/v1"
 # v4.42: gpt-6-luna es el default. gpt-4.1-nano-2025-04-14 se descontinúa
 # en la API de OpenAI el 2026-10-23 (aviso de deprecación).
 MODELO_DEFECTO = "gpt-6-luna"
+# v4.51: sello del analizador. El encabezado de la app lo muestra junto a
+# APP_VERSION; si el despliegue muestra un sello distinto (o "sin-sello"),
+# el contenedor NO corre este archivo aunque el encabezado diga otra versión.
+ANALYZER_BUILD = "v4.51-guarda-asunto"
 JEV_URL_DEFECTO = "https://api.typesafe.ai/v1/systemone"
 TAM_LOTE_DEFECTO = 10
 WORKERS_DEFECTO = 8
@@ -4867,6 +4871,7 @@ def enrich_rows_with_ai(
             vistos.add(k)
             temas_lote.append(t)
     _ULTIMO_RESUMEN['taxonomia'] = temas_lote
+    _ULTIMO_RESUMEN['analizador'] = ANALYZER_BUILD
     if not incluir_tema:
         # Sin etapa de temas: el resumen no reporta taxonomía del lote.
         _ULTIMO_RESUMEN['modo_taxonomia'] = 'omitido'

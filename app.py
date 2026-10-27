@@ -18,7 +18,17 @@ from pipeline import (process_dossier, leer_columnas_xlsx, sugerir_columna,
 from pkl_classifier import PklClassifierError, load_sklearn_estimator
 
 # Versión visible de la app (se muestra en el encabezado). Actualizar en cada release.
-APP_VERSION = "v4.50"
+APP_VERSION = "v4.51"
+
+# v4.51: sello del analizador que realmente corre en el contenedor. Se lee
+# del módulo del analizador (ya importado vía pipeline); si el despliegue
+# tiene un analizador viejo sin ANALYZER_BUILD, muestra "sin-sello" en vez
+# de romper: así el encabezado prueba qué código corre, no solo qué app.py.
+try:
+    import analyzer_tono_tema as _mod_analizador
+    SELLO_ANALIZADOR = getattr(_mod_analizador, "ANALYZER_BUILD", "sin-sello")
+except Exception:
+    SELLO_ANALIZADOR = "sin-sello"
 
 logger = logging.getLogger("limpieza_grill")
 if not logging.getLogger().handlers:
@@ -445,7 +455,7 @@ def main():
                 <div class="app-header-icon">◈</div>
                 <div class="app-header-text">
                     <div class="app-header-title">Limpieza y Análisis de Noticias</div>
-                    <div class="app-header-version">{APP_VERSION} · tono/tema/subtema por reglas + IA · realizado por Johnathan Cortés</div>
+                    <div class="app-header-version">{APP_VERSION} · analizador {SELLO_ANALIZADOR} · tono/tema/subtema por reglas + IA · realizado por Johnathan Cortés</div>
                 </div>
                 <div class="app-header-badge">Estructurador + IA</div>
             </div>""", unsafe_allow_html=True)
