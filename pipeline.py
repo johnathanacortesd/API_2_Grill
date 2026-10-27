@@ -61,9 +61,32 @@ AI_COLUMNS_AFTER_AUDIENCIA = ["Tono_IA", "Tema_IA", "Subtema_IA"]
 CONTEXTO_ANALIZADO_COL = "Contexto analizado"
 
 
+def _audiencia_antes_de_tier(cols) -> List[str]:
+    """v4.52: mueve "Audiencia" justo antes de "Tier" (si ambas están).
+
+    Orden por defecto para todos los clientes, EXCEPTO Fenavi (que mantiene
+    Tier antes de Audiencia). No toca ninguna otra columna.
+    """
+    cols = list(cols)
+    if "Audiencia" in cols and "Tier" in cols:
+        cols.remove("Audiencia")
+        cols.insert(cols.index("Tier"), "Audiencia")
+    return cols
+
+
+def _es_perfil_fenavi(ai_config) -> bool:
+    """True si el cliente es Fenavi (marca normalizada == "fenavi").
+
+    Solo ese perfil conserva el orden anterior (Tier antes de Audiencia).
+    """
+    brand = ((ai_config or {}).get("brand") or "")
+    return norm_key(brand) == "fenavi"
+
+
 def output_columns_for_export(include_ai: bool = False, include_tema: bool = True,
                               include_prominencia: bool = False,
-                              include_subtema: bool = True) -> List[str]:
+                              include_subtema: bool = True,
+                              audiencia_antes_de_tier: bool = True) -> List[str]:
     """Columnas del xlsx de salida.
 
     Con IA/PKL: inserta Tono_IA, Tema_IA, Subtema_IA después de Audiencia y deja
@@ -84,7 +107,8 @@ def output_columns_for_export(include_ai: bool = False, include_tema: bool = Tru
             cols.append("Prominencia")
         # v4.44: la columna "Audio" va al final en todos los modos.
         cols.append("Audio")
-        return cols
+        # v4.52: Audiencia antes de Tier, salvo Fenavi.
+        return _audiencia_antes_de_tier(cols) if audiencia_antes_de_tier else cols
     audiencia_idx = cols.index("Audiencia")
     for offset, col in enumerate(AI_COLUMNS_AFTER_AUDIENCIA):
         if col not in cols:
@@ -101,13 +125,15 @@ def output_columns_for_export(include_ai: bool = False, include_tema: bool = Tru
         cols.append("Prominencia")
     # v4.44: la columna "Audio" va al final de todo, después de la última columna.
     cols.append("Audio")
-    return cols
+    # v4.52: Audiencia antes de Tier, salvo Fenavi.
+    return _audiencia_antes_de_tier(cols) if audiencia_antes_de_tier else cols
 
 
 def _columnas_preservadas(columnas_entrada, include_ai: bool = False,
                           include_tema: bool = True,
                           include_subtema: bool = True,
-                          include_prominencia: bool = False) -> List[str]:
+                          include_prominencia: bool = False,
+                          audiencia_antes_de_tier: bool = True) -> List[str]:
     """Columnas de salida para la pestaña "Columnas personalizadas" (v4.33).
 
     Conserva el xlsx como está: todas las columnas originales en su orden
@@ -135,7 +161,8 @@ def _columnas_preservadas(columnas_entrada, include_ai: bool = False,
     # v4.44: columna "Audio" siempre al final (no duplica si el xlsx ya la trae).
     if "Audio" not in vistos:
         cols.append("Audio")
-    return cols
+    # v4.52: Audiencia antes de Tier, salvo Fenavi (igual que la pestaña estándar).
+    return _audiencia_antes_de_tier(cols) if audiencia_antes_de_tier else cols
 
 
 KEY_MAP = {
@@ -1262,6 +1289,8 @@ def process_dossier(
         # v4.32: sin IA no hay subtema (ningún PKL lo genera); la columna
         # saldría vacía ("-"), así que no se exporta en modo solo-PKL.
         include_subtema=has_ai,
+        # v4.52: Audiencia antes de Tier para todos, salvo el perfil Fenavi.
+        audiencia_antes_de_tier=not _es_perfil_fenavi(ai_config),
     )
     # v4.33: pestaña "Columnas personalizadas" — conservar el xlsx como está
     # (todas las columnas originales, incluidos ID inicial e hipervínculos de
@@ -1273,6 +1302,7 @@ def process_dossier(
             include_tema=ai_extra.get("incluir_tema", True),
             include_subtema=has_ai,
             include_prominencia=_incluir_prominencia,
+            audiencia_antes_de_tier=not _es_perfil_fenavi(ai_config),
         )
 
     emit_progress(progress, 94, "✓ Estructuración finalizada. Generando archivo Excel…")

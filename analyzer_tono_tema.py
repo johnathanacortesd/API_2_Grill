@@ -236,7 +236,7 @@ MODELO_DEFECTO = "gpt-6-luna"
 # v4.51: sello del analizador. El encabezado de la app lo muestra junto a
 # APP_VERSION; si el despliegue muestra un sello distinto (o "sin-sello"),
 # el contenedor NO corre este archivo aunque el encabezado diga otra versión.
-ANALYZER_BUILD = "v4.51-guarda-asunto"
+ANALYZER_BUILD = "v4.52-guarda-asunto"
 JEV_URL_DEFECTO = "https://api.typesafe.ai/v1/systemone"
 TAM_LOTE_DEFECTO = 10
 WORKERS_DEFECTO = 8
