@@ -18,7 +18,7 @@ from pipeline import (process_dossier, leer_columnas_xlsx, sugerir_columna,
 from pkl_classifier import PklClassifierError, load_sklearn_estimator
 
 # Versión visible de la app (se muestra en el encabezado). Actualizar en cada release.
-APP_VERSION = "v4.55"
+APP_VERSION = "v4.56"
 
 # v4.51: sello del analizador que realmente corre en el contenedor. Se lee
 # del módulo del analizador (ya importado vía pipeline); si el despliegue
@@ -399,7 +399,10 @@ def run_cleaning_process(df_file, file_meta=None, ai_config=None):
                 region_map,
                 internet_map,
                 progress=on_progress,
-                ai_config=ai_config
+                ai_config=ai_config,
+                # v4.56: el tiempo reportado cubre desde que empezó el proceso
+                # (incluida la carga de configuración), no solo el pipeline.
+                t_inicio=t_start,
             )
             paint(100, "Limpieza completada")
             status_widget.update(label="✓ Limpieza completada con éxito", state="complete")

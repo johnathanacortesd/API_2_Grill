@@ -17,7 +17,6 @@ from xml.etree import ElementTree as ET
 import numpy as np
 import pandas as pd
 import xlsxwriter
-from xlsxwriter.utility import xl_col_to_name
 from openpyxl import load_workbook
 from openpyxl.utils.cell import column_index_from_string, coordinate_from_string, range_boundaries
 from unidecode import unidecode
@@ -101,24 +100,22 @@ def output_columns_for_export(include_ai: bool = False, include_tema: bool = Tru
     "Contexto analizado" (con o sin IA).
     v4.44: la columna "Audio" (URL de streaming solo para Radio/Televisión)
     va al final de todo, en todos los modos.
-    v4.55: la columna "texto" va al final de todo, después de "Audio", en
-    todos los modos. Lleva la fórmula =ESPACIOS(SUSTITUIR(Contexto; Título; ""))
-    (guardada en inglés como TRIM(SUBSTITUTE(...)); Excel en español la
-    muestra traducida). El escritor resuelve las letras por nombre de columna,
-    así que en la exportación estándar con IA son exactamente X (Contexto
-    analizado) y H (Título).
+    v4.55: la columna "texto" se agregó al final de todo, después de "Audio".
+    v4.56: orden final ..., "texto", "Audio" ("Audio" vuelve a ser la última
+    columna, después de "texto", en todos los modos). "texto" ya NO lleva
+    fórmula: queda como texto plano con el mismo cálculo (Contexto analizado
+    sin el Título, con espacios sobrantes limpiados).
     """
     cols = list(BASE_OUTPUT_COLUMNS)
     if not include_ai:
         if include_prominencia:
             cols.append("Prominencia")
-        # v4.44: la columna "Audio" va al final en todos los modos.
+        # v4.56: "texto" antes de "Audio"; "Audio" siempre la última.
+        if "texto" not in cols:
+            cols.append("texto")
         cols.append("Audio")
         # v4.52: Audiencia antes de Tier, salvo Fenavi.
         cols = _audiencia_antes_de_tier(cols) if audiencia_antes_de_tier else cols
-        # v4.55: "texto" al final de todo.
-        if "texto" not in cols:
-            cols.append("texto")
         return cols
     audiencia_idx = cols.index("Audiencia")
     for offset, col in enumerate(AI_COLUMNS_AFTER_AUDIENCIA):
@@ -134,13 +131,12 @@ def output_columns_for_export(include_ai: bool = False, include_tema: bool = Tru
     # v4.26: la prominencia va al final, después de "Contexto analizado".
     if include_prominencia:
         cols.append("Prominencia")
-    # v4.44: la columna "Audio" va al final de todo, después de la última columna.
+    # v4.56: "texto" antes de "Audio"; "Audio" siempre la última.
+    if "texto" not in cols:
+        cols.append("texto")
     cols.append("Audio")
     # v4.52: Audiencia antes de Tier, salvo Fenavi.
     cols = _audiencia_antes_de_tier(cols) if audiencia_antes_de_tier else cols
-    # v4.55: "texto" al final de todo.
-    if "texto" not in cols:
-        cols.append("texto")
     return cols
 
 
@@ -173,14 +169,13 @@ def _columnas_preservadas(columnas_entrada, include_ai: bool = False,
             vistos.add(CONTEXTO_ANALIZADO_COL)
     if include_prominencia and "Prominencia" not in vistos:
         cols.append("Prominencia")
-    # v4.44: columna "Audio" siempre al final (no duplica si el xlsx ya la trae).
-    if "Audio" not in vistos:
-        cols.append("Audio")
+    # v4.56: "texto" y "Audio" siempre al final, en ese orden (aunque el
+    # xlsx de entrada ya trajera alguna de las dos, se reubica al final).
+    cols = [c for c in cols if c not in ("texto", "Audio")]
+    cols.append("texto")
+    cols.append("Audio")
     # v4.52: Audiencia antes de Tier, salvo Fenavi (igual que la pestaña estándar).
     cols = _audiencia_antes_de_tier(cols) if audiencia_antes_de_tier else cols
-    # v4.55: "texto" al final de todo (misma fórmula que en la estándar).
-    if "texto" not in cols:
-        cols.append("texto")
     return cols
 
 
@@ -1061,25 +1056,17 @@ def _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_plain_hlink,
 
         excel_row = i + 1
         for cidx, h in enumerate(cols):
-            # v4.55: columna final "texto" con fórmula. En la exportación
-            # estándar con IA las letras resuelven exactamente a X (Contexto
-            # analizado) y H (Título); en la personalizada se adaptan a las
-            # posiciones reales para que el cálculo sea el mismo. El archivo
-            # guarda la fórmula en inglés (TRIM/SUBSTITUTE) y Excel en español
-            # la muestra como =ESPACIOS(SUSTITUIR(X2; H2; "")). El valor en
-            # caché se calcula en Python para que se vea bien antes de
-            # recalcular. Sin "Contexto analizado" (modo sin IA) queda vacía.
+            # v4.56: columna "texto" como TEXTO PLANO (sin fórmula, por
+            # pedido del usuario): Contexto analizado sin el Título, con
+            # espacios sobrantes limpiados. Es el mismo cálculo que hacía la
+            # fórmula =ESPACIOS(SUSTITUIR(Contexto; Título; "")) de v4.55.
+            # Sin "Contexto analizado" (modo sin IA) queda vacía.
             if h == "texto":
                 if "Título" in cols and CONTEXTO_ANALIZADO_COL in cols:
-                    ctx_l = xl_col_to_name(cols.index(CONTEXTO_ANALIZADO_COL))
-                    tit_l = xl_col_to_name(cols.index("Título"))
-                    fila_xl = excel_row + 1
-                    formula = f"=TRIM(SUBSTITUTE({ctx_l}{fila_xl},{tit_l}{fila_xl},\"\"))"
                     ctx_v = row.get(CONTEXTO_ANALIZADO_COL) or ""
                     tit_v = row.get("Título") or ""
                     base = str(ctx_v).replace(str(tit_v), "") if str(tit_v) else str(ctx_v)
-                    cache = " ".join(base.split())
-                    ws.write_formula(excel_row, cidx, formula, None, cache)
+                    ws.write(excel_row, cidx, " ".join(base.split()))
                 else:
                     ws.write_blank(excel_row, cidx, None)
                 continue
@@ -1211,9 +1198,14 @@ def process_dossier(
     region_map,
     internet_map,
     progress: ProgressCb = None,
-    ai_config: Optional[dict] = None
+    ai_config: Optional[dict] = None,
+    t_inicio: Optional[float] = None,
 ) -> dict:
-    t0 = time.time()
+    # v4.56: si la app pasa t_inicio (el instante en que empezó el proceso,
+    # antes de cargar la configuración desde Google Sheets), el tiempo
+    # reportado cubre TODO el proceso y no solo lo que corre dentro de esta
+    # función. Sin él, se mide desde aquí como antes.
+    t0 = t_inicio if t_inicio is not None else time.time()
     emit_progress(progress, 2, "Cargando archivo…")
     file_bytes = file_to_bytes(file_obj)
 
@@ -1393,6 +1385,13 @@ def process_dossier(
             enviar_auditoria_desde_resultado(result, ai_config)
         except Exception:
             logger.exception("Fallo al enviar la auditoria por correo (no interrumpe).")
+
+    # v4.56: el tiempo reportado se recalcula AQUÍ (después del correo) para
+    # que cubra todo el proceso real: configuración + lectura + análisis +
+    # exportación + auditoría. Antes se calculaba justo después de exportar y
+    # por eso salía menor que el tiempo que el usuario veía en el panel.
+    duration = time.time() - t0
+    result["process_duration"] = f"{duration:.2f}s"
 
     # Guardado del historial por cliente (best-effort, nunca interrumpe).
     if ai_config and ai_config.get("brand"):
