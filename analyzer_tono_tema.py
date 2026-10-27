@@ -236,7 +236,7 @@ MODELO_DEFECTO = "gpt-6-luna"
 # v4.53: sello del analizador. El encabezado de la app lo muestra junto a
 # APP_VERSION; si el despliegue muestra un sello distinto (o "sin-sello"),
 # el contenedor NO corre este archivo aunque el encabezado diga otra versión.
-ANALYZER_BUILD = "v4.59-agrupa-similares"  # v4.56: solo sello; la lógica es la de v4.54
+ANALYZER_BUILD = "v4.60-omni-distinto"  # v4.56: solo sello; la lógica es la de v4.54
 # v4.53: solo cambia el sello (la lógica del analizador no se toca en esta versión;
 # el cambio es de interfaz).
 JEV_URL_DEFECTO = "https://api.typesafe.ai/v1/systemone"
@@ -417,11 +417,21 @@ def construir_grupos(
     # resultaron afectados' se encadenaba con 'traslado de adultos mayores
     # a hoteles' por compartir solo {cali, hoteles, terremoto}. El umbral es
     # adaptativo al dossier: >12% de los titulares (mínimo 8).
+    # v4.60: el df se cuenta sobre TITULARES DISTINTOS, no sobre filas: las
+    # filas expandidas (mismo titular en varias filas) inflaban el df y
+    # volvían omnipresente al sujeto de pocas noticias («Unión Vial Camino
+    # del Pacífico» en 5 titulares distintos contaba 10 por las copias y
+    # superaba el corte 8: sus palabras dejaban de ser puente y el par no
+    # se unía ni en la agrupación ni en la unificación final).
     _dfq = Counter()
+    _tit_vistos = set()
     for b in base:
+        if b['titulo'] in _tit_vistos:
+            continue
+        _tit_vistos.add(b['titulo'])
         for w in b['ctit']:
             _dfq[w] += 1
-    _omni_corte = max(8, int(len(base) * 0.12))
+    _omni_corte = max(8, int(len(_tit_vistos) * 0.12))
     OMNI = {w for w, c in _dfq.items() if c > _omni_corte}
 
     def _puente_distintivo(a, b, minimo):
@@ -2944,10 +2954,20 @@ def unificar_etiquetas_titulos_similares(rows: List[dict], mapa: Dict[int, int],
     # emprendimiento»: token_set 70.6 + puente 3). Misma regla OMNI que
     # construir_grupos: df > max(8, 12% del lote).
     marca_toks = _tokens_marca(brand, aliases)
+    # v4.60: el df omnipresente se cuenta sobre TITULARES DISTINTOS, no
+    # sobre filas (misma razón que en construir_grupos: las copias
+    # expandidas inflaban el df y «Unión Vial Camino del Pacífico» pasaba
+    # de 5 titulares distintos a 10 filas, superando el corte 8 y perdiendo
+    # su puente en la corrida real, aunque la prueba con IDs únicos sí unía
+    # el par).
     _df = Counter()
-    for ws in cont:
+    _tit_vistos = set()
+    for t, ws in zip(titulos, cont):
+        if t in _tit_vistos:
+            continue
+        _tit_vistos.add(t)
         _df.update(ws)
-    _omni = {w for w, c in _df.items() if c > max(8, int(n * 0.12))}
+    _omni = {w for w, c in _df.items() if c > max(8, int(len(_tit_vistos) * 0.12))}
     puente_ws = [ws - _omni - marca_toks for ws in cont]
     # Índice invertido: pares que comparten >= 2 palabras DISTINTIVAS y
     # pertenecen a grupos distintos.
