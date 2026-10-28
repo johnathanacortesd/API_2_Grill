@@ -223,13 +223,17 @@ class TestSimilitudPorCuerpo(unittest.TestCase):
 
 
 class TestContextoAnalizadoPreciso(unittest.TestCase):
-    def test_titular_antepuesto_si_menciona_marca(self):
+    def test_titular_no_antepuesto_aunque_mencione_marca(self):
+        # Fix anti-copia 2026-10-28: se revoca el antepuesto de v4.35. El
+        # contexto es solo oraciones del cuerpo con mención; el titular ya
+        # va como campo aparte y anteponerlo empujaba a copiarlo.
         titulo = "Colpensiones anuncia nueva ruta de pagos"
         cuerpo = ("En un comunicado, Colpensiones informó que la ruta "
                   "técnica está lista. Otros párrafos sin mención.")
         ctx = _contexto_exacto_marca(cuerpo, titulo, BRAND, [], [],
                                      tipo_medio="prensa")
-        self.assertTrue(ctx.startswith(titulo))
+        self.assertFalse(ctx.startswith(titulo))
+        self.assertIn("Colpensiones informó", ctx)
 
     def test_dedup_normalizado(self):
         titulo = "Colpensiones anuncia pagos"

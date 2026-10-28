@@ -221,10 +221,13 @@ class TestContextoExactoCalibrado(unittest.TestCase):
                 any(o.startswith(pedazo[:40]) for o in originales),
                 "fragmento cortado: %r" % pedazo[:60])
 
-    def test_sin_mencion_devuelve_titulo(self):
+    def test_sin_mencion_no_devuelve_titulo(self):
+        # Fix anti-copia 2026-10-28: sin oración con mención en el cuerpo,
+        # el contexto exacto es '' (el titular NO es contexto). El fallback
+        # a cuerpo/título lo decide `_contexto_minimo_util`.
         ctx = az._contexto_exacto_marca("Texto sin la marca.", "Mi titular",
                                         "Cotelco", [])
-        self.assertEqual(ctx, "Mi titular")
+        self.assertEqual(ctx, "")
 
     def test_alias_y_vocero_cuentan_como_mencion(self):
         txt = "El gremio hotelero habló. Asotelco firmó el convenio. Fin."

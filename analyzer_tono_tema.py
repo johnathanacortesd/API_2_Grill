@@ -102,12 +102,18 @@ def _contexto_minimo_util(ctx: str, titulo: str, texto: str) -> str:
 
     Si la extracción por mención devolvió solo un fragmento (p. ej. la firma
     "Edwin Bernal, director ejecutivo de Cotelco."), se completa con el
-    titular y el texto más completo disponible (resumen). Un fragmento no
-    resume la noticia y degrada el Excel entregable.
+    texto más completo disponible (resumen/cuerpo), NO con el titular.
+    Fix anti-copia 2026-10-28: el titular ya va como campo aparte en el
+    prompt y en la columna Título; anteponerlo aquí duplicaba su peso y
+    empujaba al modelo a copiarlo como subtema. Solo cuando el cuerpo es
+    insuficiente se recurre al titular como último recurso (fila solo-título).
     """
     c = (ctx or '').strip()
     if len(c) >= 140 and len(c.split()) >= 18:
         return c
+    cuerpo = re.sub(r'\s+', ' ', (texto or '')).strip()[:6000]
+    if len(cuerpo) >= 140 and len(cuerpo.split()) >= 18:
+        return cuerpo
     fb = ' '.join(x.strip() for x in [titulo or '', (texto or '')[:1200]]
                   if x and x.strip())
     fb = re.sub(r'\s+', ' ', fb).strip()[:6000]
@@ -200,19 +206,20 @@ def _contexto_exacto_marca(texto: str, titulo: str, brand: str,
                  if o.strip()]
     hits = [o for o in oraciones if menciona(o)]
     if not hits:
-        # La marca solo aparece en el titular o no aparece: no se inventa.
-        return str(titulo or '').strip()[:TOPE_CTX_GENERAL]
+        # La marca solo aparece en el titular o no aparece: no se inventa
+        # contexto de cuerpo. Se devuelve '' y `_contexto_minimo_util`
+        # decidirá: cuerpo si lo hay, titular solo como último recurso
+        # (fila solo-título). Devolver el titular aquí lo convertía en
+        # "contexto" y empujaba al modelo a copiarlo como subtema.
+        return ''
 
     es_rtv = nz(tipo_medio) in MEDIOS_RADIODIFUSION
     tope = TOPE_CTX_RADIODIFUSION if es_rtv else TOPE_CTX_GENERAL
-    # v4.35: el titular abre el contexto cuando menciona la marca/alias/vocero:
-    # es el ancla más informativa de la noticia y el análisis (tono/tema/
-    # subtema) lo usa como fuente prioritaria. No se duplica si el cuerpo ya
-    # lo contiene.
-    tit = str(titulo or '').strip()
+    # Fix anti-copia 2026-10-28: se REVOCA el antepuesto del titular de
+    # v4.35. El titular ya va como campo aparte en el prompt; anteponerlo
+    # aquí lo duplicaba y hacía que Contexto analizado se dejara llevar
+    # por el título. El contexto es SOLO oraciones del cuerpo con mención.
     vistas = []
-    if tit and menciona(tit):
-        vistas.append(re.sub(r'\s+', ' ', tit).strip())
     for o in hits:
         o = re.sub(r'\s+', ' ', o).strip()
         # v4.35: deduplicación normalizada (el mismo cable repetido con
@@ -236,7 +243,7 @@ MODELO_DEFECTO = "gpt-6-luna"
 # v4.53: sello del analizador. El encabezado de la app lo muestra junto a
 # APP_VERSION; si el despliegue muestra un sello distinto (o "sin-sello"),
 # el contenedor NO corre este archivo aunque el encabezado diga otra versión.
-ANALYZER_BUILD = "v4.60-omni-distinto"  # v4.56: solo sello; la lógica es la de v4.54
+ANALYZER_BUILD = "v4.61-anticopia"  # v4.61: fix anti-copia titulo/contexto
 # v4.53: solo cambia el sello (la lógica del analizador no se toca en esta versión;
 # el cambio es de interfaz).
 JEV_URL_DEFECTO = "https://api.typesafe.ai/v1/systemone"
@@ -670,6 +677,74 @@ FILLER = MARCO | {'importantes', 'relevantes', 'generales', 'varias', 'diversos'
                   'departamental', 'institucional', 'gubernamental', 'regional', 'recientes', 'varios'}
 
 
+# Fix anti-copia 2026-10-28: palabras genéricas que GENERIC_TITULO no
+# cubre en todas sus formas (femenino/plural). Solo se usan para el cotejo
+# de casi-identidad, no para cambiar la agrupación.
+_GENERICO_COPIA = GENERIC_TITULO | {'toda', 'todas', 'alguna', 'algunas',
+                                     'alguno', 'algunos'}
+
+
+def _contenido_para_copia(s: str) -> List[str]:
+    """Palabras de contenido de una frase, en orden, sin nexos ni genéricos.
+
+    No se usan stems: la casi-identidad se mide sobre palabras, para no
+    confundir "tienden" con "tendencia" ni otras familias.
+    """
+    return [w for w in words(s)
+            if w not in CONECT and w not in _GENERICO_COPIA]
+
+
+def _es_copia_casi_identica(sub_tema: str, titulo: str) -> bool:
+    """True si el subtema ES el titular (o su recorte casi total).
+
+    Caso real 2026-10-28: título "Todas las empresas tienden a morir -
+    CAMBIO COLOMBIA" y subtema "Empresas tienden a morir - CAMBIO
+    COLOMBIA": tras quitar genéricos, ambas secuencias de contenido son
+    idénticas, pero la igualdad exacta normalizada no lo veía (faltaban
+    "Todas las") y la excepción de etiqueta válida de v4.21 lo eximía.
+    Regla: identidad de contenido, o subsecuencia en orden que cubra
+    >=90% del contenido del título (con >=3 palabras). Una frase nominal
+    parcial legítima ("Estado de salud de Yamid Amat" en un titular más
+    largo, ~67%) NO se marca: la excepción de v4.21 sigue valiendo para
+    ella, pero nunca para la casi-identidad.
+    """
+    sub = _contenido_para_copia(sub_tema)
+    tit = _contenido_para_copia(titulo)
+    if not sub or not tit or len(sub) < 3:
+        return False
+    if sub == tit:
+        return True
+    if len(sub) < 0.9 * len(tit):
+        return False
+    # Subsecuencia en orden (recorte casi total, p. ej. quitar la primera
+    # o la última palabra de contenido).
+    j = 0
+    for w in tit:
+        if j < len(sub) and w == sub[j]:
+            j += 1
+    return j == len(sub)
+
+
+def _quitar_sufijo_medio(sub_tema: str, medios: Sequence[str]) -> str:
+    """Quita un sufijo " - <medio>" / " – <medio>" del final del subtema.
+
+    `medios` son los nombres de medio del dossier (columna Medio), no una
+    lista fija: un subtema nunca debe llevar el medio, pero el corte solo
+    se hace si el sufijo coincide EXACTAMENTE con un medio presente, para
+    no romper nombres propios con guion ("Variante Sampués - Segovia").
+    """
+    s = str(sub_tema or '').strip()
+    for m in medios or []:
+        nombre = str(m or '').strip()
+        if not nombre:
+            continue
+        nuevo = re.sub(r'\s*[-–—]\s*' + re.escape(nombre) + r'\s*$', '',
+                       s, flags=re.I).strip()
+        if nuevo and nuevo != s:
+            return nuevo
+    return s
+
+
 def validar(sub_tema, tono, fuentes, min_pal=MIN_PAL, max_pal=MAX_PAL,
             _con_copia=True) -> List[str]:
     """Problemas encontrados. Lista vacia = etiqueta valida. Los avisos 'revisar_anclaje' son blandos.
@@ -712,7 +787,14 @@ def validar(sub_tema, tono, fuentes, min_pal=MIN_PAL, max_pal=MAX_PAL,
     # aunque el titular "parezca etiqueta" (nominal corto). La excepción de
     # v4.21 (etiqueta válida que coincide con PARTE del titular) solo vale
     # para solapamiento parcial; el subtema jamás es el titular idéntico.
+    # Fix anti-copia 2026-10-28: la casi-identidad (mismo contenido tras
+    # quitar genéricos, o recorte >=90% en orden) TAMBIÉN es siempre copia,
+    # sin excepción de etiqueta válida. Sin esto, "Empresas tienden a
+    # morir - CAMBIO COLOMBIA" pasaba como válida frente a "Todas las
+    # empresas tienden a morir - CAMBIO COLOMBIA".
     if _con_copia and titulo and nz(sub_tema) == nz(titulo):
+        p.append('copia_titular')
+    elif _con_copia and titulo and _es_copia_casi_identica(sub_tema, titulo):
         p.append('copia_titular')
     elif _con_copia and _subtema_copia_titular(sub_tema, titulo) \
             and not _es_etiqueta_valida(sub_tema):
@@ -1378,7 +1460,9 @@ def prompt_lote(grupos_lote: Sequence[dict], candidatos: Sequence[str]) -> str:
                  % sq(g.get('contexto') or g.get('texto', ''))[:6000])
         bloques.append('\n'.join(b))
     msg = '\n\n'.join(bloques)
-    msg += '\n\nRecuerda: el sub_tema de cada grupo debe tener entre 3 y 5 palabras, y solo JSON.'
+    msg += ('\n\nRecuerda: el sub_tema de cada grupo debe tener entre 3 y 5 palabras, y solo JSON. '
+            'El sub_tema SINTETIZA el hecho del contexto/cuerpo en frase nominal: NUNCA copies '
+            'el titular ni su recorte, ni incluyas el nombre del medio (p. ej. un sufijo "- MEDIO").')
     if candidatos:
         msg += ('\n\nCANDIDATOS (sub-temas ya usados; reutiliza el texto exacto si es el mismo hecho):\n'
                 + '\n'.join('- %s' % c for c in list(candidatos)[-120:]))
@@ -4641,6 +4725,158 @@ def aplicar_pkl_del_cliente(
     return applied
 
 
+def reparar_copias_finales(cfg: dict, grupos: Sequence[dict],
+                           etiquetas: Dict[int, dict], rows: List[dict],
+                           mapa: Dict[int, int], km: dict,
+                           ajustes_subtema: Optional[Dict[int, str]] = None,
+                           uso: Optional[dict] = None) -> Dict[int, str]:
+    """Puerta final anti-copia (fix 2026-10-28), ANTES de volcar.
+
+    Hasta v4.60, `validar()` solo corría en la vuelta de reparación del
+    etiquetado: todo lo que llegaba después (canonizaciones, unificaciones,
+    guarda de fidelidad, `_subtema_desde_titulo`) podía exportar un
+    subtema-título sin que nadie lo volviera a mirar. Esta puerta revisa
+    las etiquetas de grupo Y los ajustes por fila con el veto de
+    casi-identidad, quita el sufijo del medio (columna Medio del dossier)
+    y, si hay copia, pide REFORMULACIÓN al modelo desde título+texto
+    (nunca una derivación del título). Si la reformulación falla o sigue
+    siendo copia, el grupo cae a 'Hecho informativo' y el ajuste por fila
+    se retira (la fila hereda la etiqueta de grupo ya reparada): nunca se
+    exporta un subtema-título. Los tonos no se tocan en esta puerta.
+    """
+    ajustes = dict(ajustes_subtema or {})
+    grupo_por_id = {g.get('grupo'): g for g in grupos}
+    # Medios por grupo / por fila, desde la columna Medio del dossier.
+    medios_grupo: Dict[int, set] = defaultdict(set)
+    for _i, _gid in (mapa or {}).items():
+        if not _gid:
+            continue
+        _m = ''
+        try:
+            _m = str(rows[_i].get(km.get('medio', 'Medio')) or
+                     rows[_i].get('Medio') or '').strip()
+        except Exception:
+            _m = ''
+        if _m:
+            medios_grupo[_gid].add(_m)
+    # 1. Detectar copias SOBRE EL ORIGINAL, antes de quitar el medio:
+    # el medio es metadata, no contenido del hecho, y quitarlo primero
+    # bajaría la cobertura (5 palabras de contenido -> 3) y haría pasar
+    # por parcial legítimo lo que es el título con su medio.
+    # 2. Detectar copias en grupos y en ajustes por fila.
+    fallos_grupo = []
+    for _g in grupos:
+        _gid = _g.get('grupo')
+        _e = etiquetas.get(_gid) or {}
+        _s = _e.get('sub_tema') or ''
+        if not _s:
+            continue
+        _pr = validar(_s, _e.get('tono') or 'Neutro',
+                       [_g.get('titulo') or ''])
+        if 'copia_titular' in _pr:
+            fallos_grupo.append({'grupo': _gid, 'titulo': _g.get('titulo') or '',
+                                 'texto': _g.get('texto') or '',
+                                 'sub_tema': _s, 'problemas': ['copia_titular']})
+    fallos_fila = []
+    for _i, _s in ajustes.items():
+        if not _s:
+            continue
+        _tit = _titulo_fila(rows[_i], km) if _i < len(rows) else ''
+        _txt = _texto_fila(rows[_i], km) if _i < len(rows) else ''
+        if 'copia_titular' in validar(_s, 'Neutro', [_tit]):
+            fallos_fila.append({'grupo': 900000 + _i, 'titulo': _tit,
+                                'texto': _txt, 'sub_tema': _s,
+                                'problemas': ['copia_titular'],
+                                '_fila': _i})
+    if not fallos_grupo and not fallos_fila:
+        # Sin copias: igualmente quitar el sufijo del medio de todas las
+        # etiquetas (un subtema válido nunca lleva el medio).
+        for _gid, _e in (etiquetas or {}).items():
+            _s = _e.get('sub_tema') or ''
+            _nuevo = _quitar_sufijo_medio(
+                _s, list(medios_grupo.get(_gid, set())))
+            if _nuevo and _nuevo != _s:
+                _e['sub_tema'] = _nuevo
+        for _i, _s in list(ajustes.items()):
+            _m = ''
+            try:
+                _m = str(rows[_i].get(km.get('medio', 'Medio')) or
+                         rows[_i].get('Medio') or '').strip()
+            except Exception:
+                _m = ''
+            _nuevo = _quitar_sufijo_medio(_s, [_m] if _m else [])
+            if _nuevo and _nuevo != _s:
+                ajustes[_i] = _nuevo
+        return ajustes
+    # Quitar el sufijo del medio solo de las etiquetas que NO son copia:
+    # las que sí lo son van a reformulación, no a un recorte.
+    _fallo_gids = {_f['grupo'] for _f in fallos_grupo}
+    _fallo_filas = {_f['_fila'] for _f in fallos_fila}
+    for _gid, _e in (etiquetas or {}).items():
+        if _gid in _fallo_gids:
+            continue
+        _s = _e.get('sub_tema') or ''
+        _nuevo = _quitar_sufijo_medio(_s, list(medios_grupo.get(_gid, set())))
+        if _nuevo and _nuevo != _s:
+            _e['sub_tema'] = _nuevo
+    for _i, _s in list(ajustes.items()):
+        if _i in _fallo_filas:
+            continue
+        _m = ''
+        try:
+            _m = str(rows[_i].get(km.get('medio', 'Medio')) or
+                     rows[_i].get('Medio') or '').strip()
+        except Exception:
+            _m = ''
+        _nuevo = _quitar_sufijo_medio(_s, [_m] if _m else [])
+        if _nuevo and _nuevo != _s:
+            ajustes[_i] = _nuevo
+    # 3. Reformulación LLM (una llamada por trozo de 12, como la reparación
+    # del etiquetado). Sin api_key no se intenta: se va directo al fallback.
+    reparados: Dict[int, str] = {}
+    if (cfg or {}).get('api_key'):
+        for _trozo in [fallos_grupo[i:i + 12] for i in range(0, len(fallos_grupo), 12)] + \
+                      [fallos_fila[i:i + 12] for i in range(0, len(fallos_fila), 12)]:
+            try:
+                _txt = llamar_llm(cfg, [{'role': 'system',
+                                         'content': prompt_sistema(cfg)},
+                                        {'role': 'user',
+                                         'content': prompt_reparacion(_trozo)}],
+                                  uso=uso)
+                _corr = _normaliza_label(_json_loose(_txt),
+                                         [f['grupo'] for f in _trozo])
+            except Exception:
+                _corr = {}
+            for _fid, _v in _corr.items():
+                if _v.get('sub_tema'):
+                    reparados[_fid] = _v['sub_tema']
+    reparados_ok = 0
+    sin_reparar = 0
+    for _f in fallos_grupo:
+        _gid = _f['grupo']
+        _nuevo = reparados.get(_gid)
+        if _nuevo and 'copia_titular' not in validar(
+                _nuevo, 'Neutro', [_f['titulo']]):
+            etiquetas[_gid]['sub_tema'] = _nuevo
+            reparados_ok += 1
+        else:
+            etiquetas[_gid]['sub_tema'] = 'Hecho informativo'
+            sin_reparar += 1
+    for _f in fallos_fila:
+        _i = _f['_fila']
+        _nuevo = reparados.get(_f['grupo'])
+        if _nuevo and 'copia_titular' not in validar(
+                _nuevo, 'Neutro', [_f['titulo']]):
+            ajustes[_i] = _nuevo
+            reparados_ok += 1
+        else:
+            ajustes.pop(_i, None)
+            sin_reparar += 1
+    _ULTIMO_RESUMEN['subtemas_copia_final_reparados'] = reparados_ok
+    _ULTIMO_RESUMEN['subtemas_copia_final_sin_reparar'] = sin_reparar
+    return ajustes
+
+
 def volcar_analisis_en_filas(rows: List[dict], mapa: Dict[int, int],
                              etiquetas: Dict[int, dict], temas: Dict[int, str],
                              preservar_tema: bool = False,
@@ -4924,6 +5160,13 @@ def enrich_rows_with_ai(
         rows, mapa, etiquetas, km, brand=brand, aliases=aliases)
     if ajustes_fieles:
         _ULTIMO_RESUMEN['subtemas_fidelidad_por_fila'] = len(ajustes_fieles)
+
+    # Fix anti-copia 2026-10-28: puerta final antes de volcar. La guarda
+    # anterior puede producir un subtema derivado del título; aquí se
+    # reformula (o se retira) antes de que llegue al Excel.
+    ajustes_fieles = reparar_copias_finales(
+        cfg, grupos, etiquetas, rows, mapa, km,
+        ajustes_subtema=ajustes_fieles, uso=uso)
 
     volcar_analisis_en_filas(
         rows, mapa, etiquetas, temas,
