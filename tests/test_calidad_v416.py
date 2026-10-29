@@ -148,10 +148,13 @@ class TestContextoMinimo(unittest.TestCase):
              "Bogotá. La competencia reunirá delegaciones de 18 países en Tejo La Embajada.")
 
     def test_fragmento_se_completa(self):
+        # v4.65 (revoca la expansión): un extracto de mención, aunque sea
+        # un fragmento corto, se conserva; el lead solo se usa sin mención.
         ctx = az._contexto_minimo_util(
             "Edwin Bernal, director ejecutivo de Cotelco.", self.TIT, self.TEXTO)
-        self.assertIn("Mundial de Tejo", ctx)
-        self.assertGreaterEqual(len(ctx), 140)
+        self.assertEqual(ctx, "Edwin Bernal, director ejecutivo de Cotelco.")
+        ctx2 = az._contexto_minimo_util("", self.TIT, self.TEXTO)
+        self.assertIn("Mundial de Tejo", ctx2)
 
     def test_contexto_util_se_conserva(self):
         bueno = ("Cotelco participó en el conversatorio sobre turismo con 200 asistentes. "
@@ -160,7 +163,8 @@ class TestContextoMinimo(unittest.TestCase):
         self.assertEqual(az._contexto_minimo_util(bueno, self.TIT, self.TEXTO), bueno)
 
     def test_sin_texto_devuelve_titulo(self):
-        ctx = az._contexto_minimo_util("Cotelco.", self.TIT, "")
+        # v4.65: el título es último recurso solo sin extracto ni cuerpo.
+        ctx = az._contexto_minimo_util("", self.TIT, "")
         self.assertIn("Mundial de Tejo", ctx)
 
 

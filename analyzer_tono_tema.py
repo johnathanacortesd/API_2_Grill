@@ -97,6 +97,47 @@ def _texto_hasta_terminal(texto: str, n: int) -> str:
     return texto[:idx + 1] if idx >= 0 else texto
 
 
+# Abreviaturas y formas que NO cierran una oración: contar su punto como
+# fin de frase partiría la oración a la mitad («a las 5:12 a. m. de este
+# martes» no son dos oraciones). También se ignoran los puntos de
+# decimales/miles («12.500») y las iniciales («J. Pérez»).
+_ABREV_PUNTO = {'a', 'm', 'p', 'dr', 'dra', 'sr', 'sra', 'srta', 'ing',
+                'lic', 'no', 'art', 'aprox', 'ej', 'etc', 'vs', 'ud',
+                'uds', 'sres', 'd', 'c', 'e', 'g', 'ph', 'jr'}
+
+
+def _cortar_tercer_punto(texto: str, n: int = 3) -> str:
+    """v4.65: recorta al n-ésimo punto de oración (regla del usuario
+    2026-10-29: Contexto analizado y texto no pueden traer la noticia
+    entera). Cuenta cierres . ! ? … seguidos de mayúscula, dígito o fin
+    de texto; no cuentan abreviaturas, iniciales ni puntos decimales.
+    Con menos de n oraciones devuelve el texto tal cual.
+    """
+    s = re.sub(r'\s+', ' ', (texto or '')).strip()
+    if not s:
+        return ''
+    contados = 0
+    for m in re.finditer(r'[.!?\u2026]+', s):
+        if (m.start() > 0 and m.end() < len(s)
+                and s[m.start() - 1].isdigit() and s[m.end()].isdigit()):
+            continue  # decimal o miles: 12.500
+        antes = s[:m.start()].strip()
+        prev = re.split(r'\s+', antes)[-1] if antes else ''
+        prev_limpia = re.sub(r'[^a-záéíóúüñ]', '', prev.lower())
+        if prev_limpia in _ABREV_PUNTO:
+            continue
+        if len(prev_limpia) == 1 and prev_limpia.isalpha():
+            continue  # inicial: J. Pérez
+        sig = s[m.end():].lstrip()
+        if sig and not (sig[0].isupper() or sig[0].isdigit()
+                        or sig[0] in '"“('):
+            continue
+        contados += 1
+        if contados == n:
+            return s[:m.end()].strip()
+    return s
+
+
 # v4.64: tope de la ventana de lead con la que se completa un contexto
 # mínimo. Antes era el cuerpo completo (6000): una mención marginal —p.
 # ej. solo el crédito de foto «Foto:Comfenalco»— dejaba Contexto analizado
@@ -120,29 +161,27 @@ def _ventana_lead(cuerpo: str) -> str:
 
 
 def _contexto_minimo_util(ctx: str, titulo: str, texto: str) -> str:
-    """Garantiza un contexto informativo mínimo para la columna de auditoría.
+    """Contexto final de la fila (columna Contexto analizado; texto deriva
+    de aquí quitando el Título).
 
-    Si la extracción por mención devolvió solo un fragmento (p. ej. la firma
-    "Edwin Bernal, director ejecutivo de Cotelco."), se completa con la
-    ventana de lead del cuerpo, NO con el titular y NO con el cuerpo
-    completo (v4.64: completar con 6000 caracteres convertía una mención
-    marginal en un Contexto analizado del tamaño del artículo, y la columna
-    texto heredaba ese largo). Fix anti-copia 2026-10-28: el titular ya va
-    como campo aparte en el prompt y en la columna Título; anteponerlo aquí
-    duplicaba su peso y empujaba al modelo a copiarlo como subtema. Solo
-    cuando el cuerpo es insuficiente se recurre al titular como último
-    recurso (fila solo-título).
+    v4.65 (regla del usuario 2026-10-29): Contexto analizado y texto NO
+    pueden traer la noticia entera: todo se recorta al tercer punto de
+    oración. Si hay extracto de mención —aunque sea una sola oración,
+    como el crédito «Guacarí Foto:Comfenalco Valle del Cauca.»— se
+    CONSERVA (es el extracto de la marca, y el usuario pidió que el
+    crédito sí cuente como mención); la vieja expansión de fragmentos
+    tiny al lead/cuerpo queda revocada: era la que convertía una mención
+    marginal en un texto del tamaño del artículo. Solo cuando NO hay
+    mención se usa el lead, también recortado a 3 oraciones; el titular
+    solo como último recurso (fila solo-título), también recortado.
     """
     c = (ctx or '').strip()
-    if len(c) >= 140 and len(c.split()) >= 18:
-        return c
-    cuerpo = _ventana_lead(texto or '')
-    if len(cuerpo) >= 140 and len(cuerpo.split()) >= 18:
-        return cuerpo
-    fb = ' '.join(x.strip() for x in [titulo or '', (texto or '')[:1200]]
-                  if x and x.strip())
-    fb = re.sub(r'\s+', ' ', fb).strip()[:6000]
-    return fb if len(fb) > len(c) else c
+    if c:
+        return _cortar_tercer_punto(c)
+    lead = _cortar_tercer_punto(_ventana_lead(texto or ''))
+    if lead:
+        return lead
+    return _cortar_tercer_punto(titulo or '')
 
 
 def _contexto_marca(texto: str, titulo: str, brand: str, aliases: Sequence[str],
@@ -201,28 +240,6 @@ TOPE_CTX_GENERAL = 2000
 TOPE_CTX_RADIODIFUSION = 1200
 
 
-# Marcadores de crédito de foto/imagen: lo que sigue es la fuente de la
-# foto, no contenido de la noticia. «Foto:» con o sin espacio («Foto:Comfenalco»)
-# es el caso que dejaba textos larguísimos: el crédito contaba como mención,
-# el extracto quedaba en una frase y _contexto_minimo_util lo expandía al
-# cuerpo completo.
-_RX_CREDITO_FOTO = re.compile(
-    r'\b(?:foto|imagen|fotograf[ií]a)\s*:|\bcortes[ií]a\b', re.I)
-
-
-def _solo_credito_foto(oracion: str, menciona) -> bool:
-    """True si la marca aparece en la oración SOLO tras un crédito de foto.
-
-    Se busca el primer marcador de crédito: si antes de él no hay mención
-    y después sí, la oración es un crédito (p. ej. «Guacarí
-    Foto:Comfenalco Valle del Cauca.»). Sin marcador, nunca es crédito.
-    """
-    m = _RX_CREDITO_FOTO.search(oracion or '')
-    if not m:
-        return False
-    return not menciona(oracion[:m.start()]) and menciona(oracion[m.start():])
-
-
 def _contexto_exacto_marca(texto: str, titulo: str, brand: str,
                            aliases: Sequence[str], voceros: Sequence[str] = (),
                            tipo_medio: str = '') -> str:
@@ -251,14 +268,14 @@ def _contexto_exacto_marca(texto: str, titulo: str, brand: str,
     # puntuación y por saltos de línea cubre ambos casos.
     oraciones = [o.strip() for o in re.split(r'(?<=[.!?…])\s+|\r?\n+', fuente)
                  if o.strip()]
-    # v4.64: un crédito de foto («Guacarí Foto:Comfenalco Valle del
-    # Cauca.», «Imagen:Comfenalco», «Foto cortesía Comfenalco») NO es una
-    # mención de la marca en la noticia: la marca va pegada al marcador de
-    # crédito, no al hecho. Si la única «mención» es el crédito, la oración
-    # no cuenta; si la marca aparece antes del marcador, la oración sí
-    # cuenta (mención real + cola de crédito).
-    hits = [o for o in oraciones
-            if menciona(o) and not _solo_credito_foto(o, menciona)]
+    # v4.65 (revoca v4.64, decisión del usuario 2026-10-29): un crédito
+    # de foto («Guacarí Foto:Comfenalco Valle del Cauca.»,
+    # «Foto:Comfenalco») SÍ cuenta como mención: la marca digitada para
+    # el cliente debe encontrarse aunque vaya pegada a «Foto:». El
+    # riesgo de v4.64 (extracto tiny → texto del tamaño del artículo)
+    # ya no existe porque _contexto_minimo_util conserva el extracto
+    # corto y lo recorta a 3 oraciones en vez de expandirlo.
+    hits = [o for o in oraciones if menciona(o)]
     if not hits:
         # La marca solo aparece en el titular o no aparece: no se inventa
         # contexto de cuerpo. Se devuelve '' y `_contexto_minimo_util`
@@ -297,7 +314,7 @@ MODELO_DEFECTO = "gpt-6-luna"
 # v4.53: sello del analizador. El encabezado de la app lo muestra junto a
 # APP_VERSION; si el despliegue muestra un sello distinto (o "sin-sello"),
 # el contenedor NO corre este archivo aunque el encabezado diga otra versión.
-ANALYZER_BUILD = "v4.64-extracto-marca-corto"  # v4.62: ancla de riesgo + clases de sinonimia
+ANALYZER_BUILD = "v4.65-corte-tercer-punto"  # v4.62: ancla de riesgo + clases de sinonimia
 # v4.53: solo cambia el sello (la lógica del analizador no se toca en esta versión;
 # el cambio es de interfaz).
 JEV_URL_DEFECTO = "https://api.typesafe.ai/v1/systemone"

@@ -1,4 +1,4 @@
-"""v4.64: el extracto de la marca no debe ser el artículo entero.
+"""v4.64/v4.65: el extracto de la marca no debe ser el artículo entero.
 
 Caso real Comfenalco 2026-10-29, nota 61636572 (secuestro en Guacarí):
 la única «mención» de Comfenalco en todo el cuerpo era el crédito de foto
@@ -31,11 +31,17 @@ TIT_REPORTE = ("Video | Secuestran a una joven de 19 años en una panadería "
 
 
 class TestCreditoFotoNoEsMencion(unittest.TestCase):
+    # v4.65 REVOCA v4.64 (decisión del usuario 2026-10-29): el crédito de
+    # foto SÍ cuenta como mención. El texto ya no se alarga porque el
+    # extracto corto se conserva y se recorta a 3 oraciones, no se expande.
     def test_solo_credito_no_cuenta_como_mencion(self):
         ctx = A._contexto_exacto_marca(CUERPO_REPORTE, TIT_REPORTE,
                                        "Comfenalco",
                                        ["Comfenalco Valle"])
-        self.assertEqual(ctx, "")
+        self.assertIn("Foto:Comfenalco", ctx)
+        final = A._contexto_minimo_util(ctx, TIT_REPORTE, CUERPO_REPORTE)
+        self.assertIn("Foto:Comfenalco", final)
+        self.assertLess(len(final), 100)
 
     def test_variantes_de_credito_pegado(self):
         for credito in ("Foto:Comfenalco", "Foto: Comfenalco",
@@ -44,7 +50,7 @@ class TestCreditoFotoNoEsMencion(unittest.TestCase):
             cuerpo = ("Ocurrió un hecho en Guacarí. Guacarí %s Valle del "
                       "Cauca. Más texto sin mención." % credito)
             ctx = A._contexto_exacto_marca(cuerpo, "T", "Comfenalco", [])
-            self.assertEqual(ctx, "", credito)
+            self.assertIn("Comfenalco", ctx, credito)
 
     def test_mencion_real_antes_del_credito_si_cuenta(self):
         cuerpo = ("Comfenalco anunció vacantes para la región, "
@@ -57,7 +63,7 @@ class TestCreditoFotoNoEsMencion(unittest.TestCase):
                   "La agencia de empleo Comfenalco abrió convocatoria.")
         ctx = A._contexto_exacto_marca(cuerpo, "T", "Comfenalco", [])
         self.assertIn("Comfenalco abrió convocatoria", ctx)
-        self.assertNotIn("Foto:Comfenalco", ctx)
+        self.assertIn("Foto:Comfenalco", ctx)  # v4.65: el crédito cuenta
 
     def test_mencion_real_sin_credito_igual_que_antes(self):
         cuerpo = ("El turismo creció. Cotelco presentó sus propuestas. "
@@ -68,23 +74,26 @@ class TestCreditoFotoNoEsMencion(unittest.TestCase):
 
 class TestContextoMinimoVentanaLead(unittest.TestCase):
     def test_caso_reportado_no_llega_al_cuerpo_completo(self):
-        # Cadena completa del pipeline: exacto (vacío por solo-crédito)
-        # + mínimo (ventana de lead, no cuerpo completo).
+        # v4.65: el crédito SÍ es el extracto y se conserva corto (una
+        # oración), sin ventana de lead ni cuerpo completo.
         ctx = A._contexto_exacto_marca(CUERPO_REPORTE, TIT_REPORTE,
                                        "Comfenalco",
                                        ["Comfenalco Valle"])
         final = A._contexto_minimo_util(ctx, TIT_REPORTE, CUERPO_REPORTE)
-        self.assertLessEqual(len(final), 1600)
-        self.assertTrue(final.startswith("Hombres armados secuestraron"))
-        self.assertNotIn("Foto:Comfenalco", final)
+        self.assertEqual(final, "Guacarí Foto:Comfenalco Valle del Cauca.")
 
     def test_fragmento_tiny_se_completa_con_lead_no_con_cuerpo(self):
+        # v4.65: el fragmento de mención se conserva; el lead (recortado
+        # a 3 oraciones) solo se usa cuando NO hay mención.
         cuerpo_largo = "Lead de la noticia sobre el hecho principal. " \
             + PARRAFO_NEUTRO * 40
         final = A._contexto_minimo_util("Edwin Bernal, director ejecutivo "
                                         "de Cotelco.", "Titular", cuerpo_largo)
-        self.assertLessEqual(len(final), 1600)
-        self.assertTrue(final.startswith("Lead de la noticia"))
+        self.assertEqual(final, "Edwin Bernal, director ejecutivo "
+                                "de Cotelco.")
+        final2 = A._contexto_minimo_util("", "Titular", cuerpo_largo)
+        self.assertTrue(final2.startswith("Lead de la noticia"))
+        self.assertLessEqual(len(final2), 1600)
 
     def test_contexto_util_largo_se_conserva(self):
         bueno = ("Cotelco participó en el conversatorio sobre turismo con "

@@ -88,12 +88,19 @@ class TestContextoSinTitulo(unittest.TestCase):
             "")
 
     def test_contexto_minimo_completa_con_cuerpo_no_con_titulo(self):
+        # v4.65 (revoca la expansión de fragmentos): el extracto de
+        # mención se conserva recortado a 3 oraciones; solo SIN mención
+        # se usa el lead, nunca el título antepuesto.
         ctx = az._contexto_minimo_util("Cotelco.", TIT, CUERPO)
-        self.assertTrue(ctx.startswith("Cuando era estudiante"))
-        self.assertFalse(ctx.startswith(TIT))
+        self.assertEqual(ctx, "Cotelco.")
+        ctx2 = az._contexto_minimo_util("", TIT, CUERPO)
+        self.assertTrue(ctx2.startswith("Cuando era estudiante"))
+        self.assertFalse(ctx2.startswith(TIT))
 
     def test_contexto_minimo_sin_cuerpo_ultimo_recurso_titulo(self):
-        ctx = az._contexto_minimo_util("Cotelco.", TIT, "")
+        # v4.65: el título es último recurso solo cuando no hay extracto
+        # ni cuerpo.
+        ctx = az._contexto_minimo_util("", TIT, "")
         self.assertIn("empresas tienden a morir", ctx)
 
 
