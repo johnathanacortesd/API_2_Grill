@@ -243,7 +243,7 @@ MODELO_DEFECTO = "gpt-6-luna"
 # v4.53: sello del analizador. El encabezado de la app lo muestra junto a
 # APP_VERSION; si el despliegue muestra un sello distinto (o "sin-sello"),
 # el contenedor NO corre este archivo aunque el encabezado diga otra versión.
-ANALYZER_BUILD = "v4.62-agrupacion-sinonimos"  # v4.62: ancla de riesgo + clases de sinonimia
+ANALYZER_BUILD = "v4.63-subtema-hecho-principal"  # v4.62: ancla de riesgo + clases de sinonimia
 # v4.53: solo cambia el sello (la lógica del analizador no se toca en esta versión;
 # el cambio es de interfaz).
 JEV_URL_DEFECTO = "https://api.typesafe.ai/v1/systemone"
@@ -637,6 +637,18 @@ def construir_grupos(
                     base[j]['titulo'], base[j]['texto']):
                 uni(i, j)
 
+    # --- v4.63: mismo evento fechado con ancla distintiva ---
+    # Mismo patrón que el pase de riesgo: solo une con fecha + bigrama
+    # distintivo + palabra titular compartida; sin ancla no hay unión.
+    for i, b in enumerate(base):
+        for j in range(i + 1, len(base)):
+            if find(i) == find(j):
+                continue
+            if _mismo_evento(
+                    b['titulo'], b['texto'],
+                    base[j]['titulo'], base[j]['texto']):
+                uni(i, j)
+
     por_raiz = defaultdict(list)
     for k in range(len(base)):
         por_raiz[find(k)].append(k)
@@ -789,6 +801,11 @@ def validar(sub_tema, tono, fuentes, min_pal=MIN_PAL, max_pal=MAX_PAL,
         p.append('verbo_inicial(%s)' % prim)
     if nz(sub_tema) in ROTULO_GEN:
         p.append('rotulo_generico')
+    # v4.63: una llamada o una lista de nombres no es un subtema, aunque
+    # parezca etiqueta bien formada: se marca como problema duro para que
+    # ni la excepción de etiqueta válida ni la puerta final la dejen pasar.
+    if _es_subtema_sin_hecho(sub_tema):
+        p.append('subtema_sin_hecho')
     toks = [nz(t) for t in w]
     if toks and toks[0] in MARCO and all(t in FILLER for t in toks[1:]):
         p.append('marco_vacio')
@@ -884,6 +901,85 @@ def _subtema_copia_titular(sub_tema: str, titulo: str) -> bool:
             return False
         j += 1
     return True
+
+
+# v4.63: palabras funcionales de llamado (CTA) y deícticos: una frase hecha
+# solo con ellas no nombra ningún hecho («Conozca cuándo será», «Así puede
+# participar», «Qué llevar»). Caso real Comfenalco 2026-10-29: el modelo
+# devolvió la cola de llamado del titular y validar() la dejó pasar porque
+# _es_etiqueta_valida la veía como «etiqueta bien formada» (3 palabras, sin
+# verbo en VERBOS1, sin marca de titular). Un subtema sin sustantivo del
+# hecho no es síntesis: es recorte mediocre, aunque parezca etiqueta.
+_LLAMADO_FUNCIONAL = {
+    'conozca', 'conozcan', 'conocer', 'vea', 'vean', 'ver', 'sepa', 'sepan',
+    'saber', 'enterese', 'enterense', 'descubra', 'descubran', 'mire', 'miren',
+    'lea', 'lean', 'revise', 'revisen', 'tenga', 'tengan', 'cuenta',
+    'asi', 'esto', 'eso', 'este', 'esta', 'que', 'cuando', 'donde', 'como',
+    'cual', 'cuales', 'quien', 'quienes', 'puede', 'pueden', 'podra', 'podran',
+    'sera', 'seran', 'fue', 'va', 'van', 'debe', 'deben', 'hay',
+    'participar', 'asistir', 'llevar', 'inscribir', 'inscribirse',
+    'registrar', 'registrarse', 'detalles', 'detalle', 'informacion',
+    'aqui', 'ahi', 'ahora',
+}
+
+
+# Sustantivos que hacen que una frase nombre un hecho aunque el resto
+# sean nombres propios («Nacimiento de Gael en Santa Fe»): sin uno de
+# estos, una frase de solo nombres propios es una lista, no un subtema.
+_SUSTANTIVO_HECHO = {
+    'nacimiento', 'fallecimiento', 'muerte', 'reconocimiento', 'entrega',
+    'apertura', 'clausura', 'inauguracion', 'lanzamiento', 'anuncio',
+    'designacion', 'nombramiento', 'posesion', 'renuncia', 'destitucion',
+    'visita', 'reunion', 'firma', 'acuerdo', 'convenio', 'alianza',
+    'inversion', 'donacion', 'construccion', 'remodelacion', 'ampliacion',
+    'cierre', 'creacion', 'fundacion', 'celebracion', 'conmemoracion',
+    'graduacion', 'premiacion', 'postulacion', 'convocatoria', 'jornada',
+    'feria', 'festival', 'congreso', 'foro', 'seminario', 'encuentro',
+    'premio', 'concurso', 'asamblea', 'presentacion', 'conversatorio',
+    'simposio', 'cumbre',
+}
+
+
+def _es_subtema_sin_hecho(sub_tema: str) -> bool:
+    """True si el subtema no nombra ningún hecho concreto.
+
+    Dos formas, ambas sin sustantivo del hecho:
+    a) Solo palabras funcionales de llamado («Conozca cuándo será»,
+       «Así puede participar», «Qué llevar»).
+    b) Solo nombres propios («Comfenalco Valle en Restrepo, Buenaventura
+       y Cali»): una lista de nombres sin el hecho (jornadas de empleo).
+       Los nombres de evento quedan fuera: si hay un sustantivo de evento
+       («Premio Mujer Cafam», «Feria Laboral») sí hay hecho.
+    Una frase con un sustantivo común («Convocatoria laboral en Restrepo»,
+    «Estado de salud de Yamid Amat», «Conexión entre educación media y
+    superior») NO se marca: la regla no persigue recortes con hecho, solo
+    llamadas y listas de nombres.
+    """
+    s = str(sub_tema or '').strip()
+    if not s:
+        return False
+    contenido = _contenido_para_copia(s)
+    if not contenido:
+        return False
+    if all(w in _LLAMADO_FUNCIONAL for w in contenido):
+        return True
+    if any(w in _EVENTO_NOMBRE for w in contenido):
+        return False
+    # Lista de nombres: cada palabra de contenido va en mayúscula inicial
+    # (o sigla) en el texto ORIGINAL, sin ningún sustantivo en minúscula.
+    # v4.63 (ajuste tras pruebas): dos precisiones para no romper
+    # etiquetas válidas: (a) hacen falta al menos 3 nombres — «Universidad
+    # de Atalaya» (2) es el tema legítimo de su noticia; (b) si la
+    # primera palabra es un sustantivo de hecho («Nacimiento de Gael en
+    # Santa Fe»), la frase SÍ nombra un hecho y no es una lista.
+    originales = [w for w in re.findall(
+        r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9]+", s) if nz(w) not in CONECT]
+    if (len(originales) >= 3 and contenido
+            and contenido[0] not in _SUSTANTIVO_HECHO and all(
+            (w[0].isupper() and (len(w) == 1 or w[1:].islower() or w.isupper()))
+            for w in originales)):
+        return True
+    return False
 
 
 def _es_etiqueta_valida(sub_tema: str) -> bool:
@@ -1467,15 +1563,21 @@ def prompt_lote(grupos_lote: Sequence[dict], candidatos: Sequence[str]) -> str:
         if g.get('titulos_alt'):
             b.append('OTROS TITULARES DEL MISMO GRUPO: %s'
                      % ' // '.join(sq(t)[:120] for t in g['titulos_alt']))
-        b.append('CONTEXTO LITERAL DE LA MARCA (fuente PRIORITARIA para tono, tema y subtema: '
-                 'analiza la noticia desde lo que dice de la marca/alias/voceros, no desde el todo '
-                 'de la noticia): %s'
+        b.append('CONTEXTO LITERAL DE LA MARCA (fuente para el TONO: como sale la marca/alias/voceros): %s'
                  % sq(g.get('contexto') or g.get('texto', ''))[:6000])
+        # v4.63: el SUBTEMA se sintetiza del hecho principal de la noticia
+        # completa, no del parrafo de la marca: enviar el cuerpo (lead) es
+        # lo que evita etiquetas de parrafo lateral («Inscripcion
+        # empresarial» para una feria de aspirantes, «Torneo de tenis»
+        # para un corte de luz) y colas de llamado del titular.
+        b.append('CUERPO DE LA NOTICIA (fuente para el SUBTEMA: hecho principal): %s'
+                 % sq(g.get('texto') or '')[:2500])
         bloques.append('\n'.join(b))
     msg = '\n\n'.join(bloques)
     msg += ('\n\nRecuerda: el sub_tema de cada grupo debe tener entre 3 y 5 palabras, y solo JSON. '
-            'El sub_tema SINTETIZA el hecho del contexto/cuerpo en frase nominal: NUNCA copies '
-            'el titular ni su recorte, ni incluyas el nombre del medio (p. ej. un sufijo "- MEDIO").')
+            'El sub_tema SINTETIZA el hecho PRINCIPAL de la noticia completa (cuerpo) en frase nominal: NUNCA copies '
+            'el titular ni su recorte, NUNCA una cola de llamado del titular (conozca cuando/donde/como, '
+            'asi puede participar, que llevar), NUNCA una lista de nombres sin el hecho, ni incluyas el nombre del medio (p. ej. un sufijo "- MEDIO").')
     if candidatos:
         msg += ('\n\nCANDIDATOS (sub-temas ya usados; reutiliza el texto exacto si es el mismo hecho):\n'
                 + '\n'.join('- %s' % c for c in list(candidatos)[-120:]))
@@ -1490,7 +1592,9 @@ def prompt_reparacion(fallos: Sequence[dict]) -> str:
                           f['sub_tema'], '; '.join(f['problemas'])))
     return ('Corrige SOLO estos sub-temas. Devuelve el mismo tono salvo que el tono no sea valido.\n'
             'Un sub-tema valido tiene 3 a 5 palabras (maximo 7) en frase nominal, no empieza con verbo\n'
-            'conjugado, no termina en preposicion y no lleva marcadores ni rotulos vacios. Si el problema\n'
+            'conjugado, no termina en preposicion y no lleva marcadores ni rotulos vacios. Nunca devuelvas\n'
+            'una cola de llamado del titular (conozca cuando/donde/como, asi puede participar, que llevar)\n'
+            'ni una lista de nombres sin el hecho: el sub-tema es el hecho principal del TEXTO. Si el problema\n'
             'dice largo(N), recorta a 5 palabras sin perder el hecho. Si dice copia_titular, reformula\n'
             'con tus palabras e incluye el actor o lugar distintivo. Si dice subtema_vago, agrega el\n'
             'objeto o asunto concreto del que se trata.\n\n'
@@ -2110,6 +2214,71 @@ def _misma_historia_riesgo(tit_a: str, txt_a: str, tit_b: str, txt_b: str) -> bo
     return bool(ha is not None and hb is not None and (ha & hb))
 
 
+_MESES_ES = {'enero': 1, 'febrero': 2, 'marzo': 3, 'abril': 4, 'mayo': 5,
+            'junio': 6, 'julio': 7, 'agosto': 8, 'septiembre': 9,
+            'setiembre': 9, 'octubre': 10, 'noviembre': 11, 'diciembre': 12}
+# Bigramas de tipo de evento: genéricos, no distinguen un evento de otro
+# («feria laboral» la comparten dos ferias distintas). Un ancla de evento
+# exige un bigrama DISTINTIVO (nombre del evento o sede), no uno de estos.
+_BIGRAMA_GENERICO_EVENTO = {
+    ('feria', 'laboral'), ('feria', 'empleo'), ('jornada', 'empleo'),
+    ('jornada', 'laboral'), ('convocatoria', 'laboral'), ('feria', 'libro'),
+    ('festival', 'cine'), ('encuentro', 'empresarial'), ('evento', 'empresarial'),
+}
+
+
+def _fechas_evento(texto: str) -> set:
+    """Fechas (día, mes) mencionadas en título/cuerpo: «4 de noviembre»."""
+    out = set()
+    for m in re.finditer(
+            r'(\d{1,2})\s+(?:de\s+)?(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre)\b',
+            nz(texto or '')):
+        out.add((int(m.group(1)), _MESES_ES[m.group(2)]))
+    return out
+
+
+def _bigramas_distintivos(texto: str) -> set:
+    """Bigramas de palabras de contenido, sin nexos ni genéricos.
+
+    v4.63: se excluyen números y meses: sin esto, la propia fecha
+    («4 noviembre») contaba como «bigrama distintivo» y un concierto en
+    Cali el mismo día se unía a la feria (falso positivo detectado en
+    pruebas). La fecha ya es su propio requisito; el bigrama debe ser
+    nombre del evento o sede.
+    """
+    ws = [w for w in words(texto or '')
+          if w not in CONECT and not w.isdigit() and w not in _MESES_ES]
+    return {(ws[i], ws[i + 1]) for i in range(len(ws) - 1)
+            if (ws[i], ws[i + 1]) not in _BIGRAMA_GENERICO_EVENTO}
+
+
+def _mismo_evento(tit_a: str, txt_a: str, tit_b: str, txt_b: str) -> bool:
+    """True si dos noticias son el mismo evento fechado y anclado.
+
+    Caso real Comfenalco 2026-10-29: cuatro notas sobre la segunda Feria
+    Laboral Más Empleos Cali (4 de noviembre, coliseo de Ciudad Córdoba,
+    400 vacantes) quedaron en 3 grupos porque los titulares comparten
+    pocas palabras («feria/laboral/cali») y los cuerpos son reescrituras.
+    El ancla es paramétrica, no de cliente: misma fecha (día+mes) en
+    título/cuerpo + un bigrama distintivo compartido en los cuerpos
+    (nombre del evento o sede: «más empleos», «ciudad cordoba») + una
+    palabra de contenido compartida en los titulares. Sin fecha o sin
+    bigrama distintivo no hay unión: dos ferias distintas el mismo día en
+    sedes distintas, o el mismo evento en fechas distintas, no se unen.
+    """
+    fa = _fechas_evento((tit_a or '') + ' ' + (txt_a or ''))
+    fb = _fechas_evento((tit_b or '') + ' ' + (txt_b or ''))
+    if not (fa & fb):
+        return False
+    ba = _bigramas_distintivos(txt_a or '')
+    bb = _bigramas_distintivos(txt_b or '')
+    if not (ba & bb):
+        return False
+    ta = {w for w in words(tit_a or '') if w not in CONECT}
+    tb = {w for w in words(tit_b or '') if w not in CONECT}
+    return bool(ta & tb)
+
+
 def _solapamiento_contexto(a: str, b: str, min_gramas: int = 6) -> float:
     """Solapamiento de 5-gramas entre dos contextos (0.0 si no hay base).
 
@@ -2319,6 +2488,11 @@ def _subtema_desde_titulo(titulo: str) -> str:
                 t = previos[0] if previos else ultimo
             elif len(segs) > 1 and _es_frase_destacada(ultimo, segs[0]):
                 t = segs[0]
+            elif _es_subtema_sin_hecho(ultimo):
+                # v4.63: la cola tras ':' es una llamada («conozca cuándo
+                # será») o una lista de nombres, no el hecho: el hecho
+                # está en el segmento previo, no en la invitación a leer.
+                t = segs[0]
             else:
                 t = ultimo
     t = t.strip('"\'«»“”').strip()
@@ -2354,6 +2528,10 @@ def _subtema_desde_titulo(titulo: str) -> str:
             else:
                 pals_m.append(w.lower())
         t = ' '.join(pals_m)
+    if t and _es_subtema_sin_hecho(t):
+        # El recorte quedó sin hecho (llamada o solo nombres): no se
+        # exporta una cola de llamado como subtema.
+        return 'Hecho informativo'
     if t:
         t = t[0].upper() + t[1:]
     return t or 'Hecho informativo'
@@ -2608,7 +2786,7 @@ def aplicar_guarda_fidelidad_subtema(rows: List[dict], mapa: Dict[int, int],
 # llamadas y evita que la vuelta de reparación «arregle» etiquetas buenas.
 # ============================================================================
 # Problemas de validar() con reparación mecánica obvia.
-_PROBLEMAS_MECANICOS = {'copia_titular', 'caracter_marcador'}
+_PROBLEMAS_MECANICOS = {'copia_titular', 'caracter_marcador', 'subtema_sin_hecho'}
 
 
 def _subtema_envuelto_en_cita(s: str) -> bool:
@@ -2637,6 +2815,7 @@ def reparar_subtema_determinista(sub_tema: str, titulo: str) -> str:
         _subtema_envuelto_en_cita(s)
         or s.rstrip().endswith('?')
         or identico
+        or _es_subtema_sin_hecho(s)
         or (_subtema_copia_titular(s, t) and not _es_etiqueta_valida(s))
     )
     if not mecanico:
@@ -4906,20 +5085,25 @@ def reparar_copias_finales(cfg: dict, grupos: Sequence[dict],
             continue
         _pr = validar(_s, _e.get('tono') or 'Neutro',
                        [_g.get('titulo') or ''])
-        if 'copia_titular' in _pr:
+        _mal = [x for x in ('copia_titular', 'subtema_sin_hecho') if x in _pr]
+        if _mal:
+            # v4.63: una llamada o lista de nombres tampoco se exporta,
+            # aunque no copie el titular: va a la misma reformulación.
             fallos_grupo.append({'grupo': _gid, 'titulo': _g.get('titulo') or '',
                                  'texto': _g.get('texto') or '',
-                                 'sub_tema': _s, 'problemas': ['copia_titular']})
+                                 'sub_tema': _s, 'problemas': _mal})
     fallos_fila = []
     for _i, _s in ajustes.items():
         if not _s:
             continue
         _tit = _titulo_fila(rows[_i], km) if _i < len(rows) else ''
         _txt = _texto_fila(rows[_i], km) if _i < len(rows) else ''
-        if 'copia_titular' in validar(_s, 'Neutro', [_tit]):
+        _prf = validar(_s, 'Neutro', [_tit])
+        _malf = [x for x in ('copia_titular', 'subtema_sin_hecho') if x in _prf]
+        if _malf:
             fallos_fila.append({'grupo': 900000 + _i, 'titulo': _tit,
                                 'texto': _txt, 'sub_tema': _s,
-                                'problemas': ['copia_titular'],
+                                'problemas': _malf,
                                 '_fila': _i})
     if not fallos_grupo and not fallos_fila:
         # Sin copias: igualmente quitar el sufijo del medio de todas las
@@ -4988,8 +5172,9 @@ def reparar_copias_finales(cfg: dict, grupos: Sequence[dict],
     for _f in fallos_grupo:
         _gid = _f['grupo']
         _nuevo = reparados.get(_gid)
-        if _nuevo and 'copia_titular' not in validar(
-                _nuevo, 'Neutro', [_f['titulo']]):
+        _prn = validar(_nuevo, 'Neutro', [_f['titulo']]) if _nuevo else []
+        if _nuevo and 'copia_titular' not in _prn \
+                and 'subtema_sin_hecho' not in _prn:
             etiquetas[_gid]['sub_tema'] = _nuevo
             reparados_ok += 1
         else:
@@ -4998,8 +5183,9 @@ def reparar_copias_finales(cfg: dict, grupos: Sequence[dict],
     for _f in fallos_fila:
         _i = _f['_fila']
         _nuevo = reparados.get(_f['grupo'])
-        if _nuevo and 'copia_titular' not in validar(
-                _nuevo, 'Neutro', [_f['titulo']]):
+        _prn = validar(_nuevo, 'Neutro', [_f['titulo']]) if _nuevo else []
+        if _nuevo and 'copia_titular' not in _prn \
+                and 'subtema_sin_hecho' not in _prn:
             ajustes[_i] = _nuevo
             reparados_ok += 1
         else:
