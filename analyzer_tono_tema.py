@@ -97,21 +97,46 @@ def _texto_hasta_terminal(texto: str, n: int) -> str:
     return texto[:idx + 1] if idx >= 0 else texto
 
 
+# v4.64: tope de la ventana de lead con la que se completa un contexto
+# mínimo. Antes era el cuerpo completo (6000): una mención marginal —p.
+# ej. solo el crédito de foto «Foto:Comfenalco»— dejaba Contexto analizado
+# (y, por tanto, la columna texto) del tamaño del artículo entero.
+VENTANA_CTX_MINIMO = 1500
+
+
+def _ventana_lead(cuerpo: str) -> str:
+    """Primeras ~1500 caracteres del cuerpo, cortados en fin de oración.
+
+    El lead lleva el hecho principal; es el complemento honesto cuando el
+    extracto de mención es un fragmento inservible, sin convertir Contexto
+    analizado en el artículo completo.
+    """
+    c = re.sub(r'\s+', ' ', (cuerpo or '')).strip()
+    if len(c) <= VENTANA_CTX_MINIMO:
+        return c
+    corte = c[:VENTANA_CTX_MINIMO]
+    fines = [m.end() for m in re.finditer(r'[.!?…]\s', corte) if m.end() >= 600]
+    return corte[:fines[-1]].strip() if fines else corte.strip()
+
+
 def _contexto_minimo_util(ctx: str, titulo: str, texto: str) -> str:
     """Garantiza un contexto informativo mínimo para la columna de auditoría.
 
     Si la extracción por mención devolvió solo un fragmento (p. ej. la firma
-    "Edwin Bernal, director ejecutivo de Cotelco."), se completa con el
-    texto más completo disponible (resumen/cuerpo), NO con el titular.
-    Fix anti-copia 2026-10-28: el titular ya va como campo aparte en el
-    prompt y en la columna Título; anteponerlo aquí duplicaba su peso y
-    empujaba al modelo a copiarlo como subtema. Solo cuando el cuerpo es
-    insuficiente se recurre al titular como último recurso (fila solo-título).
+    "Edwin Bernal, director ejecutivo de Cotelco."), se completa con la
+    ventana de lead del cuerpo, NO con el titular y NO con el cuerpo
+    completo (v4.64: completar con 6000 caracteres convertía una mención
+    marginal en un Contexto analizado del tamaño del artículo, y la columna
+    texto heredaba ese largo). Fix anti-copia 2026-10-28: el titular ya va
+    como campo aparte en el prompt y en la columna Título; anteponerlo aquí
+    duplicaba su peso y empujaba al modelo a copiarlo como subtema. Solo
+    cuando el cuerpo es insuficiente se recurre al titular como último
+    recurso (fila solo-título).
     """
     c = (ctx or '').strip()
     if len(c) >= 140 and len(c.split()) >= 18:
         return c
-    cuerpo = re.sub(r'\s+', ' ', (texto or '')).strip()[:6000]
+    cuerpo = _ventana_lead(texto or '')
     if len(cuerpo) >= 140 and len(cuerpo.split()) >= 18:
         return cuerpo
     fb = ' '.join(x.strip() for x in [titulo or '', (texto or '')[:1200]]
@@ -176,6 +201,28 @@ TOPE_CTX_GENERAL = 2000
 TOPE_CTX_RADIODIFUSION = 1200
 
 
+# Marcadores de crédito de foto/imagen: lo que sigue es la fuente de la
+# foto, no contenido de la noticia. «Foto:» con o sin espacio («Foto:Comfenalco»)
+# es el caso que dejaba textos larguísimos: el crédito contaba como mención,
+# el extracto quedaba en una frase y _contexto_minimo_util lo expandía al
+# cuerpo completo.
+_RX_CREDITO_FOTO = re.compile(
+    r'\b(?:foto|imagen|fotograf[ií]a)\s*:|\bcortes[ií]a\b', re.I)
+
+
+def _solo_credito_foto(oracion: str, menciona) -> bool:
+    """True si la marca aparece en la oración SOLO tras un crédito de foto.
+
+    Se busca el primer marcador de crédito: si antes de él no hay mención
+    y después sí, la oración es un crédito (p. ej. «Guacarí
+    Foto:Comfenalco Valle del Cauca.»). Sin marcador, nunca es crédito.
+    """
+    m = _RX_CREDITO_FOTO.search(oracion or '')
+    if not m:
+        return False
+    return not menciona(oracion[:m.start()]) and menciona(oracion[m.start():])
+
+
 def _contexto_exacto_marca(texto: str, titulo: str, brand: str,
                            aliases: Sequence[str], voceros: Sequence[str] = (),
                            tipo_medio: str = '') -> str:
@@ -204,7 +251,14 @@ def _contexto_exacto_marca(texto: str, titulo: str, brand: str,
     # puntuación y por saltos de línea cubre ambos casos.
     oraciones = [o.strip() for o in re.split(r'(?<=[.!?…])\s+|\r?\n+', fuente)
                  if o.strip()]
-    hits = [o for o in oraciones if menciona(o)]
+    # v4.64: un crédito de foto («Guacarí Foto:Comfenalco Valle del
+    # Cauca.», «Imagen:Comfenalco», «Foto cortesía Comfenalco») NO es una
+    # mención de la marca en la noticia: la marca va pegada al marcador de
+    # crédito, no al hecho. Si la única «mención» es el crédito, la oración
+    # no cuenta; si la marca aparece antes del marcador, la oración sí
+    # cuenta (mención real + cola de crédito).
+    hits = [o for o in oraciones
+            if menciona(o) and not _solo_credito_foto(o, menciona)]
     if not hits:
         # La marca solo aparece en el titular o no aparece: no se inventa
         # contexto de cuerpo. Se devuelve '' y `_contexto_minimo_util`
@@ -243,7 +297,7 @@ MODELO_DEFECTO = "gpt-6-luna"
 # v4.53: sello del analizador. El encabezado de la app lo muestra junto a
 # APP_VERSION; si el despliegue muestra un sello distinto (o "sin-sello"),
 # el contenedor NO corre este archivo aunque el encabezado diga otra versión.
-ANALYZER_BUILD = "v4.63-subtema-hecho-principal"  # v4.62: ancla de riesgo + clases de sinonimia
+ANALYZER_BUILD = "v4.64-extracto-marca-corto"  # v4.62: ancla de riesgo + clases de sinonimia
 # v4.53: solo cambia el sello (la lógica del analizador no se toca en esta versión;
 # el cambio es de interfaz).
 JEV_URL_DEFECTO = "https://api.typesafe.ai/v1/systemone"
