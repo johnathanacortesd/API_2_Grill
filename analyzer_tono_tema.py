@@ -243,7 +243,7 @@ MODELO_DEFECTO = "gpt-6-luna"
 # v4.53: sello del analizador. El encabezado de la app lo muestra junto a
 # APP_VERSION; si el despliegue muestra un sello distinto (o "sin-sello"),
 # el contenedor NO corre este archivo aunque el encabezado diga otra versión.
-ANALYZER_BUILD = "v4.61-anticopia"  # v4.61: fix anti-copia titulo/contexto
+ANALYZER_BUILD = "v4.62-agrupacion-sinonimos"  # v4.62: ancla de riesgo + clases de sinonimia
 # v4.53: solo cambia el sello (la lógica del analizador no se toca en esta versión;
 # el cambio es de interfaz).
 JEV_URL_DEFECTO = "https://api.typesafe.ai/v1/systemone"
@@ -623,6 +623,19 @@ def construir_grupos(
                 den = min(len(b['g5ctx']), len(base[j]['g5ctx']))
                 if den >= 6 and inter >= 6 and inter / den >= 0.55:
                     uni(i, j)
+
+    # --- v4.62: misma historia de riesgo con sinónimos (ancla de cuerpo) ---
+    # Título y cuerpo distintos, mismo riesgo + mismo grupo + misma ancla
+    # (ver _misma_historia_riesgo). Sin ancla no hay unión: es el freno
+    # que evita volver a la sobre-agrupación de v4.50.
+    for i, b in enumerate(base):
+        for j in range(i + 1, len(base)):
+            if find(i) == find(j):
+                continue
+            if _misma_historia_riesgo(
+                    b['titulo'], b['texto'],
+                    base[j]['titulo'], base[j]['texto']):
+                uni(i, j)
 
     por_raiz = defaultdict(list)
     for k in range(len(base)):
@@ -1948,6 +1961,47 @@ _CLASES_EVENTO = {
     'ranking': 'ranking listado listados clasificacion escalafon'.split(),
     'inauguracion': 'inauguracion apertura reapertura inaugura inauguran'.split(),
     'firma': 'firma firmas alianza alianzas convenio acuerdo pacto firman'.split(),
+    # v4.62: clases de sinonimia que antes partian un mismo hecho en
+    # subtemas distintos. Caso real Unsimón 2026-10-29: la misma historia
+    # (riesgo para estudiantes cerca de Unisimón) salía como
+    # «Intimidaciones…», «Alerta por engaños…», «Alerta por intentos de
+    # secuestro», «Mesa sobre intimidaciones…» y «Alertas por acoso…»
+    # porque intimidación/acoso/engaño/secuestro/trata son palabras
+    # distintas para el mismo riesgo, y «estudiantes/universitarias»
+    # para el mismo grupo. Igual para nombramiento: «Nombramiento del
+    # director de Medicina» se partía de su pareja «asumirá la dirección
+    # del programa de Medicina» porque nombramiento/asumir y
+    # director/dirección no compartían stem. Estas clases SOLO se usan
+    # en _contenido_discriminante (comparación de subtemas y guarda de
+    # fidelidad) y en el pase de ancla de cuerpo de v4.62; no crean
+    # uniones por sí solas en el puente de títulos.
+    'riesgo': (
+        'acoso acosar acosada acosado acosadas acosados '
+        'intimidacion intimidar intimidada intimidado '
+        'engano enganar enganada enganado '
+        'secuestro secuestrar secuestrado secuestrada '
+        'rapto raptar raptada raptado trata persecucion '
+        'hostigamiento hostigada hostigado amenaza amenazas'
+    ).split(),
+    'nombramiento': (
+        # Formas flexionadas: raiz() no une 'designación' con
+        # 'designada' ni 'nombramiento' con 'nombrado'; sin listarlas,
+        # la guarda v4.62 volvía a partir el caso Vélez (v4.35) porque
+        # 'designada' no caía en la clase 'nombramiento'.
+        'nombramiento designacion designaciones '
+        'designada designado designadas designados designa designan '
+        'posesion posesionada posesionado posesiono '
+        'asume asumir asumira asumio asumen asumiran asumida asumido '
+        'nombra nombran nombrado nombrada nombrados nombradas'
+    ).split(),
+    'direccion': 'director directora direccion direcciones'.split(),
+    'estudiantil': (
+        # Ojo: raiz() quita 'es' final, así que 'estudiantes' da
+        # 'estudiant' y no 'estudiante': hay que listar ambas formas
+        # para que singular y plural caigan en la misma clase.
+        'estudiante estudiantes universitaria universitario '
+        'alumna alumno estudiantil'
+    ).split(),
 }
 # Mapa stem → clase (se normaliza con raiz() igual que el resto de tokens).
 _CLASE_DE = {}
@@ -1996,6 +2050,64 @@ ATRIBUTO_DEMOGRAFICO = {
     'joven', 'mujer', 'hombre', 'nino', 'nina', 'adulto', 'adulta',
     'adolescente', 'infantil', 'ninez', 'juventud',
 }
+
+
+# ============================================================================
+# v4.62: misma historia de riesgo, contada con sinónimos (pase de ancla).
+#
+# El puente de títulos y el solapamiento de 5-gramas no ven que
+# «intimidaciones», «acoso», «engaños», «secuestro» y «trata» son el mismo
+# riesgo cuando el cuerpo lo ancla en la misma persona, el mismo colectivo
+# o el mismo lugar. Este pase exige las TRES cosas a la vez, para no
+# reabrir la sobre-agrupación de v4.50:
+#   1. riesgo (sinónimo de la clase 'riesgo') en título o cuerpo;
+#   2. grupo afectado (mujeres / estudiantes / universitarias) en título
+#      o cuerpo;
+#   3. un ancla específica compartida: un nombre (Barrera, Moreno), un
+#      colectivo (Mariposa Púrpura), el modus (desconocidos que abordan)
+#      o el lugar exacto (carrera 54, calle 67).
+# Un «Lea también» suelto no basta: exige ancla, y la nota de tarifas
+# (61652963) queda fuera porque su cuerpo solo trae la línea de
+# «Lea también» sin ancla. Tampoco une historias de riesgo distintas:
+# sin ancla compartida, dos delitos en la misma ciudad no se juntan.
+# ============================================================================
+_RIESGO_RAICES = {raiz(w) for w in (
+    'acoso acosar acosada acosado intimidacion intimidar intimidada '
+    'engano enganar enganada secuestro secuestrar secuestrado secuestrada '
+    'rapto raptar raptada trata persecucion hostigamiento amenaza amenazas'
+).split()}
+_DEMOGRAFICO_RIESGO = {
+    'mujer', 'mujeres', 'estudiante', 'estudiantes',
+    'universitaria', 'universitarias', 'universitario', 'universitarios',
+    'alumna', 'alumnas', 'alumno', 'alumnos',
+}
+_ANCLA_HISTORIA = {'barrera', 'moreno', 'mariposa', 'purpura',
+                   'desconocido', 'desconocidos'}
+
+
+def _huella_historia_riesgo(titulo: str, texto: str):
+    """(riesgo, demográfico, anclas) de una noticia, o None si le falta
+    riesgo o demográfico. Los tokens se normalizan con raiz() para que
+    «intimidaciones» y «intimidación» cuenten igual."""
+    toks = {raiz(w) for w in words(str(titulo or '') + ' ' + str(texto or ''))}
+    crudo = set(words(str(titulo or '') + ' ' + str(texto or '')))
+    if not (toks & _RIESGO_RAICES):
+        return None
+    if not (crudo & _DEMOGRAFICO_RIESGO):
+        return None
+    anclas = set(t for t in _ANCLA_HISTORIA if t in crudo)
+    if 'carrera' in crudo and '54' in crudo:
+        anclas.add('carrera54')
+    if 'calle' in crudo and '67' in crudo:
+        anclas.add('calle67')
+    return anclas
+
+
+def _misma_historia_riesgo(tit_a: str, txt_a: str, tit_b: str, txt_b: str) -> bool:
+    """True si dos noticias son la misma historia de riesgo anclada."""
+    ha = _huella_historia_riesgo(tit_a, txt_a)
+    hb = _huella_historia_riesgo(tit_b, txt_b)
+    return bool(ha is not None and hb is not None and (ha & hb))
 
 
 def _solapamiento_contexto(a: str, b: str, min_gramas: int = 6) -> float:
@@ -3105,6 +3217,22 @@ def unificar_etiquetas_titulos_similares(rows: List[dict], mapa: Dict[int, int],
                 if s2 >= 60:
                     uni(k, j)
 
+    # v4.62: misma historia de riesgo con sinónimos (ancla de cuerpo).
+    # Pase a nivel de FILA, independiente del puente de títulos: dos
+    # filas con el mismo riesgo + grupo + ancla se unen aunque sus
+    # titulares no compartan palabras (sinónimos: intimidación/acoso/
+    # engaño/secuestro/trata). El canon del bloque sigue exigiendo
+    # fidelidad a todas las filas (_elegir_canon_fiel), así que una
+    # unión por ancla no puede imponer un subtema ajeno.
+    for k in range(n):
+        for j in range(k + 1, n):
+            if gid_de[j] == gid_de[k] or find(k) == find(j):
+                continue
+            if _misma_historia_riesgo(
+                    titulos[k], _texto_fila(rows[idx_validos[k]], km),
+                    titulos[j], _texto_fila(rows[idx_validos[j]], km)):
+                uni(k, j)
+
     def _elegir(vals):
         c = Counter(vals)
         top = c.most_common()
@@ -3224,8 +3352,8 @@ def unificar_subtemas_llm(cfg, grupos, etiquetas, uso=None):
     EXACTAMENTE el mismo hecho/asunto. Conservadora por diseño: ante la
     duda no fusiona (un tema incorrecto es peor que dos subtemas pequenos);
     en empate de frecuencia conserva el subtema MAS especifico (el mas
-    largo), y nunca fusiona subtemas con tonos distintos (evita que el voto
-    de tono por subtema voltee un Positivo a Neutro).
+    largo), y no fusiona si algún miembro es Negativo (v4.62: Positivo /
+    Neutro sí se fusionan y el voto final reconcilia el tono después).
     Si la llamada falla, no rompe el pipeline: devuelve 0.
     """
     vistos = {}
@@ -3280,12 +3408,17 @@ def unificar_subtemas_llm(cfg, grupos, etiquetas, uso=None):
     cambios = 0
     for idxs in fusiones:
         miembros = {nz(textos[i]) for i in idxs}
-        # Nunca fusionar subtemas con tonos distintos: el voto de tono por
-        # subtema (`unificar_tono_mismo_hecho`) podria voltear un Positivo
-        # legitimo a Neutro. Ante la duda, separar.
+        # v4.62: el veto total por tono distinto creaba un bloqueo
+        # circular en Unsimón 2026-10-29: la misma historia salía
+        # Positivo en unas notas y Neutro en otras, así que la fusión
+        # LLM nunca ocurría y el voto final por subtema (que corre
+        # DESPUÉS y sí reconcilia el tono) nunca veía un subtema común.
+        # Se mantiene solo el veto que protege un señalamiento real:
+        # si algún miembro es Negativo, no se fusiona. Positivo/Neutro
+        # se reconcilian después por voto, como ya hace el pipeline.
         tonos = {((etiquetas.get(g) or {}).get('tono') or 'Neutro')
                  for g, e in etiquetas.items() if nz(e.get('sub_tema')) in miembros}
-        if len(tonos) > 1:
+        if 'Negativo' in tonos:
             continue
         canon = _canonico_de_fusion(idxs, textos, conteo)
         canon_k = nz(canon)

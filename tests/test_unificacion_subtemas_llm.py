@@ -112,18 +112,32 @@ class TestUnificarSubtemasLlm(unittest.TestCase):
         self.assertEqual(et[2]['sub_tema'], 'Inauguración del laboratorio')
         self.assertEqual(et[3]['sub_tema'], 'Obras en Sincelejo')
 
-    def test_no_fusiona_tonos_distintos(self):
-        # v4.15: fusionar subtemas con tonos distintos podía voltear un
-        # Positivo a Neutro en el voto de tono por subtema. Se dejan como están.
+    def test_fusiona_tonos_positivo_neutro_v462(self):
+        # v4.62 (cambio intencional, caso Unsimón 2026-10-29): el veto
+        # total por tono distinto bloqueaba la fusión de una misma
+        # historia que salía Positivo en unas notas y Neutro en otras,
+        # y el voto final por subtema nunca veía un subtema común.
+        # Positivo/Neutro sí se fusionan (el voto final reconcilia el
+        # tono después); solo el Negativo sigue vetando la fusión.
         et = {1: {'sub_tema': 'Apertura del laboratorio', 'tono': 'Positivo'},
               2: {'sub_tema': 'Inauguración del laboratorio', 'tono': 'Neutro'}}
+        gr = _grupos(['Apertura del laboratorio', 'Inauguración del laboratorio'])
+        with patch.object(az, 'llamar_llm', return_value='{"fusiones": [[1, 2]]}'):
+            cambios = az.unificar_subtemas_llm({'model': 'x'}, gr, et, uso={})
+        self.assertEqual(cambios, 1)
+        self.assertEqual(et[1]['sub_tema'], 'Inauguración del laboratorio')
+        self.assertEqual(et[2]['sub_tema'], 'Inauguración del laboratorio')
+
+    def test_no_fusiona_con_negativo_v462(self):
+        # v4.62: el veto que se conserva es el del señalamiento real.
+        et = {1: {'sub_tema': 'Apertura del laboratorio', 'tono': 'Positivo'},
+              2: {'sub_tema': 'Inauguración del laboratorio', 'tono': 'Negativo'}}
         gr = _grupos(['Apertura del laboratorio', 'Inauguración del laboratorio'])
         with patch.object(az, 'llamar_llm', return_value='{"fusiones": [[1, 2]]}'):
             cambios = az.unificar_subtemas_llm({'model': 'x'}, gr, et, uso={})
         self.assertEqual(cambios, 0)
         self.assertEqual(et[1]['sub_tema'], 'Apertura del laboratorio')
         self.assertEqual(et[2]['sub_tema'], 'Inauguración del laboratorio')
-        self.assertEqual(et[1]['tono'], 'Positivo')
 
     def test_fusiona_con_indices_base_cero(self):
         subs = ['Apertura del laboratorio', 'Inauguración del laboratorio']
