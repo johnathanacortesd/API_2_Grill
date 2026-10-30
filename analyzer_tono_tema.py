@@ -160,6 +160,117 @@ def _ventana_lead(cuerpo: str) -> str:
     return corte[:fines[-1]].strip() if fines else corte.strip()
 
 
+# Umbrales de la regla del usuario 2026-10-29 para extender el texto:
+# texto corto = 60 palabras o menos, o 370 caracteres o menos, según sus
+# fórmulas de Excel: palabras = LARGO(ESPACIOS(Y)) - LARGO(SUSTITUIR(
+# ESPACIOS(Y); " "; "")) + 1; caracteres = LARGO(Y). En la práctica
+# coinciden (60 palabras ≈ 370 caracteres); se extiende si cumple
+# CUALQUIERA de las dos medidas.
+UMBRAL_TEXTO_PALABRAS = 60
+UMBRAL_TEXTO_CARACTERES = 370
+
+
+def _titulo_menciona_marca(titulo: str, brand: str, aliases,
+                           voceros) -> bool:
+    """True si el título menciona la marca, un alias o un vocero.
+
+    Misma coincidencia que el extracto (bordes de palabra sobre texto
+    normalizado): «Comfenalco» en el título cuenta; «Comfenalcos» no.
+    """
+    if not (titulo or '').strip():
+        return False
+    rx = _regex_coincidencia(brand, aliases or [], voceros or [])
+    return bool(rx) and _mención_normalizada_en(nz(titulo), rx)
+
+
+def _texto_desde_contexto(contexto: str, titulo: str) -> str:
+    """Mismo cálculo que la columna «texto» del escritor (pipeline.py
+    v4.56): Contexto analizado sin el Título, espacios limpiados."""
+    base = str(contexto or '')
+    if titulo:
+        base = base.replace(str(titulo), '')
+    return ' '.join(base.split())
+
+
+def _oracion_siguiente_en_cuerpo(ctx_exact: str, cuerpo: str) -> str:
+    """Oración del cuerpo inmediatamente posterior a la última mención.
+
+    El extracto reúne solo oraciones con mención; cuando ya no quedan
+    oraciones de mención (el extracto tiene 1-2 oraciones y el texto es
+    corto), «hasta el siguiente punto» significa la oración que sigue a
+    la última mención en el cuerpo, no otra oración de mención. Se ancla
+    en la ÚLTIMA aparición de la última oración del extracto (el extracto
+    deduplica, así que una mención repetida no debe anclar en su primera
+    aparición) y no se devuelve una oración que ya esté en el extracto.
+    """
+    if not (ctx_exact or '').strip() or not (cuerpo or '').strip():
+        return ''
+    def _norm(x):
+        return re.sub(r'\s+', ' ', x or '').strip()
+    cuerpo_or = [_norm(o) for o in re.split(r'(?<=[.!?…])\s+|\r?\n+',
+                                            cuerpo) if _norm(o)]
+    extracto_or = [_norm(o) for o in re.split(r'(?<=[.!?…])\s+|\r?\n+',
+                                              ctx_exact) if _norm(o)]
+    if not cuerpo_or or not extracto_or:
+        return ''
+    ultima = extracto_or[-1]
+    idxs = [i for i, o in enumerate(cuerpo_or) if o == ultima]
+    if not idxs:
+        return ''
+    idx = idxs[-1]
+    if idx + 1 >= len(cuerpo_or):
+        return ''
+    siguiente = cuerpo_or[idx + 1]
+    if siguiente in set(extracto_or):
+        return ''
+    return siguiente
+
+
+def _contexto_con_titulo_y_extension(ctx_exact: str, titulo: str,
+                                     cuerpo: str, brand: str, aliases,
+                                     voceros) -> str:
+    """Contexto final v4.66 (regla del usuario 2026-10-29, dos partes):
+
+    1. Título en Contexto: si el título menciona la marca, un alias o un
+       vocero, el título se incluye al inicio de Contexto analizado
+       (revoca parcialmente v4.28: allí se quitó el antepuesto porque el
+       prompt usaba el contexto para todo; desde v4.63 el prompt usa el
+       cuerpo para el subtema y el contexto solo para el tono, así que el
+       título con marca vuelve como evidencia de tono). Si el título ya
+       está en el contexto (fila solo-título) no se duplica.
+    2. Texto un poco más extenso: si el texto derivado (Contexto sin el
+       Título) tiene 60 palabras o menos, o 370 caracteres o menos, se
+       agrega UNA oración más, hasta el siguiente punto: la 4ª oración
+       del extracto si la hay; si el extracto ya se agotó (1-2 oraciones
+       de mención), la oración del cuerpo que sigue a la última mención.
+       Si ya es mayor, se deja tal cual.
+       Como texto deriva de Contexto, la extensión se hace aquí, en el
+       extracto, para que texto siga siendo Contexto sin el Título.
+    """
+    base = _contexto_minimo_util(ctx_exact, titulo, cuerpo)
+    titulo_limpio = (titulo or '').strip()
+    prefijo = ''
+    if (titulo_limpio and titulo_limpio not in base
+            and _titulo_menciona_marca(titulo_limpio, brand, aliases,
+                                       voceros)):
+        prefijo = titulo_limpio + ' '
+    texto = _texto_desde_contexto(prefijo + base, titulo_limpio)
+    if (len(texto.split()) <= UMBRAL_TEXTO_PALABRAS
+            or len(texto) <= UMBRAL_TEXTO_CARACTERES):
+        fuente = (ctx_exact or '').strip() or _ventana_lead(cuerpo or '')
+        extendido = _cortar_tercer_punto(fuente, 4)
+        if extendido and extendido != base:
+            base = extendido
+        elif (ctx_exact or '').strip():
+            # Extracto agotado (1-2 oraciones de mención y texto corto):
+            # el siguiente punto es la oración del cuerpo que sigue a
+            # la última mención, no otra oración de mención.
+            siguiente = _oracion_siguiente_en_cuerpo(ctx_exact, cuerpo)
+            if siguiente:
+                base = (base + ' ' + siguiente).strip() if base else siguiente
+    return (prefijo + base).strip()
+
+
 def _contexto_minimo_util(ctx: str, titulo: str, texto: str) -> str:
     """Contexto final de la fila (columna Contexto analizado; texto deriva
     de aquí quitando el Título).
@@ -314,7 +425,7 @@ MODELO_DEFECTO = "gpt-6-luna"
 # v4.53: sello del analizador. El encabezado de la app lo muestra junto a
 # APP_VERSION; si el despliegue muestra un sello distinto (o "sin-sello"),
 # el contenedor NO corre este archivo aunque el encabezado diga otra versión.
-ANALYZER_BUILD = "v4.65-corte-tercer-punto"  # v4.62: ancla de riesgo + clases de sinonimia
+ANALYZER_BUILD = "v4.66-titulo-en-contexto-texto-extendido"  # v4.62: ancla de riesgo + clases de sinonimia
 # v4.53: solo cambia el sello (la lógica del analizador no se toca en esta versión;
 # el cambio es de interfaz).
 JEV_URL_DEFECTO = "https://api.typesafe.ai/v1/systemone"
@@ -5395,10 +5506,12 @@ def enrich_rows_with_ai(
                 voceros=cfg.get('voceros') or [],
                 tipo_medio=str(row.get(km.get('tipodemedio', 'Tipo de Medio'), '')
                                or ''))
-            # v4.16: si el extracto es solo la mención (fragmento), completar
-            # con titular + resumen en vez de dejar "Edwin Bernal, director…".
-            row['Contexto analizado'] = _contexto_minimo_util(
-                ctx, _titulo_fila(row, km), _texto_fila(row, km))
+            # v4.66: Contexto = título (si menciona marca/alias/vocero)
+            # + extracto recortado a 3 oraciones, extendido a 4 cuando el
+            # texto derivado es corto (<=60 palabras o <=370 caracteres).
+            row['Contexto analizado'] = _contexto_con_titulo_y_extension(
+                ctx, _titulo_fila(row, km), _texto_fila(row, km),
+                brand, aliases, cfg.get('voceros') or [])
 
     # --- agrupacion ---
     progreso(73, 'Agrupando notas equivalentes…')
