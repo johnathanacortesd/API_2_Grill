@@ -425,7 +425,7 @@ MODELO_DEFECTO = "gpt-6-luna"
 # v4.53: sello del analizador. El encabezado de la app lo muestra junto a
 # APP_VERSION; si el despliegue muestra un sello distinto (o "sin-sello"),
 # el contenedor NO corre este archivo aunque el encabezado diga otra versión.
-ANALYZER_BUILD = "v4.66-titulo-en-contexto-texto-extendido"  # v4.62: ancla de riesgo + clases de sinonimia
+ANALYZER_BUILD = "v4.67-trozo-verbatim"  # v4.62: ancla de riesgo + clases de sinonimia
 # v4.53: solo cambia el sello (la lógica del analizador no se toca en esta versión;
 # el cambio es de interfaz).
 JEV_URL_DEFECTO = "https://api.typesafe.ai/v1/systemone"
@@ -1008,6 +1008,11 @@ def validar(sub_tema, tono, fuentes, min_pal=MIN_PAL, max_pal=MAX_PAL,
         p.append('copia_titular')
     elif _con_copia and titulo and _es_copia_casi_identica(sub_tema, titulo):
         p.append('copia_titular')
+    elif _con_copia and titulo and _subtema_trozo_verbatim(sub_tema, titulo):
+        # v4.67: trozo verbatim del titular, sin excepción de etiqueta
+        # válida (ver _subtema_trozo_verbatim). Caso real 2026-10-30:
+        # «Colombia al poner fin a práctica» = cola literal del titular.
+        p.append('copia_titular')
     elif _con_copia and _subtema_copia_titular(sub_tema, titulo) \
             and not _es_etiqueta_valida(sub_tema):
         p.append('copia_titular')
@@ -1052,6 +1057,36 @@ def _subtema_vago(sub_tema: str) -> bool:
         return False
     n = sum(1 for w in toks if w in _VAGO_SUBTEMA)
     return n >= 2 and n / len(toks) >= 0.5
+
+
+def _subtema_trozo_verbatim(sub_tema: str, titulo: str) -> bool:
+    """True si el subtema ES un trozo verbatim y contiguo del titular.
+
+    v4.67: la excepción de v4.21 («una etiqueta válida que aparece en el
+    titular no es pereza») tragaba recortes literales: «Colombia al poner
+    fin a práctica» es la cola exacta del titular y validar() la veía
+    como etiqueta válida, así que ni la vuelta de reparación ni la puerta
+    final la marcaban. Un trozo contiguo de >=3 palabras de contenido
+    SIEMPRE es copia, parezca o no etiqueta válida: el subtema se
+    sintetiza del hecho, nunca se recorta del titular. La excepción de
+    v4.21 sobrevive solo para el solapamiento NO contiguo (palabras del
+    titular en orden con huecos: reformulación genuina, no recorte).
+    Los rótulos de <=2 palabras de contenido no se marcan aquí (una
+    etiqueta nominal corta comparte palabras con el titular por
+    naturaleza: «Feria Laboral»).
+    """
+    s, t = nz(sub_tema), nz(titulo or '')
+    if not s or not t or s not in t:
+        return False
+    contenido = [w for w in s.split() if w not in CONECT]
+    if len(contenido) < 3:
+        return False
+    # Los nombres de evento se repiten tal cual por naturaleza (misma
+    # exención que en _subtema_copia_titular): «Cumbre internacional de
+    # criminología» es el nombre del evento, no un recorte perezoso.
+    if any(w in _EVENTO_NOMBRE for w in contenido):
+        return False
+    return True
 
 
 def _subtema_copia_titular(sub_tema: str, titulo: str) -> bool:
