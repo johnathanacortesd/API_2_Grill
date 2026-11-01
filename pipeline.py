@@ -1111,6 +1111,22 @@ def _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_plain_hlink,
         if "CuerpoEs" in row and isinstance(row.get("CuerpoEs"), str) and row["CuerpoEs"].strip():
             row["CuerpoEs"] = corregir_texto(row["CuerpoEs"])
 
+        # v4.69: decodificar entidades HTML en Contexto analizado y en
+        # Resumen - Aclaracion, además de la limpieza que ya reciben
+        # Título, Resumen y CuerpoEs. Solo se decodifica: no se cambia
+        # ninguna palabra, no se recorta nada y no se usa API. Sin esto,
+        # un cuerpo con entidades ("podr&#xE1;") las arrastraba a
+        # Contexto (que se construye del CuerpoEs crudo, no del resumen
+        # limpio) y, desde ahí, a texto, que se deriva de Contexto.
+        # Va antes de la derivación de texto para que texto también salga
+        # limpio.
+        if isinstance(row.get(CONTEXTO_ANALIZADO_COL), str):
+            row[CONTEXTO_ANALIZADO_COL] = decode_html_entities(
+                row[CONTEXTO_ANALIZADO_COL])
+        if isinstance(row.get("Resumen - Aclaracion"), str):
+            row["Resumen - Aclaracion"] = decode_html_entities(
+                row["Resumen - Aclaracion"])
+
         excel_row = i + 1
         for cidx, h in enumerate(cols):
             # v4.57: "Link Ext" y "Web Ext" con el enlace completo a la
