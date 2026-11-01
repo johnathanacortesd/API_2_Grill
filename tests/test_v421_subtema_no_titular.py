@@ -137,7 +137,9 @@ class TestSubtemaDesdeTitulo(unittest.TestCase):
         self.assertNotIn('¿', r)
 
     def test_solo_preguntas(self):
-        self.assertEqual(A._subtema_desde_titulo("¿Quién? ¿Cómo?"), "Hecho informativo")
+        # v4.68: _subtema_desde_titulo ya no devuelve el marcador; el
+        # específico con cuerpo lo da _subtema_especifico.
+        self.assertEqual(A._subtema_desde_titulo("¿Quién? ¿Cómo?"), "")
 
     def test_recorta_verbo_inicial_tras_corte(self):
         r = A._subtema_desde_titulo(
@@ -145,8 +147,8 @@ class TestSubtemaDesdeTitulo(unittest.TestCase):
         self.assertFalse(r.split()[0].lower() in A._VERBO_INFO_SING)
 
     def test_vacio(self):
-        self.assertEqual(A._subtema_desde_titulo(""), "Hecho informativo")
-        self.assertEqual(A._subtema_desde_titulo(None), "Hecho informativo")
+        self.assertEqual(A._subtema_desde_titulo(""), "")
+        self.assertEqual(A._subtema_desde_titulo(None), "")
 
     def test_conserva_siglas(self):
         r = A._subtema_desde_titulo(

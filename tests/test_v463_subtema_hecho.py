@@ -82,11 +82,13 @@ class TestDesdeTituloSinLlamado(unittest.TestCase):
         self.assertIn('Feria', r)
         self.assertFalse(A._es_subtema_sin_hecho(r))
 
-    def test_titulo_sin_hecho_final_cae_a_hecho_informativo(self):
+    def test_titulo_sin_hecho_final_devuelve_vacio(self):
+        # v4.68: la función solo-titular devuelve ''; el específico con
+        # cuerpo lo da _subtema_especifico (ver test_v468).
         r = A._subtema_desde_titulo(
             "Jornadas de empleo de Comfenalco Valle en Restrepo, "
             "Buenaventura y Cali")
-        self.assertEqual(r, 'Hecho informativo')
+        self.assertEqual(r, '')
 
     def test_reparacion_determinista_del_caso_reportado(self):
         r = A.reparar_subtema_determinista("Conozca cuándo será", TIT_FERIA)
@@ -154,13 +156,16 @@ class TestPromptHechoPrincipal(unittest.TestCase):
 
 
 class TestPuertaFinalSinHecho(unittest.TestCase):
-    def test_sin_api_key_la_llamada_cae_a_hecho_informativo(self):
+    def test_sin_api_key_la_llamada_cae_a_subtema_especifico(self):
+        # v4.68: sin API la puerta ya no cae a 'Hecho informativo'; el
+        # grupo queda con un rótulo específico derivado de su titular.
         grupos = [{'grupo': 1, 'titulo': TIT_FERIA}]
         etiquetas = {1: {'sub_tema': 'Conozca cuándo será',
                          'tono': 'Positivo'}}
         rows = [{'Título': TIT_FERIA, 'Medio': 'Elpais.com.co'}]
         A.reparar_copias_finales({}, grupos, etiquetas, rows, {0: 1}, {})
-        self.assertEqual(etiquetas[1]['sub_tema'], 'Hecho informativo')
+        self.assertEqual(etiquetas[1]['sub_tema'],
+                         'Disponibles en la Feria Laboral de Cali')
 
 
 if __name__ == '__main__':

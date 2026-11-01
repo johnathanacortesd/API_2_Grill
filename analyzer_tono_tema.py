@@ -425,7 +425,7 @@ MODELO_DEFECTO = "gpt-6-luna"
 # v4.53: sello del analizador. El encabezado de la app lo muestra junto a
 # APP_VERSION; si el despliegue muestra un sello distinto (o "sin-sello"),
 # el contenedor NO corre este archivo aunque el encabezado diga otra versión.
-ANALYZER_BUILD = "v4.67-trozo-verbatim"  # v4.62: ancla de riesgo + clases de sinonimia
+ANALYZER_BUILD = "v4.68-sin-hecho-informativo"  # v4.62: ancla de riesgo + clases de sinonimia
 # v4.53: solo cambia el sello (la lógica del analizador no se toca en esta versión;
 # el cambio es de interfaz).
 JEV_URL_DEFECTO = "https://api.typesafe.ai/v1/systemone"
@@ -2163,7 +2163,10 @@ def etiquetar_grupos(cfg: dict, grupos: List[dict], progress: Optional[Callable]
     for g in grupos:
         e = etiquetas[g['grupo']]
         if not e.get('sub_tema'):
-            e['sub_tema'] = _subtema_desde_titulo(g.get('titulo')) or 'Hecho informativo'
+            e['sub_tema'] = _subtema_especifico(
+                g.get('titulo'),
+                [g.get('contexto') or g.get('contexto_marca') or '',
+                 g.get('texto') or ''])
             fallidos.append(g['grupo'])
         if not e.get('tono'):
             e['tono'] = 'Neutro'
@@ -2171,8 +2174,21 @@ def etiquetar_grupos(cfg: dict, grupos: List[dict], progress: Optional[Callable]
     # Jev decide el tono aspectual sobre la entidad; el LLM existente conserva
     # la generación de subtema y el resto del flujo.
     if cfg.get('typesafe_api_key'):
+        # v4.68 (port de Sec/Def v1.12/v1.8): la auditoría Jev era
+        # secuencial (una llamada por grupo) y dominaba el tiempo. Ahora
+        # corre en paralelo con los mismos workers; las llamadas y los
+        # resultados por grupo son idénticos, y la aplicación sigue en
+        # orden de grupo.
+        _tonos_jev = {}
+        with ThreadPoolExecutor(max_workers=max(1, int(workers))) as ex:
+            _futs = {ex.submit(_tono_con_jev, cfg, g): g['grupo'] for g in grupos}
+            for _fut in as_completed(_futs):
+                try:
+                    _tonos_jev[_futs[_fut]] = _fut.result()
+                except Exception:
+                    _tonos_jev[_futs[_fut]] = None
         for g in grupos:
-            tono_jev = _tono_con_jev(cfg, g)
+            tono_jev = _tonos_jev.get(g['grupo'])
             if tono_jev:
                 etiquetas[g['grupo']]['tono'] = tono_jev
         _ULTIMO_RESUMEN['motor_tono'] = 'jev'
@@ -2681,7 +2697,7 @@ def _subtema_desde_titulo(titulo: str) -> str:
     """
     t = sq(titulo or '').strip()
     if not t:
-        return 'Hecho informativo'
+        return ''
     # v4.21: titular-pregunta («¿Cuántos años tiene…? Inició en la radio…»):
     # las oraciones-pregunta no aportan el hecho; se eliminan y se conserva
     # el contenido declarativo.
@@ -2690,7 +2706,7 @@ def _subtema_desde_titulo(titulo: str) -> str:
         t = t.replace('¿', ' ').replace('?', ' ')
         t = re.sub(r'\s+', ' ', t).strip(' .')
         if not t:
-            return 'Hecho informativo'
+            return ''
     # Titular en dos partes («…: así fue el ascenso político de X»): el hecho
     # suele estar después de los dos puntos… salvo que ese segmento sea una
     # cita destacada; entonces el hecho está antes («Lina Tejeiro revela…:
@@ -2717,7 +2733,7 @@ def _subtema_desde_titulo(titulo: str) -> str:
     t = _INTERJECCION_TITULAR.sub('', t).strip()
     t = re.sub(r'[¡!¿?]+$', '', t).strip()
     if not t:
-        return 'Hecho informativo'
+        return ''
     t = re.sub(r'^(as[ií]\s+fue\s+el|as[ií]\s+fue\s+la|esto\s+es\s+lo\s+que)\s+',
                '', t, flags=re.I).strip()
     t = re.sub(r'^(el|la|los|las|un|una)\s+', '', t, flags=re.I).strip()
@@ -2748,10 +2764,95 @@ def _subtema_desde_titulo(titulo: str) -> str:
     if t and _es_subtema_sin_hecho(t):
         # El recorte quedó sin hecho (llamada o solo nombres): no se
         # exporta una cola de llamado como subtema.
-        return 'Hecho informativo'
+        return ''
     if t:
         t = t[0].upper() + t[1:]
-    return t or 'Hecho informativo'
+    return t
+
+
+_PALABRAS_PREGUNTA = frozenset({
+    'que', 'cual', 'cuales', 'como', 'cuando', 'donde', 'quien',
+    'quienes', 'cuanto', 'cuanta', 'cuantos', 'cuantas', 'porque',
+})
+
+
+def _palabras_distintivas(fuentes, max_n=5):
+    """Palabras de contenido en orden de aparición, sin repetir tallo.
+
+    Filtra conectores, artículos, verbos finitos, dígitos, nombres de
+    persona frecuentes y palabras de pregunta. Base de los terminales
+    específicos de subtema y tema (v4.68).
+    """
+    pals, vistos = [], set()
+    for fuente in fuentes:
+        for w in sq(fuente or '').split():
+            nw = nz(w)
+            if (not nw or nw in CONECT or nw in ARTICULOS
+                    or nw in _PALABRAS_PREGUNTA or w.isdigit()
+                    or nw in NOMBRES_PERSONA_FREQ
+                    or _parece_verbo_finito(w)):
+                continue
+            if nw in vistos:
+                continue
+            vistos.add(nw)
+            pals.append(w.strip('.,;:!?¿¡"\'«»“”()[]'))
+            if len(pals) >= max_n:
+                return pals
+    return pals
+
+
+def _subtema_especifico(titulo: str, textos=()) -> str:
+    """Subtema específico garantizado: nunca '' ni 'Hecho informativo'.
+
+    v4.68 (regla del usuario): 'Hecho informativo' no es un tema ni un
+    subtema aceptado. Cadena: (1) rótulo del propio titular; (2) si el
+    titular no da (vacío, solo preguntas, cola sin hecho), rótulo de la
+    primera oración con hecho del cuerpo/contexto/resumen que no sea
+    trozo verbatim del titular; (3) terminal de palabras distintivas.
+    El terminal absoluto (sin texto en ningún campo) describe el estado
+    y no es un cajón genérico.
+    """
+    t = str(titulo or '')
+    cand = _subtema_desde_titulo(t)
+    if cand:
+        return cand
+    for texto in (textos or []):
+        for oracion in re.split(r'(?<=[.!?…])\s+', sq(texto or '')):
+            oracion = oracion.strip(' .')
+            if not oracion:
+                continue
+            cand = _subtema_desde_titulo(oracion)
+            if cand and not _subtema_copia_titular(cand, t):
+                return cand
+    pals = _palabras_distintivas(list(textos or []) + [t])
+    if not pals:
+        return 'Contenido sin texto disponible'
+    frase = ' '.join(pals)
+    return frase[0].upper() + frase[1:]
+
+
+def _tema_especifico_terminal(subtemas, titulos, contextos) -> str:
+    """Tema específico terminal a partir de la evidencia disponible.
+
+    Nunca reproduce el titular: si la frase terminal es copia o prefijo
+    de un titular y no es una frase natural, cae al terminal absoluto
+    (el invariante TestTemaNuncaVacio lo exige: el tema generaliza, no
+    copia el titular).
+    """
+    pals = _palabras_distintivas(
+        [sq(s) for s in (subtemas or []) if sq(s)]
+        + [sq(s) for s in (titulos or []) if sq(s)]
+        + [sq(c)[:400] for c in (contextos or []) if c], max_n=2)
+    if len(pals) >= 2:
+        frase = _capitalizar_etiqueta('%s de %s' % (pals[0], pals[1]))
+    elif len(pals) == 1:
+        frase = _capitalizar_etiqueta(pals[0])
+    else:
+        return 'Contenido sin texto disponible'
+    if (titulos and _tema_copia_o_prefijo_titulo(frase, titulos)
+            and not tema_frase_natural(frase, titulos=titulos)):
+        return 'Contenido sin texto disponible'
+    return frase
 
 
 def _etiqueta_ajena(g: dict, subtema: str, grupos: Sequence[dict]) -> bool:
@@ -2791,7 +2892,10 @@ def reparar_subtemas_ajenos(grupos: Sequence[dict],
         if not e or not (e.get('sub_tema') or '').strip():
             continue
         if _etiqueta_ajena(g, e['sub_tema'], grupos):
-            e['sub_tema'] = _subtema_desde_titulo(g.get('titulo'))
+            e['sub_tema'] = _subtema_especifico(
+                g.get('titulo'),
+                [g.get('contexto') or g.get('contexto_marca') or '',
+                 g.get('texto') or ''])
             cambios += 1
     return cambios
 
@@ -2988,7 +3092,53 @@ def aplicar_guarda_fidelidad_subtema(rows: List[dict], mapa: Dict[int, int],
         txt = _texto_fila(row, km)
         if not _etiqueta_fiel_a_texto(sub, tit, txt, brand, aliases) \
                 or not _asunto_fiel_a_texto(sub, tit, txt, brand, aliases):
-            nuevo = _subtema_desde_titulo(tit)
+            nuevo = _subtema_especifico(tit, [txt])
+            if nuevo and nz(nuevo) != nz(sub):
+                ajustes[i] = nuevo
+    return ajustes
+
+
+def aplicar_fidelidad_final_subtema(rows, mapa, etiquetas, ajustes_subtema,
+                                    km, brand='', aliases=()):
+    """Red de seguridad FINAL (v4.68, port de Sec/Def v1.13/v1.9): ningún
+    Subtema_IA llega al Excel si no corresponde a SU fila.
+
+    Reaplica, sobre el subtema FINAL de cada fila (etiqueta de grupo o
+    ajuste por fila vigente), el mismo cotejo de la guarda v4.35/v4.50
+    (nombre propio + asunto: stems distintivos en título/cuerpo de ESA
+    fila). Hacía falta porque esa guarda corre ANTES de la puerta
+    anti-copia, y esa puerta reescribe subtemas sin volver a verificar
+    fidelidad por fila: la reformulación anti-copia es por grupo. Si el
+    subtema final no es fiel, la fila recupera su especificidad con un
+    rótulo específico derivado de su propio titular y cuerpo. Solo toca
+    el subtema por fila: nunca el tono, el tema ni la etiqueta del grupo.
+    Por eso NO rompe la regla título idéntico = mismo subtema cuando el
+    canon sí corresponde a cada fila; solo separa la fila cuyo cuerpo
+    prueba otro hecho distinto. Devuelve el dict de ajustes actualizado.
+    """
+    ajustes = dict(ajustes_subtema or {})
+    for i, row in enumerate(rows):
+        if row.get('is_duplicate'):
+            continue
+        gid = mapa.get(i)
+        # gid=0 es un id válido (el motor real numera desde 1, pero no se
+        # asume): solo None significa "sin grupo". El `if gid` de la guarda
+        # original lo trataría como ausente y saltaría la fila.
+        e = etiquetas.get(gid) if gid is not None else {}
+        tit = _titulo_fila(row, km)
+        txt = _texto_fila(row, km)
+        if i in ajustes and nz(ajustes[i]):
+            sub = ajustes[i]
+        else:
+            sub = (e.get('sub_tema') or '').strip()
+        if not sub or nz(sub) == 'hecho informativo':
+            # v4.68: el marcador viejo no se conserva: la fila recupera
+            # su especificidad desde su propio titular/cuerpo.
+            ajustes[i] = _subtema_especifico(tit, [txt])
+            continue
+        if not _etiqueta_fiel_a_texto(sub, tit, txt, brand, aliases) \
+                or not _asunto_fiel_a_texto(sub, tit, txt, brand, aliases):
+            nuevo = _subtema_especifico(tit, [txt])
             if nz(nuevo) != nz(sub):
                 ajustes[i] = nuevo
     return ajustes
@@ -3046,7 +3196,7 @@ def reparar_subtema_determinista(sub_tema: str, titulo: str) -> str:
                 return s_sin
         return ''
     nuevo = _subtema_desde_titulo(t)
-    if not nuevo or nuevo == 'Hecho informativo':
+    if not nuevo:
         return ''
     # v4.34: solo en el caso de identidad, si la derivación es idéntica al
     # titular (titular nominal corto), no hay reformulación honesta posible
@@ -4477,7 +4627,7 @@ def _tema_minimo_no_vacio(subtemas: Sequence[str],
                 and not (_tema_copia_o_prefijo_titulo(cap, titulos)
                          and not _es_etiqueta_tematica_canonica(cap))):
             return cap
-    return 'Hecho informativo'
+    return _tema_especifico_terminal(subtemas, titulos, contextos)
 
 
 def generalizar_tema_desde_subtemas(subtemas: Sequence[str], titulos: Optional[Sequence[str]] = None,
@@ -4591,7 +4741,7 @@ def _asegurar_tema_texto(tema, subtemas=None, titulos=None, contextos=None) -> s
         return minimo
     if _tema_util(t) and not _tema_copia_o_prefijo_titulo(t, titulos):
         return t
-    return minimo if _tema_util(minimo) else 'Hecho informativo'
+    return minimo
 
 
 def _mejor_candidato_tema(subtemas: Sequence[str], titulos: Sequence[str],
@@ -4963,7 +5113,7 @@ def _tema_con_jev(cfg: dict, tema: str, sub_tema: str, titulo: str,
 
 
 def corregir_temas_con_jev(cfg: dict, grupos: Sequence[dict], etiquetas: Dict[int, dict],
-                           temas: Dict[int, str]) -> List[int]:
+                           temas: Dict[int, str], workers: int = WORKERS_DEFECTO) -> List[int]:
     """Alta confianza ⇒ corrige el tema. Baja confianza ⇒ deja y marca revisión.
 
     Jev no genera subtemas y no reemplaza el pipeline de tono.
@@ -4977,6 +5127,38 @@ def corregir_temas_con_jev(cfg: dict, grupos: Sequence[dict], etiquetas: Dict[in
         clave = nz(e.get('sub_tema'))
         if clave and clave not in por_sub:
             por_sub[clave] = g['grupo']
+    # v4.68 (port de Sec/Def v1.12/v1.8): la verificación Jev de temas
+    # también era secuencial (una llamada por subtema distinto). Se
+    # precalcula en paralelo con las mismas entradas (tema tras el
+    # relleno determinista) y el bucle de abajo aplica los resultados en
+    # el mismo orden y con la misma lógica; si un pre-cálculo falta, se
+    # llama en línea.
+    _ver_pre = {}
+    if (cfg.get('typesafe_api_key') or '').strip():
+        def _verificar(_gid):
+            try:
+                _g0 = por_gid.get(_gid) or {}
+                _e0 = etiquetas.get(_gid) or {}
+                _t0 = temas.get(_gid)
+                if not _tema_util(_t0):
+                    _t0 = _asegurar_tema_texto(
+                        '', [_e0.get('sub_tema', '')], [_g0.get('titulo')],
+                        [_g0.get('contexto') or _g0.get('texto')])
+                if not tema_frase_natural(_t0, titulos=[_g0.get('titulo')]):
+                    return _gid, (False, None)
+                return _gid, (True, _tema_con_jev(
+                    cfg, _t0, _e0.get('sub_tema', ''), _g0.get('titulo'),
+                    _g0.get('contexto') or _g0.get('texto')))
+            except Exception:
+                return _gid, (None, None)
+        with ThreadPoolExecutor(max_workers=max(1, int(workers))) as _ex:
+            for _fut in as_completed(
+                    [_ex.submit(_verificar, _gid) for _gid in por_sub.values()]):
+                try:
+                    _gid, _val = _fut.result()
+                    _ver_pre[_gid] = _val
+                except Exception:
+                    pass
     umbral = float(cfg.get('jev_confianza_min', 0.75) or 0.75)
     revisar, corregidos = [], []
     for gid in por_sub.values():
@@ -4989,12 +5171,21 @@ def corregir_temas_con_jev(cfg: dict, grupos: Sequence[dict], etiquetas: Dict[in
                 [g.get('contexto') or g.get('texto')])
             temas[gid] = lleno
             tema = lleno
-        if not tema_frase_natural(tema, titulos=[g.get('titulo')]):
+        # Ver precalculado en paralelo (o llamada original si falta).
+        _pre = _ver_pre.get(gid)
+        if _pre is None:
+            _natural = tema_frase_natural(tema, titulos=[g.get('titulo')])
+            ver = (_tema_con_jev(cfg, tema, e.get('sub_tema', ''), g.get('titulo'),
+                                 g.get('contexto') or g.get('texto'))
+                   if _natural else None)
+        elif _pre[0] is False:
+            _natural, ver = False, None
+        else:
+            _natural, ver = True, _pre[1]
+        if not _natural:
             malo, conf = True, 1.0
             ver = None
         else:
-            ver = _tema_con_jev(cfg, tema, e.get('sub_tema', ''), g.get('titulo'),
-                                g.get('contexto') or g.get('texto'))
             if not ver:
                 if not _tema_util(temas.get(gid)):
                     temas[gid] = _asegurar_tema_texto(
@@ -5269,7 +5460,8 @@ def reparar_copias_finales(cfg: dict, grupos: Sequence[dict],
     casi-identidad, quita el sufijo del medio (columna Medio del dossier)
     y, si hay copia, pide REFORMULACIÓN al modelo desde título+texto
     (nunca una derivación del título). Si la reformulación falla o sigue
-    siendo copia, el grupo cae a 'Hecho informativo' y el ajuste por fila
+    siendo copia, el grupo cae a un rótulo específico derivado de su
+    propio texto (nunca 'Hecho informativo') y el ajuste por fila
     se retira (la fila hereda la etiqueta de grupo ya reparada): nunca se
     exporta un subtema-título. Los tonos no se tocan en esta puerta.
     """
@@ -5395,7 +5587,8 @@ def reparar_copias_finales(cfg: dict, grupos: Sequence[dict],
             etiquetas[_gid]['sub_tema'] = _nuevo
             reparados_ok += 1
         else:
-            etiquetas[_gid]['sub_tema'] = 'Hecho informativo'
+            etiquetas[_gid]['sub_tema'] = _subtema_especifico(
+                _f['titulo'], [_f.get('texto') or ''])
             sin_reparar += 1
     for _f in fallos_fila:
         _i = _f['_fila']
@@ -5468,10 +5661,19 @@ def volcar_analisis_en_filas(rows: List[dict], mapa: Dict[int, int],
         row['Tema_IA'] = tema_por_grupo.get(gid, '') if incluir_tema else ''
         # v4.35: la guarda de fidelidad puede darle a la fila su subtema
         # propio (especificidad) en vez del heredado del grupo.
-        if ajustes_subtema and i in ajustes_subtema:
-            row['Subtema_IA'] = ajustes_subtema[i]
-        else:
-            row['Subtema_IA'] = e.get('sub_tema') or 'Hecho informativo'
+        # v4.68: nunca 'Hecho informativo' ni vacío: si el rótulo heredado
+        # o el ajuste falta (o trae el marcador viejo), se deriva uno
+        # específico de la propia fila.
+        _s = ajustes_subtema.get(i) if ajustes_subtema else None
+        if not _s:
+            _s = e.get('sub_tema') or ''
+        if not _s or _s == 'Hecho informativo':
+            _s = _subtema_especifico(
+                _titulo_fila(row, {}),
+                [row.get('Contexto analizado') or '',
+                 _texto_fila(row, {}),
+                 row.get('Resumen - Aclaracion') or ''])
+        row['Subtema_IA'] = _s
     return rows
 
 
@@ -5668,7 +5870,7 @@ def enrich_rows_with_ai(
     if incluir_tema and theme_model is None:
         tax_lote = {'temas': candidatos_tax, 'reglas': derivar_reglas(candidatos_tax) if candidatos_tax else []}
         temas, origen = asignar_temas(cfg, grupos, etiquetas, tax_lote, progreso, uso=uso)
-        corregir_temas_con_jev(cfg, grupos, etiquetas, temas)
+        corregir_temas_con_jev(cfg, grupos, etiquetas, temas, workers=workers)
 
     # PKL gana sobre LLM/lote. NUNCA reemplaza el subtema. El gate de frases
     # del lote no reescribe las clases del cliente (antes las sustituía).
@@ -5705,6 +5907,24 @@ def enrich_rows_with_ai(
     ajustes_fieles = reparar_copias_finales(
         cfg, grupos, etiquetas, rows, mapa, km,
         ajustes_subtema=ajustes_fieles, uso=uso)
+
+    # v4.68 (port de Sec/Def v1.12/v1.8): decretos sin crítica = Neutro.
+    # Corre al final de enrich, después de Jev y de toda canonización,
+    # antes de volcar. Solo baja Negativo a Neutro; no toca Positivos.
+    _bajados_decreto = aplicar_regla_decreto(grupos, etiquetas)
+    if _bajados_decreto:
+        _ULTIMO_RESUMEN['tono_decreto_neutralizado'] = _bajados_decreto
+
+    # v4.68 (port de Sec/Def v1.13/v1.9): fidelidad FINAL — ningún
+    # Subtema_IA llega al Excel si no corresponde a SU fila. Es el último
+    # pase que toca el subtema antes de volcar.
+    _previos_fieles = dict(ajustes_fieles)
+    ajustes_fieles = aplicar_fidelidad_final_subtema(
+        rows, mapa, etiquetas, ajustes_fieles, km, brand=brand, aliases=aliases)
+    _nuevos_fieles = sum(1 for _i, _v in ajustes_fieles.items()
+                         if _previos_fieles.get(_i) != _v)
+    if _nuevos_fieles:
+        _ULTIMO_RESUMEN['subtemas_fidelidad_final_corregidos'] = _nuevos_fieles
 
     volcar_analisis_en_filas(
         rows, mapa, etiquetas, temas,
@@ -6529,6 +6749,43 @@ def aplicar_regla_tragedia(grupos: Sequence[dict], etiquetas: Dict[int, dict],
         if _experto_casa_citado(texto, actores):
             e['tono'] = 'Neutro'
             bajados.append(g.get('grupo'))
+    return bajados
+
+
+_DECRETO_PAT = re.compile(r'\b(decreto|resoluci[óo]n|acuerdo|ordenanza)\b', re.IGNORECASE)
+_CRITICA_DECRETO_STEMS = (
+    'critic', 'cuestion', 'rechaz', 'denunc', 'acus', 'sancion', 'polemic',
+    'inconform', 'protest', 'repudi', 'conden', 'irregular', 'corrup',
+    'abus', 'neglig', 'fracas', 'fall', 'reclam', 'quej', 'demand',
+    'escandal', 'tutel', 'incumpl', 'deficien', 'error', 'equivoc',
+    'retras', 'señalam', 'reproch', 'censur', 'objec', 'vulner', 'amenaz',
+    'carencia',
+)
+
+
+def aplicar_regla_decreto(grupos, etiquetas):
+    """Acto normativo sin crítica = Neutro (regla general, port v4.68
+    de Sec/Def v1.12/v1.8, 2026-10-31).
+
+    Un decreto, resolución, acuerdo u ordenanza que prohíbe, establece,
+    fija, crea o regula algo es una actuación institucional neutra hacia
+    la marca: si el tono quedó Negativo pero el texto no trae ninguna
+    crítica dirigida, se baja a Neutro. Con crítica explícita (o léxico
+    de falla/incumplimiento) se respeta el Negativo. No toca Positivos
+    ni Neutros. Vale para cualquier cliente, no solo Secretaría.
+    """
+    bajados = []
+    for g in grupos:
+        e = etiquetas.get(g.get('grupo'))
+        if not e or e.get('tono') != 'Negativo':
+            continue
+        texto = '%s. %s' % (g.get('titulo', ''), g.get('contexto') or g.get('texto', ''))
+        if not _DECRETO_PAT.search(texto):
+            continue
+        if any(s in nz(texto) for s in _CRITICA_DECRETO_STEMS):
+            continue
+        e['tono'] = 'Neutro'
+        bajados.append(g.get('grupo'))
     return bajados
 
 
