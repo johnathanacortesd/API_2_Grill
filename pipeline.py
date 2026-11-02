@@ -1138,14 +1138,17 @@ def _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_plain_hlink,
             # noticia, mostrado completo y clicable (como "Audio").
             # v4.70: "Link Ext" va como TEXTO PLANO (solo la URL, sin
             # hipervínculo, sin azul ni subrayado) por pedido del usuario.
-            if h == "Link Ext":
+            # Encabezado normalizado (como en Secretaría): en la pestaña
+            # personalizada el dossier puede traer "LINK EXT" o "Link Ext ".
+            _h_norm = h.strip().lower() if isinstance(h, str) else ""
+            if _h_norm == "link ext":
                 url_ext = _url_link_ext(row)
                 if url_ext:
                     ws.write_string(excel_row, cidx, url_ext, fmt_texto_plano)
                 else:
                     ws.write_blank(excel_row, cidx, None)
                 continue
-            if h == "Web Ext":
+            if _h_norm == "web ext":
                 url_ext = _url_web_ext(row)
                 if url_ext:
                     ws.write_url(excel_row, cidx, url_ext, fmt_link, string=url_ext)

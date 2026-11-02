@@ -265,6 +265,15 @@ class TestLinkExtTextoPlano(unittest.TestCase):
         self.assertFalse(celda.font.u)
         self.assertNotIn("0563C1", str(celda.font.color.rgb if celda.font.color else ""))
 
+    def test_link_ext_encabezado_en_mayusculas(self):
+        url = "https://news.globalnews.com.co/Validar.aspx?id=9"
+        rows = [{"Título": "Nota", "Tipo de Medio": "Online",
+                 "URL (Streaming - Imagen)": url}]
+        data = generate_output_excel(rows, KEY_MAP, columns_to_use=["Título", "LINK EXT"])
+        celda = load_workbook(io.BytesIO(data)).active.cell(row=2, column=2)
+        self.assertEqual(celda.value, url)
+        self.assertIsNone(celda.hyperlink)
+
     def test_texto_sin_titulo_en_excel(self):
         rows = [{"Título": "Avanza el metro",
                  "Contexto analizado": "Avanza  el metro. La Alcaldía de Bogotá informó avances."}]
