@@ -248,7 +248,9 @@ class TestGuardPorMiembro(unittest.TestCase):
         for i in (2, 3, 4):
             self.assertNotEqual(nz(temas[i]), nz("Prevención del suicidio"),
                                 f"miembro {i} heredó un tema ajeno: {temas[i]}")
-            self.assertFalse(str(origen[i]).startswith("familia:"))
+            # v4.70: el miembro ajeno ya no comparte familia con el genuino
+            # (separado por Contexto analizado antes de nombrar).
+            self.assertNotEqual(origen[i], origen[1])
 
     def test_miembros_respaldados_conservan_tema(self):
         subs = ["Semana de Prevención del Suicidio",

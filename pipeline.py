@@ -22,6 +22,7 @@ from openpyxl.utils.cell import column_index_from_string, coordinate_from_string
 from unidecode import unidecode
 
 from analyzer_tono_tema import enrich_rows_with_ai, ultimo_resumen, aplicar_prominencia
+from coherencia_texto import texto_sin_titulo
 from pkl_classifier import (
     apply_pkl_classifiers,
     fill_classification_context,
@@ -1064,6 +1065,8 @@ def generate_output_excel(rows, km, progress: ProgressCb = None, columns_to_use:
     fmt_header = wb.add_format({"bold": True})
     fmt_link = wb.add_format({"font_color": "#0563C1", "underline": 1, "align": "left"})
     fmt_plain_hlink = wb.add_format({"font_color": "#000000", "underline": False, "align": "left"})
+    # v4.70: texto plano sin formato de enlace (columna "Link Ext").
+    fmt_texto_plano = wb.add_format({"font_color": "#000000", "underline": 0, "align": "left"})
     fmt_date = wb.add_format({"num_format": "DD/MM/YYYY"})
     fmt_currency = wb.add_format({"num_format": "$#,##0"})
     fmt_thousands = wb.add_format({"num_format": "#,##0"})
@@ -1089,6 +1092,7 @@ def generate_output_excel(rows, km, progress: ProgressCb = None, columns_to_use:
         _write_xlsx_rows(
             ws, rows, km, n, step, progress,
             fmt_link, fmt_plain_hlink, fmt_date, fmt_currency, fmt_thousands, fmt_plain_id, cols,
+            fmt_texto_plano,
         )
         emit_progress(progress, 100, "Guardando archivo Excel…")
     finally:
@@ -1096,7 +1100,8 @@ def generate_output_excel(rows, km, progress: ProgressCb = None, columns_to_use:
     return buf.getvalue()
 
 
-def _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_plain_hlink, fmt_date, fmt_currency, fmt_thousands, fmt_plain_id, cols):
+def _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_plain_hlink, fmt_date, fmt_currency, fmt_thousands, fmt_plain_id, cols,
+                     fmt_texto_plano=None):
     for i, row in enumerate(rows):
         tk = km.get("titulo")
         if tk and tk in row:
@@ -1131,8 +1136,20 @@ def _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_plain_hlink,
         for cidx, h in enumerate(cols):
             # v4.57: "Link Ext" y "Web Ext" con el enlace completo a la
             # noticia, mostrado completo y clicable (como "Audio").
-            if h in ("Link Ext", "Web Ext"):
-                url_ext = _url_link_ext(row) if h == "Link Ext" else _url_web_ext(row)
+            # v4.70: "Link Ext" va como TEXTO PLANO (solo la URL, sin
+            # hipervínculo, sin azul ni subrayado) por pedido del usuario.
+            # Encabezado normalizado (como en Secretaría): en la pestaña
+            # personalizada el dossier puede traer "LINK EXT" o "Link Ext ".
+            _h_norm = h.strip().lower() if isinstance(h, str) else ""
+            if _h_norm == "link ext":
+                url_ext = _url_link_ext(row)
+                if url_ext:
+                    ws.write_string(excel_row, cidx, url_ext, fmt_texto_plano)
+                else:
+                    ws.write_blank(excel_row, cidx, None)
+                continue
+            if _h_norm == "web ext":
+                url_ext = _url_web_ext(row)
                 if url_ext:
                     ws.write_url(excel_row, cidx, url_ext, fmt_link, string=url_ext)
                 else:
@@ -1145,10 +1162,17 @@ def _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_plain_hlink,
             # Sin "Contexto analizado" (modo sin IA) queda vacía.
             if h == "texto":
                 if "Título" in cols and CONTEXTO_ANALIZADO_COL in cols:
+                    # v4.70: el título se quita aunque difiera en forma
+                    # (comillas, espacios, entidades, limpieza del título
+                    # de salida); antes solo se quitaba la copia exacta y
+                    # «texto» podía salir con el título adelante.
                     ctx_v = row.get(CONTEXTO_ANALIZADO_COL) or ""
                     tit_v = row.get("Título") or ""
-                    base = str(ctx_v).replace(str(tit_v), "") if str(tit_v) else str(ctx_v)
-                    ws.write(excel_row, cidx, " ".join(base.split()))
+                    base = texto_sin_titulo(str(ctx_v), str(tit_v))
+                    if base:
+                        ws.write_string(excel_row, cidx, base)
+                    else:
+                        ws.write_blank(excel_row, cidx, None)
                 else:
                     ws.write_blank(excel_row, cidx, None)
                 continue

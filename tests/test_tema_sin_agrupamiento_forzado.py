@@ -61,7 +61,10 @@ class TestSinAgrupamientoForzado(unittest.TestCase):
         self.assertTrue(str(origen[1]).startswith("familia:"))
         # El miembro ajeno NO hereda el tema: recibe uno propio acorde a su noticia.
         self.assertNotEqual(nz(temas[2]), nz("Prevención del suicidio"))
-        self.assertEqual(origen[2], "tema_propio_sin_agrupar")
+        # v4.70: el miembro ajeno sale de la familia antes de nombrarla
+        # (su Contexto analizado no tiene relación): o queda suelto o forma
+        # su propia familia, nunca la del miembro genuino.
+        self.assertNotEqual(origen[2], origen[1])
         self.assertTrue(tema_frase_natural(temas[2]), temas[2])
         self.assertTrue(_tema_distinto_de_subtema(temas[2], sub2))
 
