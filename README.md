@@ -48,6 +48,48 @@ Los subtemas se limpian y limitan a un máximo de seis palabras, como frases nom
 
 Las validaciones no contienen nombres ni reglas especiales para clientes concretos. El mecanismo es reutilizable: separa los tokens de cualquier `Marca principal`, identifica el tipo de acontecimiento y conserva las palabras que describen su objeto. Por ejemplo, puede formar etiquetas como `Lanzamiento de carrera deportiva`, `Convenio de formación profesional` o `Investigación por fallas operativas`, según el contenido de cada noticia.
 
+### Coherencia de tema y subtema con el texto (v4.70)
+
+Regla: noticias iguales o realmente similares (columnas `Título` y sobre todo
+`CuerpoEs`) llevan el mismo subtema; un subtema nunca se pone a una noticia
+que no tiene que ver con él, y los subtemas solo se agrupan en un tema si
+guardan relación con el texto de `Contexto analizado`. Aplica con o sin PKL.
+
+- **Similitud por texto** (`coherencia_texto.py`): TF-IDF sin tildes, sin
+  palabras vacías y sin los tokens de marca/alias/voceros (están en todas
+  las notas y no distinguen hechos). Calibración: la misma noticia reescrita
+  por otro medio ≈ 0.55-0.70; hechos distintos del mismo asunto ≈ 0.15-0.20;
+  notas ajenas ≈ 0.00-0.05.
+- **Agrupación de notas**: las uniones solo por parecido del titular son
+  débiles y se vetan si los dos `CuerpoEs` (250+ caracteres) no se parecen
+  (coseno < 0.20). Las uniones fuertes (cuerpo idéntico o contenido,
+  pasajes compartidos, titular casi copia) se conservan.
+- **Coherencia de subtemas** (`coherencia_subtemas_por_texto`), después de
+  todas las unificaciones por rótulo y antes del voto de tono y del tema:
+  - *Separar*: dentro de un subtema, las notas sin relación textual con el
+    grupo principal lo pierden, salvo que el rótulo completo esté en su
+    titular/entrada/Contexto y el etiquetador se lo haya dado. Recuperan su
+    subtema propio (si es fiel a su noticia) o reciben uno nuevo.
+  - *Unir*: notas con similitud ≥ 0.45 (la misma noticia) y subtemas
+    distintos adoptan el rótulo de la mayoría si es fiel a todas.
+  - La reparación anti-copia final ya no puede devolver un subtema que este
+    pase rechazó.
+- **Tema** (`refinar_familias_por_contexto`): una familia de subtemas se
+  separa si sus `Contexto analizado` no tienen relación (coseno < 0.08), y
+  dos subtemas con `Contexto analizado` muy parecido (≥ 0.30) van al mismo
+  tema aunque sus rótulos no compartan palabras.
+- **Contexto analizado**: se extrae del `CuerpoEs` cuando trae la marca, un
+  alias o un vocero (antes: el texto más largo disponible). Los voceros
+  también se buscan por nombre + primer apellido («Miguel Silva» para
+  «Miguel Silva Moyano»; «Juan Pérez» para «Juan Carlos Pérez»).
+- **Columna `texto`**: Contexto analizado sin el Título aunque el título
+  difiera en forma (comillas, espacios, entidades HTML); no corta dentro de
+  una palabra.
+- **Columna `Link Ext`**: solo el texto de la URL, sin hipervínculo, sin
+  azul ni subrayado.
+- **Rótulo de emergencia**: el verbo del titular se nominaliza
+  («Secretaría General lanza ventanilla…» → «Lanzamiento de ventanilla…»).
+
 ### 👥 Perfiles de cliente (multicliente)
 
 El tono, los alias, los voceros y la lista de Temas se adaptan por cliente sin tocar código:
