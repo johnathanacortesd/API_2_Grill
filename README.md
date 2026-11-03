@@ -71,9 +71,9 @@ la lista de geografía en cada llamada.
 - La reformulación anti-copia final (`reparar_copias_finales`) llama al
   modelo en paralelo (antes, en serie).
 - Medición con un dossier sintético de 250 notas (cuerpos de ~4.000
-  caracteres, modelo simulado sin latencia): la versión anterior tarda
-  cientos de segundos de CPU; v4.71 tarda ~7 s (500 notas: ~18 s). El resto
-  del tiempo real es la espera de la API.
+  caracteres, modelo simulado sin latencia): v4.70 tardaba 359 s de CPU;
+  v4.71 tarda ~7 s (500 notas: ~18 s). El resto del tiempo real es la
+  espera de la API.
 
 **Reglas de agrupación de Secretaría (v1.29-v1.35), ahora en Grill.** El
 analizador es el mismo de Secretaría; lo específico de Bogotá (TIPO/GÉNERO,
@@ -112,7 +112,7 @@ flags del perfil que los clientes de Grill no activan.
   corresponda a esa fila.
 
 Resultado en el dossier sintético (50 noticias, 250 notas): historias con
-subtema partido 32 → 0-1; historias con tono o tema distinto entre sus notas:
+subtema partido 35 → 0-1 (subtemas distintos 81 → ~48 para 50 noticias); historias con tono o tema distinto entre sus notas:
 0, con y sin PKL.
 
 ### Coherencia de tema y subtema con el texto (v4.70)
