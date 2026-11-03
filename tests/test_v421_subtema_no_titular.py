@@ -122,7 +122,8 @@ class TestSubtemaDesdeTitulo(unittest.TestCase):
     def test_dos_puntos_normal_toma_el_ultimo(self):
         # Sin frase destacada, el hecho sigue tras los dos puntos (v4.18).
         r = A._subtema_desde_titulo("Salud: el ministerio anunció nuevas medidas")
-        self.assertEqual(r, "Ministerio anunció nuevas medidas")
+        # v4.71 (Sec v1.34): un subtema nunca es «sujeto + verbo».
+        self.assertEqual(r, "Nuevas medidas")
 
     def test_mantiene_comportamiento_dos_puntos_normal(self):
         # Regresión v4.18: sin cita, el hecho sigue tras los dos puntos.
