@@ -26,7 +26,11 @@ class TestSubtemaEspecifico(unittest.TestCase):
             '¿Cuántos años tiene? ¿Cómo inició?',
             ['Inició en la radio hace veinte años. '
              'Hoy dirige el programa matutino de la emisora.'])
-        self.assertEqual(r, 'Inició en la radio hace veinte años')
+        # v4.71: un subtema nunca empieza con un pretérito («Inició…»,
+        # regla v4.70/Sec v1.34); el específico sale de la oración siguiente.
+        self.assertTrue(r)
+        self.assertNotEqual(r, 'Hecho informativo')
+        self.assertFalse(r.startswith('Inició'))
 
     def test_titulo_vacio_con_cuerpo(self):
         r = A._subtema_especifico(

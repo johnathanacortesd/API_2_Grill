@@ -17,7 +17,7 @@ CRITERIOS_TONO = {
 }
 
 # ---------------------------------------------------------------- reglas del sub-tema
-REGLAS_SUBTEMA = "El Sub-tema es el HECHO concreto de la nota, en 3 a 5 palabras (nunca mas de 7).\n- Frase nominal, sin verbo conjugado al inicio (bien: 'Entrega del parque'; mal: 'Entregaron el\n  parque'). Si empiezas con un sustantivo de accion esta bien: 'Anuncio de inversiones'.\n- Sin terminar en preposicion o nexo, y sin dos puntos, comas, comillas ni barras.\n- No copies el titular ni recortes una frase del texto: sintetiza el hecho.\n- El sub-tema es el hecho PRINCIPAL de la noticia completa (titulo + cuerpo), no un parrafo lateral,\n  ni el parrafo donde aparece la marca, ni un detalle de la programacion.\n- Nunca una cola de llamado del titular ('conozca cuando/donde/como sera', 'asi puede participar',\n  'que llevar', 'tenga en cuenta'): el sub-tema es el hecho, no la invitacion a leer.\n- Nunca una lista de nombres sin el hecho ('Entidad en Ciudad1, Ciudad2'): el hecho va primero.\n- Sin repetir el nombre del gremio, de la entidad ni del medio.\n- Sin etiquetas de categoria. MAL: 'Exportaciones y mercados internacionales', 'Transformacion\n  digital en el sector'. BIEN: 'Exportacion de pollo a Estados Unidos', 'Paneles de IA en el\n  congreso avicola'.\n- Incluye el actor o el lugar cuando son lo que distingue el hecho: no 'Visita internacional' sino\n  'Visita de la embajadora de Australia'.\n- Prohibido rotulos vacios: 'noticias generales', 'gestion institucional', 'varios'.\n- Si el hecho ya esta en CANDIDATOS, copia ese texto EXACTO (mismas palabras y mayusculas).\n  Nunca crees una variante nueva de un hecho que ya tiene sub-tema."
+REGLAS_SUBTEMA = "El Sub-tema es el HECHO concreto de la nota, en 3 a 5 palabras (nunca mas de 7).\n- Frase nominal, sin verbo conjugado al inicio (bien: 'Entrega del parque'; mal: 'Entregaron el\n  parque'). Si empiezas con un sustantivo de accion esta bien: 'Anuncio de inversiones'.\n- Sin terminar en preposicion o nexo, y sin dos puntos, comas, comillas ni barras.\n- No copies el titular ni recortes una frase del texto: sintetiza el hecho.\n- El sub-tema es el hecho PRINCIPAL de la noticia completa (titulo + cuerpo), no un parrafo lateral,\n  ni el parrafo donde aparece la marca, ni un detalle de la programacion.\n- Nunca una cola de llamado del titular ('conozca cuando/donde/como sera', 'asi puede participar',\n  'que llevar', 'tenga en cuenta'): el sub-tema es el hecho, no la invitacion a leer.\n- Nunca una lista de nombres sin el hecho ('Entidad en Ciudad1, Ciudad2'): el hecho va primero.\n- Sin repetir el nombre del gremio, de la entidad ni del medio.\n- Sin etiquetas de categoria. MAL: 'Exportaciones y mercados internacionales', 'Transformacion\n  digital en el sector'. BIEN: 'Exportacion de pollo a Estados Unidos', 'Paneles de IA en el\n  congreso avicola'.\n- Incluye el actor o el lugar cuando son lo que distingue el hecho: no 'Visita internacional' sino\n  'Visita de la embajadora de Australia'.\n- Prohibido rotulos vacios: 'noticias generales', 'gestion institucional', 'varios'.\n- Si el hecho ya esta en CANDIDATOS, copia ese texto EXACTO (mismas palabras y mayusculas).\n  Nunca crees una variante nueva de un hecho que ya tiene sub-tema.\n- COHERENCIA: si dos o mas grupos del lote cuentan el MISMO hecho (mismo anuncio, decision, obra,\n  evento o polemica, aunque cambie el medio, la redaccion o el angulo), usa EXACTAMENTE el mismo\n  sub-tema y el mismo tono en todos. Hechos distintos que solo comparten la entidad, el alcalde,\n  la ciudad o el sector llevan sub-temas distintos: no agrupes por agrupar.\n- Cada sub-tema describe SU grupo: nunca uses el hecho de otro grupo del lote."
 
 # ---------------------------------------------------------------- ejemplos few-shot
 EJEMPLOS = [
@@ -53,7 +53,7 @@ EJEMPLOS = [
  },
  {
   "titulo": "Por demoras en el PAE, Procuraduría suspende a exsecretario de Educación de Sucre",
-  "sub_tema": "Sanción a exsecretario de Educación",
+  "sub_tema": "Sanción por retraso en el PAE",
   "tono": "Negativo"
  },
  {
@@ -68,12 +68,12 @@ EJEMPLOS = [
  },
  {
   "titulo": "Gobernadores del Caribe y la ANI evalúan proyecto del Canal del Dique",
-  "sub_tema": "Avance del proyecto Canal del Dique",
+  "sub_tema": "Revisión del Canal del Dique",
   "tono": "Neutro"
  },
  {
   "titulo": "Alcalde de Cartagena y gobernadores de Bolívar, Sucre y Atlántico revisaron la operación del Canal del Dique",
-  "sub_tema": "Operación del Canal del Dique",
+  "sub_tema": "Revisión del Canal del Dique",
   "tono": "Neutro"
  },
  {

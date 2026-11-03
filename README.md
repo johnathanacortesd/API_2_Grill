@@ -48,6 +48,73 @@ Los subtemas se limpian y limitan a un máximo de seis palabras, como frases nom
 
 Las validaciones no contienen nombres ni reglas especiales para clientes concretos. El mecanismo es reutilizable: separa los tokens de cualquier `Marca principal`, identifica el tipo de acontecimiento y conserva las palabras que describen su objeto. Por ejemplo, puede formar etiquetas como `Lanzamiento de carrera deportiva`, `Convenio de formación profesional` o `Investigación por fallas operativas`, según el contenido de cada noticia.
 
+### Agrupación estricta y rendimiento (v4.71)
+
+Pedido: un dossier de 250 notas tardaba 857 s; y noticias iguales o muy
+similares deben quedar con el mismo tono y subtema (con PKL), o con el mismo
+tono, tema y subtema (sin PKL), como en API_Secretaria_General_Bogota.
+
+**Por qué tardaba.** No era la API: era CPU del código determinista. Los
+pases por pares (fila×fila, grupo×grupo, rótulo×fila) volvían a normalizar y
+tokenizar el `CuerpoEs` completo en cada par. El peor caso era
+`unificar_etiquetas_titulos_similares`, que recalculaba la «huella de
+historia de riesgo» de las dos filas en cada uno de los ~31.000 pares de un
+dossier de 250 notas; `_es_geografia` además reconstruía y normalizaba toda
+la lista de geografía en cada llamada.
+
+- `nz()`, `words()`, `raiz()`, `_contenido_discriminante`, 5-gramas de
+  contexto, fechas/bigramas de evento y raíces del texto se memorizan por
+  texto (caché acotada, se limpia al inicio de cada corrida). Mismo
+  resultado; cada texto se procesa una vez.
+- La huella de riesgo se calcula una vez por fila y solo se comparan las
+  filas que la tienen.
+- La reformulación anti-copia final (`reparar_copias_finales`) llama al
+  modelo en paralelo (antes, en serie).
+- Medición con un dossier sintético de 250 notas (cuerpos de ~4.000
+  caracteres, modelo simulado sin latencia): v4.70 tardaba 359 s de CPU;
+  v4.71 tarda ~7 s (500 notas: ~18 s). El resto del tiempo real es la
+  espera de la API.
+
+**Reglas de agrupación de Secretaría (v1.29-v1.35), ahora en Grill.** El
+analizador es el mismo de Secretaría; lo específico de Bogotá (TIPO/GÉNERO,
+tono del distrito, tono solo por gestión, menciones ajenas) queda detrás de
+flags del perfil que los clientes de Grill no activan.
+
+- **Agrupación estricta por defecto** (`agrupacion_estricta`, un perfil
+  puede poner `false`): dos notas comparten subtema solo con evidencia
+  (título igual o muy parecido, Contexto analizado o CuerpoEs con pasajes
+  compartidos). Sin uniones por parecido del rótulo ni por «ancla» temática.
+- Consolidación por evidencia (`consolidar_por_evidencia`), variantes del
+  mismo rótulo, un subtema por asunto repetido en titulares, garantía
+  final `garantizar_coherencia_hecho` (misma noticia ⇒ mismo subtema; mismo
+  subtema ⇒ mismo tono, también cuando el tono viene del PKL) y revisión
+  final de forma del subtema (sin comas, puntos, pronombre inicial ni
+  «sujeto + verbo»).
+- Tono: `CRITICA_PAT` con inicio de palabra («atac» ya no coincide dentro
+  de «contratación»), críticas al vocero cuentan como críticas a la marca,
+  empates resueltos con la evidencia del texto, homónimo de otro país =
+  Neutro.
+
+**Nuevas guardas v4.71 (aplican con o sin PKL).**
+
+- *Mismo molde, otro lugar o persona*: «…becas en Cartagena» y «…becas en
+  Medellín» no son la misma noticia. Si cada titular nombra un lugar o una
+  persona que no aparece en ninguna parte de la otra nota, no se unen
+  (agrupación, grafo de evidencia, coherencia por texto, título final,
+  asunto del titular).
+- La cola de llamado del titular («…: lo que dijo X», «…: esto se sabe»,
+  «…: detalles») no cuenta para comparar titulares ni se usa como subtema.
+- Un subtema nunca empieza con un pretérito con tilde («Informó este
+  miércoles», «Conoció el pasado jueves»: `RE_VERBO` comparaba terminaciones
+  con tilde sobre texto ya sin tildes), ni es solo una persona («Ricardo
+  Salazar») o solo una expresión de tiempo («Fin de semana»).
+- La revisión final de forma solo cambia un subtema por otro que
+  corresponda a esa fila.
+
+Resultado en el dossier sintético (50 noticias, 250 notas): historias con
+subtema partido 35 → 0-1 (subtemas distintos 81 → ~48 para 50 noticias); historias con tono o tema distinto entre sus notas:
+0, con y sin PKL.
+
 ### Coherencia de tema y subtema con el texto (v4.70)
 
 Regla: noticias iguales o realmente similares (columnas `Título` y sobre todo
