@@ -242,16 +242,30 @@ def apply_pkl_classifiers(
         return rows
 
     if unify_similar:
-        regexes = generate_brand_variants(brand, list(aliases or [])) if brand else []
-        cluster_map = cluster_similar_rows(
-            rows,
-            km,
-            regexes,
-            brand=brand,
-            aliases=list(aliases or []),
-            progress_callback=progress_callback,
-            progress_pct=88,
-        )
+        cluster_map = None
+        try:
+            # v4.72: mismo agrupamiento por evidencia del flujo con IA (título
+            # comparable, CuerpoEs, pasajes literales y similitud de texto,
+            # con la guarda de lugar/persona). En el banco de pruebas el
+            # agrupador anterior partía o mezclaba noticias; este no.
+            from analyzer_tono_tema import agrupar_noticias_filas
+            if progress_callback:
+                progress_callback(88, "Agrupando noticias iguales o similares…")
+            cluster_map = agrupar_noticias_filas(rows, km, brand=brand,
+                                                 aliases=list(aliases or []))
+        except Exception:
+            logger.exception("Agrupamiento por evidencia falló; se usa el agrupador anterior.")
+        if not cluster_map:
+            regexes = generate_brand_variants(brand, list(aliases or [])) if brand else []
+            cluster_map = cluster_similar_rows(
+                rows,
+                km,
+                regexes,
+                brand=brand,
+                aliases=list(aliases or []),
+                progress_callback=progress_callback,
+                progress_pct=88,
+            )
     else:
         cluster_map = {i: i for i in active}
 

@@ -18,7 +18,7 @@ from pipeline import (process_dossier, leer_columnas_xlsx, sugerir_columna,
 from pkl_classifier import PklClassifierError, load_sklearn_estimator
 
 # Versión visible de la app (se muestra en el encabezado). Actualizar en cada release.
-APP_VERSION = "v4.71"
+APP_VERSION = "v4.72"
 
 # v4.51: sello del analizador que realmente corre en el contenedor. Se lee
 # del módulo del analizador (ya importado vía pipeline); si el despliegue
@@ -1107,6 +1107,12 @@ def main():
                 uni_llm = analisis.get("subtemas_unificados_llm") or 0
                 if uni_llm:
                     piezas.append(f"subtemas unificados entre lotes por IA: {uni_llm}")
+                # v4.72: garantía final «una noticia = un subtema, un tono, un tema».
+                por_noticia = analisis.get("unificacion_por_noticia") or {}
+                if por_noticia.get("noticias_multifila"):
+                    piezas.append(
+                        f"{por_noticia['noticias_multifila']} noticias publicadas en varios medios "
+                        f"con un solo subtema, tono y tema")
                 if cubos_nuevos:
                     piezas.append("Cubos nuevos específicos: " + ", ".join(cubos_nuevos[:4]))
                 if fallback:
