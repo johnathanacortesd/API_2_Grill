@@ -1,17 +1,8 @@
 #@title ◈ Grill API — Limpieza y Análisis de Noticias (Colab) { display-mode: "form" }
 #@markdown Ejecuta **la misma app** (`app.py`) que Streamlit Cloud: mismas funciones, modelos y precisión.
 #@markdown
-#@markdown **Claves:** déjelas vacías para leerlas de Colab *Secrets* (icono de llave, con *Acceso del cuaderno* activado):
+#@markdown Las claves se leen de Colab *Secrets* (icono de llave, *Acceso del cuaderno* activado):
 #@markdown `APP_PASSWORD`, `OPENAI_API_KEY`, `TYPESAFE_API_KEY` (Jev), `REGIONES_CSV_URL`, `INTERNET_CSV_URL`.
-#@markdown Si las escribe aquí, quedan guardadas en el cuaderno: no lo comparta.
-
-#@markdown ---
-#@markdown ### 🔑 Claves (opcional si usa Secrets)
-APP_PASSWORD = ""  #@param {type:"string"}
-OPENAI_API_KEY = ""  #@param {type:"string"}
-TYPESAFE_API_KEY = ""  #@param {type:"string"}
-REGIONES_CSV_URL = ""  #@param {type:"string"}
-INTERNET_CSV_URL = ""  #@param {type:"string"}
 
 #@markdown ---
 #@markdown ### ⚙ Opciones
@@ -34,11 +25,6 @@ PUERTO = 8501
 OBLIGATORIOS = ["APP_PASSWORD", "OPENAI_API_KEY", "TYPESAFE_API_KEY",
                 "REGIONES_CSV_URL", "INTERNET_CSV_URL"]
 OPCIONALES = ["HISTORIAL_DIR"]
-DEL_FORMULARIO = {
-    "APP_PASSWORD": APP_PASSWORD, "OPENAI_API_KEY": OPENAI_API_KEY,
-    "TYPESAFE_API_KEY": TYPESAFE_API_KEY, "REGIONES_CSV_URL": REGIONES_CSV_URL,
-    "INTERNET_CSV_URL": INTERNET_CSV_URL,
-}
 
 
 def paso(texto):
@@ -46,10 +32,7 @@ def paso(texto):
 
 
 def leer_secreto(nombre):
-    """Formulario > Colab Secrets > variable de entorno."""
-    valor = (DEL_FORMULARIO.get(nombre) or "").strip()
-    if valor:
-        return valor
+    """Colab Secrets > variable de entorno."""
     try:
         from google.colab import userdata
         valor = userdata.get(nombre)
@@ -81,7 +64,7 @@ paso("Leyendo claves")
 secretos = {n: leer_secreto(n) for n in OBLIGATORIOS + OPCIONALES}
 faltan = [n for n in OBLIGATORIOS if not secretos[n]]
 if faltan:
-    raise SystemExit("Faltan claves (formulario o Secrets): " + ", ".join(faltan))
+    raise SystemExit("Faltan claves en Colab Secrets: " + ", ".join(faltan))
 
 # 2. Código
 paso(f"Descargando el código ({REPO}@{RAMA})")
