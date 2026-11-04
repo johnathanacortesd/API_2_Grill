@@ -1,16 +1,20 @@
-#@title ◈ Grill API — Limpieza y Análisis de Noticias (Colab) { display-mode: "form" }
-#@markdown Ejecuta **la misma app** (`app.py`) que Streamlit Cloud: mismas funciones, modelos y precisión.
+#@title ◈ Grill API — Limpieza y Análisis de Noticias { display-mode: "form" }
+#@markdown Ejecuta **la misma app** que Streamlit Cloud (`app.py`): mismas funciones, modelos y precisión.
 #@markdown
-#@markdown Las claves se leen de Colab *Secrets* (icono de llave, *Acceso del cuaderno* activado):
-#@markdown `APP_PASSWORD`, `OPENAI_API_KEY`, `TYPESAFE_API_KEY` (Jev), `REGIONES_CSV_URL`, `INTERNET_CSV_URL`.
+#@markdown **Antes de ejecutar:** las claves deben estar en Colab *Secrets* (icono 🔑 a la izquierda),
+#@markdown con *Acceso del cuaderno* activado: `APP_PASSWORD`, `OPENAI_API_KEY`, `TYPESAFE_API_KEY` (Jev),
+#@markdown `REGIONES_CSV_URL`, `INTERNET_CSV_URL`.
+#@markdown
+#@markdown **⚠ Deje este cuaderno abierto mientras usa la app.** La app corre dentro de esta celda:
+#@markdown si cierra la pestaña, detiene la celda o Colab desconecta la sesión (≈90 min sin actividad,
+#@markdown máximo ≈12 h en la versión gratuita), la app se apaga y el enlace deja de funcionar.
 
 #@markdown ---
 #@markdown ### ⚙ Opciones
+#@markdown Guardar perfiles de cliente e historial en Google Drive (no se pierden al cerrar Colab):
 GUARDAR_EN_DRIVE = False  #@param {type:"boolean"}
-#@markdown Por defecto la app se abre con el enlace propio de Colab (sin servicios externos).
-#@markdown Marque esta opción solo si al subir el xlsx aparece un error 403/500:
-USAR_ENLACE_CLOUDFLARE = False  #@param {type:"boolean"}
 
+import html
 import os
 import re
 import shutil
@@ -24,13 +28,95 @@ RAMA = "main"
 CARPETA = "/content/API_2_Grill"
 CARPETA_DRIVE = "/content/drive/MyDrive/Grill_API"
 PUERTO = 8501
+LOG_APP = "/content/streamlit.log"
+LOG_TUNEL = "/content/cloudflared.log"
+CLOUDFLARED = "/content/cloudflared"
 OBLIGATORIOS = ["APP_PASSWORD", "OPENAI_API_KEY", "TYPESAFE_API_KEY",
                 "REGIONES_CSV_URL", "INTERNET_CSV_URL"]
 OPCIONALES = ["HISTORIAL_DIR"]
 
+# ------------------------------------------------------------------ interfaz
+try:
+    from IPython.display import HTML, display
+    EN_NOTEBOOK = "ipykernel" in sys.modules
+except Exception:
+    EN_NOTEBOOK = False
 
-def paso(texto):
-    print(f"▸ {texto}", flush=True)
+ESTILO = """
+<style>
+.gr{font-family:Inter,system-ui,sans-serif;max-width:640px;color:#1f2328}
+.gr .t{font-size:18px;font-weight:700;margin:0 0 2px}
+.gr .s{font-size:12px;color:#656d76;margin:0 0 12px}
+.gr ul{list-style:none;padding:0;margin:0 0 12px}
+.gr li{padding:3px 0;font-size:14px}
+.gr .ok{color:#1a7f37}.gr .run{color:#9a6700}.gr .err{color:#cf222e}
+.gr .btn{display:inline-block;background:#ff4b4b;color:#fff!important;text-decoration:none;
+  font-weight:700;padding:12px 22px;border-radius:8px;font-size:15px;margin:4px 0 6px}
+.gr .url{font-family:monospace;font-size:12px;color:#656d76;word-break:break-all}
+.gr .box{border-radius:8px;padding:10px 14px;font-size:13px;margin-top:12px;line-height:1.5}
+.gr .warn{background:#fff8c5;border:1px solid #d4a72c}
+.gr .bad{background:#ffebe9;border:1px solid #ff8182}
+.gr .live{font-size:12px;color:#656d76;margin-top:8px}
+@media (prefers-color-scheme: dark){
+ .gr{color:#e6edf3}.gr .s,.gr .url,.gr .live{color:#9198a1}
+ .gr .ok{color:#3fb950}.gr .run{color:#d29922}.gr .err{color:#f85149}
+ .gr .warn{background:#3b2e00;border-color:#9e6a03}.gr .bad{background:#3d0b0b;border-color:#f85149}}
+</style>"""
+
+PASOS = [("claves", "Leer claves de Secrets"), ("codigo", "Descargar la app"),
+         ("deps", "Instalar dependencias (1-2 min)"), ("drive", "Conectar Google Drive"),
+         ("app", "Iniciar la app"), ("tunel", "Crear enlace")]
+if not GUARDAR_EN_DRIVE:
+    PASOS = [p for p in PASOS if p[0] != "drive"]
+estado = {k: "pend" for k, _ in PASOS}
+ui = {"version": "", "url": None, "error": None, "vivo": ""}
+panel = display(HTML(""), display_id=True) if EN_NOTEBOOK else None
+
+
+def pintar():
+    if not EN_NOTEBOOK:
+        return
+    iconos = {"pend": "○", "run": "◌", "ok": "✓", "err": "✗"}
+    clases = {"pend": "", "run": "run", "ok": "ok", "err": "err"}
+    filas = "".join(f'<li class="{clases[estado[k]]}">{iconos[estado[k]]} {txt}</li>'
+                    for k, txt in PASOS)
+    cuerpo = f'<p class="t">◈ Grill API</p><p class="s">{html.escape(ui["version"]) or "&nbsp;"}</p><ul>{filas}</ul>'
+    if ui["url"]:
+        u = html.escape(ui["url"])
+        cuerpo += (f'<a class="btn" href="{u}" target="_blank">Abrir la app ↗</a>'
+                   f'<div class="url">{u}</div>'
+                   '<div class="box warn"><b>⚠ Deje este cuaderno abierto</b> mientras usa la app. '
+                   'Si cierra la pestaña, detiene la celda (■) o Colab desconecta la sesión, '
+                   'la app se apaga. Si la primera carga da error, espere 10-20 s y recargue.</div>')
+        if ui["vivo"]:
+            cuerpo += f'<div class="live">{ui["vivo"]}</div>'
+    if ui["error"]:
+        cuerpo += f'<div class="box bad">{ui["error"]}</div>'
+    panel.update(HTML(ESTILO + f'<div class="gr">{cuerpo}</div>'))
+
+
+def marcar(clave, valor):
+    estado[clave] = valor
+    if not EN_NOTEBOOK:
+        print({"run": "▸", "ok": "  ✓", "err": "  ✗"}.get(valor, ""), dict(PASOS)[clave], flush=True)
+    pintar()
+
+
+def fallar(clave, mensaje, detalle=""):
+    marcar(clave, "err")
+    ui["error"] = html.escape(mensaje)
+    pintar()
+    if detalle:
+        print(detalle[-4000:])
+    raise SystemExit(mensaje)
+
+
+def correr(clave, cmd, **kw):
+    """Ejecuta en silencio; solo muestra la salida si falla."""
+    r = subprocess.run(cmd, capture_output=True, text=True, **kw)
+    if r.returncode != 0:
+        fallar(clave, f"Falló: {' '.join(cmd[:3])}", r.stdout + r.stderr)
+    return r
 
 
 def leer_secreto(nombre):
@@ -45,47 +131,60 @@ def leer_secreto(nombre):
     return (os.environ.get(nombre) or "").strip()
 
 
-def correr(cmd, **kw):
-    """Ejecuta en silencio; solo muestra la salida si falla."""
-    r = subprocess.run(cmd, capture_output=True, text=True, **kw)
-    if r.returncode != 0:
-        print((r.stdout + r.stderr)[-4000:])
-        raise SystemExit(f"Falló: {cmd[0]} {cmd[1] if len(cmd) > 1 else ''}")
-    return r
-
-
 def toml_str(valor):
     return '"' + valor.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"'
 
 
-# 1. Claves
-paso("Leyendo claves")
+def abrir_tunel():
+    """Lanza cloudflared y devuelve (proceso, url) o (None, None)."""
+    subprocess.run(["pkill", "-x", "cloudflared"], check=False)
+    proc = subprocess.Popen([CLOUDFLARED, "tunnel", "--no-autoupdate",
+                             "--url", f"http://localhost:{PUERTO}"],
+                            stdout=open(LOG_TUNEL, "w"), stderr=subprocess.STDOUT)
+    for _ in range(60):
+        hallado = re.search(r"https://[a-z0-9-]+\.trycloudflare\.com", open(LOG_TUNEL).read())
+        if hallado:
+            return proc, hallado.group(0)
+        if proc.poll() is not None:
+            break
+        time.sleep(1)
+    proc.kill()
+    return None, None
+
+
+pintar()
+
+# ------------------------------------------------------------------ 1. claves
+marcar("claves", "run")
 secretos = {n: leer_secreto(n) for n in OBLIGATORIOS + OPCIONALES}
 faltan = [n for n in OBLIGATORIOS if not secretos[n]]
 if faltan:
-    raise SystemExit("Faltan claves en Colab Secrets: " + ", ".join(faltan))
+    fallar("claves", "Faltan en Colab Secrets (o sin Acceso del cuaderno): " + ", ".join(faltan))
+marcar("claves", "ok")
 
-# 2. Código
-paso(f"Descargando el código ({REPO}@{RAMA})")
+# ------------------------------------------------------------------ 2. código
+marcar("codigo", "run")
 url_repo = f"https://github.com/{REPO}.git"
 if os.path.isdir(os.path.join(CARPETA, ".git")):
-    correr(["git", "-C", CARPETA, "fetch", "-q", "--depth", "1", url_repo, RAMA])
-    correr(["git", "-C", CARPETA, "reset", "-q", "--hard", "FETCH_HEAD"])
+    correr("codigo", ["git", "-C", CARPETA, "fetch", "-q", "--depth", "1", url_repo, RAMA])
+    correr("codigo", ["git", "-C", CARPETA, "reset", "-q", "--hard", "FETCH_HEAD"])
 else:
     shutil.rmtree(CARPETA, ignore_errors=True)
-    correr(["git", "clone", "-q", "--depth", "1", "--branch", RAMA, url_repo, CARPETA])
-version = correr(["git", "-C", CARPETA, "log", "-1", "--format=%h %s"]).stdout.strip()
-print(f"  versión: {version}")
+    correr("codigo", ["git", "clone", "-q", "--depth", "1", "--branch", RAMA, url_repo, CARPETA])
+ui["version"] = "Versión " + correr("codigo", ["git", "-C", CARPETA, "log", "-1",
+                                               "--format=%h · %s"]).stdout.strip()
+marcar("codigo", "ok")
 
-# 3. Dependencias
-paso("Instalando dependencias (1-2 min)")
-correr([sys.executable, "-m", "pip", "install", "-q", "--disable-pip-version-check",
-        "-r", os.path.join(CARPETA, "requirements.txt")])
+# ------------------------------------------------------------------ 3. dependencias
+marcar("deps", "run")
+correr("deps", [sys.executable, "-m", "pip", "install", "-q", "--disable-pip-version-check",
+                "-r", os.path.join(CARPETA, "requirements.txt")])
+marcar("deps", "ok")
 
-# 4. Drive (opcional): perfiles de cliente e historial persistentes
+# ------------------------------------------------------------------ 4. Drive (opcional)
 entorno = dict(os.environ)
 if GUARDAR_EN_DRIVE:
-    paso("Montando Google Drive")
+    marcar("drive", "run")
     from google.colab import drive
     drive.mount("/content/drive")
     for sub in ("clientes", "historial"):
@@ -95,18 +194,16 @@ if GUARDAR_EN_DRIVE:
     entorno["CLIENTES_DIR"] = os.path.join(CARPETA_DRIVE, "clientes")
     secretos["HISTORIAL_DIR"] = secretos["HISTORIAL_DIR"] or os.path.join(CARPETA_DRIVE, "historial")
     entorno["HISTORIAL_DIR"] = secretos["HISTORIAL_DIR"]
+    marcar("drive", "ok")
 
-# 5. secrets.toml (lo lee app.py con st.secrets)
+# ------------------------------------------------------------------ 5. app
+marcar("app", "run")
 os.makedirs(os.path.join(CARPETA, ".streamlit"), exist_ok=True)
 with open(os.path.join(CARPETA, ".streamlit", "secrets.toml"), "w", encoding="utf-8") as fh:
     for nombre, valor in secretos.items():
         if valor:
             fh.write(f"{nombre} = {toml_str(valor)}\n")
-
-# 6. Streamlit
-paso("Iniciando la app")
 subprocess.run(["pkill", "-f", "streamlit run app.py"], check=False)
-LOG_APP = "/content/streamlit.log"
 app = subprocess.Popen(
     [sys.executable, "-m", "streamlit", "run", "app.py",
      "--server.port", str(PUERTO), "--server.headless", "true",
@@ -119,65 +216,57 @@ for _ in range(120):
     except Exception:
         pass
     if app.poll() is not None:
-        print(open(LOG_APP).read()[-4000:])
-        raise SystemExit("La app se cerró al arrancar (log arriba).")
+        fallar("app", "La app se cerró al arrancar (log abajo).", open(LOG_APP).read())
     time.sleep(1)
 else:
-    print(open(LOG_APP).read()[-4000:])
-    raise SystemExit("La app no respondió en 2 minutos (log arriba).")
+    fallar("app", "La app no respondió en 2 minutos (log abajo).", open(LOG_APP).read())
+marcar("app", "ok")
 
-# 7. Enlace para abrir la app
-url_app = None
-if not USAR_ENLACE_CLOUDFLARE:
-    # Proxy propio de Colab: solo lo abre este navegador, con la sesión de Google.
-    paso("Abriendo enlace de Colab")
+# ------------------------------------------------------------------ 6. enlace Cloudflare
+marcar("tunel", "run")
+tunel = None
+try:
+    if not os.path.exists(CLOUDFLARED):
+        urllib.request.urlretrieve("https://github.com/cloudflare/cloudflared/releases/"
+                                   "latest/download/cloudflared-linux-amd64", CLOUDFLARED)
+        os.chmod(CLOUDFLARED, 0o755)
+    tunel, ui["url"] = abrir_tunel()
+except Exception as e:
+    print("No se pudo abrir el túnel de Cloudflare:", e)
+
+if not ui["url"]:
+    # Respaldo: enlace propio de Colab (solo funciona en este navegador).
     try:
         from google.colab.output import eval_js
-        url_app = eval_js(f"google.colab.kernel.proxyPort({PUERTO}, {{'cache': false}})")
-    except Exception as e:
-        print("  no se pudo abrir el enlace de Colab:", e)
-else:
-    # Respaldo: túnel público de Cloudflare (trycloudflare.com, sin cuenta).
-    paso("Abriendo enlace de Cloudflare")
-    try:
-        binario = "/content/cloudflared"
-        if not os.path.exists(binario):
-            urllib.request.urlretrieve("https://github.com/cloudflare/cloudflared/releases/"
-                                       "latest/download/cloudflared-linux-amd64", binario)
-            os.chmod(binario, 0o755)
-        subprocess.run(["pkill", "-f", "cloudflared tunnel"], check=False)
-        LOG_TUNEL = "/content/cloudflared.log"
-        subprocess.Popen([binario, "tunnel", "--no-autoupdate", "--url", f"http://localhost:{PUERTO}"],
-                         stdout=open(LOG_TUNEL, "w"), stderr=subprocess.STDOUT)
-        for _ in range(60):
-            hallado = re.search(r"https://[a-z0-9-]+\.trycloudflare\.com", open(LOG_TUNEL).read())
-            if hallado:
-                url_app = hallado.group(0)
-                break
-            time.sleep(1)
-    except Exception as e:
-        print("  no se pudo abrir el túnel:", e)
+        ui["url"] = eval_js(f"google.colab.kernel.proxyPort({PUERTO}, {{'cache': false}})")
+        ui["error"] = ("Cloudflare no respondió: se usa el enlace de Colab, que solo abre en "
+                       "este navegador. Si la subida del xlsx falla, vuelva a ejecutar la celda.")
+    except Exception:
+        fallar("tunel", f"No se pudo crear el enlace. La app corre en http://localhost:{PUERTO}.")
+marcar("tunel", "ok")
+if not EN_NOTEBOOK:
+    print(f"\nABRA LA APP: {ui['url']}\nDeje el cuaderno abierto: si se detiene la celda, la app se apaga.")
 
-print("\n" + "═" * 64)
-if url_app:
-    print(f"  ✅ ABRA LA APP:  {url_app}")
-    if USAR_ENLACE_CLOUDFLARE:
-        print("  (si da error de DNS, espere 10-20 s y recargue)")
-    else:
-        print("  Si al subir el xlsx sale error 403/500: detenga la celda, marque")
-        print("  USAR_ENLACE_CLOUDFLARE y ejecútela de nuevo.")
-else:
-    print(f"  App corriendo en http://localhost:{PUERTO}, pero no se pudo crear el enlace.")
-print("═" * 64)
-print("  Deje esta celda corriendo. Para apagar la app, deténgala (■).\n")
-
-# 8. Mantener viva la app
+# ------------------------------------------------------------------ 7. mantener viva
+inicio = time.time()
 try:
     while app.poll() is None:
+        # Si el túnel se cae, se reabre (el enlace cambia y se muestra el nuevo).
+        if tunel is not None and tunel.poll() is not None:
+            tunel, nueva = abrir_tunel()
+            if nueva:
+                ui["url"] = nueva
+                print("El enlace se renovó:", nueva)
+        minutos = int((time.time() - inicio) // 60)
+        ui["vivo"] = (f"● App activa · {minutos // 60} h {minutos % 60:02d} min · "
+                      f"última revisión {time.strftime('%H:%M')}")
+        pintar()
         time.sleep(30)
+    ui["url"], ui["error"] = None, "La app se detuvo (log abajo). Vuelva a ejecutar la celda."
+    pintar()
     print(open(LOG_APP).read()[-4000:])
-    print("La app se detuvo (log arriba).")
 except KeyboardInterrupt:
     app.terminate()
-    subprocess.run(["pkill", "-f", "cloudflared tunnel"], check=False)
-    print("App detenida.")
+    subprocess.run(["pkill", "-x", "cloudflared"], check=False)
+    ui["url"], ui["error"] = None, "App detenida. Ejecute la celda de nuevo para volver a abrirla."
+    pintar()
