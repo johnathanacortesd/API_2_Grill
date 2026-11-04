@@ -135,20 +135,49 @@ def toml_str(valor):
     return '"' + valor.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"'
 
 
-def abrir_tunel():
-    """Lanza cloudflared y devuelve (proceso, url) o (None, None)."""
-    subprocess.run(["pkill", "-x", "cloudflared"], check=False)
-    proc = subprocess.Popen([CLOUDFLARED, "tunnel", "--no-autoupdate",
-                             "--url", f"http://localhost:{PUERTO}"],
-                            stdout=open(LOG_TUNEL, "w"), stderr=subprocess.STDOUT)
-    for _ in range(60):
-        hallado = re.search(r"https://[a-z0-9-]+\.trycloudflare\.com", open(LOG_TUNEL).read())
-        if hallado:
-            return proc, hallado.group(0)
-        if proc.poll() is not None:
-            break
-        time.sleep(1)
-    proc.kill()
+def enlace_responde(url, intentos=1):
+    """True si la app contesta a través del enlace público."""
+    for i in range(intentos):
+        try:
+            with urllib.request.urlopen(f"{url}/_stcore/health", timeout=10) as r:
+                if r.status == 200:
+                    return True
+        except Exception:
+            pass
+        if i < intentos - 1:
+            time.sleep(3)
+    return False
+
+
+def abrir_tunel(reintentos=3):
+    """Lanza cloudflared y devuelve (proceso, url) solo cuando el enlace ya funciona.
+
+    Error 1033 = el enlace existe pero el túnel no está conectado. Para evitarlo:
+    - protocolo http2 (TCP 443): QUIC/UDP suele estar bloqueado en Colab;
+    - se espera a "Registered tunnel connection" y a que /_stcore/health
+      responda por el enlace público antes de mostrarlo.
+    """
+    for intento in range(1, reintentos + 1):
+        subprocess.run(["pkill", "-x", "cloudflared"], check=False)
+        proc = subprocess.Popen([CLOUDFLARED, "tunnel", "--no-autoupdate", "--protocol", "http2",
+                                 "--url", f"http://localhost:{PUERTO}"],
+                                stdout=open(LOG_TUNEL, "w"), stderr=subprocess.STDOUT)
+        url = None
+        for _ in range(90):
+            log = open(LOG_TUNEL).read()
+            if not url:
+                hallado = re.search(r"https://[a-z0-9-]+\.trycloudflare\.com", log)
+                url = hallado.group(0) if hallado else None
+            if url and "Registered tunnel connection" in log:
+                break
+            if proc.poll() is not None:
+                break
+            time.sleep(1)
+        if url and proc.poll() is None and enlace_responde(url, intentos=20):
+            return proc, url
+        print(f"Túnel no disponible (intento {intento}/{reintentos}). Log:")
+        print(open(LOG_TUNEL).read()[-1500:])
+        proc.kill()
     return None, None
 
 
@@ -250,13 +279,19 @@ if not EN_NOTEBOOK:
 # ------------------------------------------------------------------ 7. mantener viva
 inicio = time.time()
 try:
+    fallos = 0
     while app.poll() is None:
-        # Si el túnel se cae, se reabre (el enlace cambia y se muestra el nuevo).
-        if tunel is not None and tunel.poll() is not None:
-            tunel, nueva = abrir_tunel()
-            if nueva:
-                ui["url"] = nueva
-                print("El enlace se renovó:", nueva)
+        # Si el túnel se cae o deja de responder 3 veces seguidas (~1.5 min),
+        # se reabre; el enlace cambia y el botón pasa a apuntar al nuevo.
+        if tunel is not None:
+            fallos = 0 if (tunel.poll() is None and enlace_responde(ui["url"])) else fallos + 1
+            if fallos >= 3:
+                ui["vivo"] = "◌ Reconectando el enlace…"
+                pintar()
+                tunel, nueva = abrir_tunel()
+                if nueva:
+                    ui["url"], fallos = nueva, 0
+                    print("El enlace se renovó:", nueva)
         minutos = int((time.time() - inicio) // 60)
         ui["vivo"] = (f"● App activa · {minutos // 60} h {minutos % 60:02d} min · "
                       f"última revisión {time.strftime('%H:%M')}")
