@@ -342,7 +342,7 @@ La aplicación estará disponible en `http://localhost:8501`.
 
 `Grill_API_Colab.py` ejecuta **la misma app** (`app.py`) dentro de Google Colab: clona el repo, instala `requirements.txt` y lanza `streamlit run app.py`. Mismas pestañas, funciones, modelos y precisión que la app publicada; no es una reimplementación.
 
-1. Claves `APP_PASSWORD`, `OPENAI_API_KEY`, `TYPESAFE_API_KEY` (Jev, necesaria para el mismo tono que producción), `REGIONES_CSV_URL`, `INTERNET_CSV_URL`: en Colab *Secrets* (icono de llave, *Acceso del cuaderno* activado). `GITHUB_TOKEN` solo si el repo es privado.
+1. Claves `APP_PASSWORD`, `OPENAI_API_KEY`, `TYPESAFE_API_KEY` (Jev, necesaria para el mismo tono que producción), `REGIONES_CSV_URL`, `INTERNET_CSV_URL`: en Colab *Secrets* (icono de llave, *Acceso del cuaderno* activado).
 2. Pegar `Grill_API_Colab.py` completo en una celda (se muestra como formulario; *Editar → Mostrar/ocultar código* para ocultarlo) y ejecutarla. Las instalaciones son silenciosas.
 3. Abrir el enlace `https://….trycloudflare.com` que imprime al final. La celda debe quedar corriendo.
 

@@ -6,9 +6,7 @@
 
 #@markdown ---
 #@markdown ### ⚙ Opciones
-RAMA = "main"  #@param {type:"string"}
 GUARDAR_EN_DRIVE = False  #@param {type:"boolean"}
-#@markdown Repo privado: cree el secreto `GITHUB_TOKEN`.
 
 import os
 import re
@@ -19,6 +17,7 @@ import time
 import urllib.request
 
 REPO = "johnathanacortesd/API_2_Grill"
+RAMA = "main"
 CARPETA = "/content/API_2_Grill"
 CARPETA_DRIVE = "/content/drive/MyDrive/Grill_API"
 PUERTO = 8501
@@ -43,14 +42,11 @@ def leer_secreto(nombre):
     return (os.environ.get(nombre) or "").strip()
 
 
-def correr(cmd, ocultar=None, **kw):
+def correr(cmd, **kw):
     """Ejecuta en silencio; solo muestra la salida si falla."""
     r = subprocess.run(cmd, capture_output=True, text=True, **kw)
     if r.returncode != 0:
-        salida = (r.stdout + r.stderr)
-        if ocultar:
-            salida = salida.replace(ocultar, "***")
-        print(salida[-4000:])
+        print((r.stdout + r.stderr)[-4000:])
         raise SystemExit(f"Falló: {cmd[0]} {cmd[1] if len(cmd) > 1 else ''}")
     return r
 
@@ -68,16 +64,13 @@ if faltan:
 
 # 2. Código
 paso(f"Descargando el código ({REPO}@{RAMA})")
-token = leer_secreto("GITHUB_TOKEN")
-url_repo = (f"https://x-access-token:{token}@github.com/{REPO}.git" if token
-            else f"https://github.com/{REPO}.git")
+url_repo = f"https://github.com/{REPO}.git"
 if os.path.isdir(os.path.join(CARPETA, ".git")):
-    correr(["git", "-C", CARPETA, "fetch", "-q", "--depth", "1", url_repo, RAMA], ocultar=token)
+    correr(["git", "-C", CARPETA, "fetch", "-q", "--depth", "1", url_repo, RAMA])
     correr(["git", "-C", CARPETA, "reset", "-q", "--hard", "FETCH_HEAD"])
 else:
     shutil.rmtree(CARPETA, ignore_errors=True)
-    correr(["git", "clone", "-q", "--depth", "1", "--branch", RAMA, url_repo, CARPETA],
-           ocultar=token)
+    correr(["git", "clone", "-q", "--depth", "1", "--branch", RAMA, url_repo, CARPETA])
 version = correr(["git", "-C", CARPETA, "log", "-1", "--format=%h %s"]).stdout.strip()
 print(f"  versión: {version}")
 
