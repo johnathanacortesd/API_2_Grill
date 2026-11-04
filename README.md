@@ -338,15 +338,15 @@ streamlit run app.py
 
 La aplicación estará disponible en `http://localhost:8501`.
 
-### 5. Alternativa Colab (si Streamlit Cloud se queda en Etiquetando k/N)
+### 5. Alternativa Colab (si Streamlit Cloud no carga o falla al subir el xlsx)
 
-Abra **`Grill_API_Colab.txt`** en Google Colab (*Runtime → Run all*). Es un script **autosuficiente**: no importa `app.py` ni ningún otro archivo.
+`Grill_API_Colab.py` ejecuta **la misma app** (`app.py`) dentro de Google Colab: clona el repo, instala `requirements.txt` y lanza `streamlit run app.py`. Mismas pestañas, funciones, modelos y precisión que la app publicada; no es una reimplementación.
 
-- `pip install -q` de las dependencias (sin Streamlit).
-- `OPENAI_API_KEY` **solo** desde Colab Secrets (`userdata.get`) o la variable de entorno. No hace falta pegarla.
-- Interfaz Gradio: xlsx (+ PKL opcionales de tema/tono) → xlsx con `Contexto analizado`, `Tono IA`, `Tema`, `Subtema` y `Grupo noticia`.
-- Modelo **hardcoded** `gpt-4.1-nano-2025-04-14` (se ignora `OPENAI_CLASIF_MODEL`). Embeddings: `text-embedding-3-small`.
-- Subtemas: heurística para todos los grupos + pulido LLM en lotes de 25–40 (un dossier de ~300 filas hace como máximo ~8 ChatCompletions de subtema).
+1. En Colab, icono de llave (*Secrets*): crear `APP_PASSWORD`, `OPENAI_API_KEY`, `REGIONES_CSV_URL`, `INTERNET_CSV_URL` (y opcionales `TYPESAFE_API_KEY`, `GITHUB_TOKEN` si el repo es privado), con *Acceso del cuaderno* activado.
+2. Pegar `Grill_API_Colab.py` completo en una celda y ejecutarla.
+3. Abrir el enlace `https://….trycloudflare.com` que imprime al final. La celda debe quedar corriendo.
+
+Con `GUARDAR_EN_DRIVE = True` los perfiles de cliente y el historial se guardan en Google Drive.
 
 ---
 
