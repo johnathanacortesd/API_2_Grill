@@ -344,7 +344,8 @@ La aplicación estará disponible en `http://localhost:8501`.
 
 1. Claves `APP_PASSWORD`, `OPENAI_API_KEY`, `TYPESAFE_API_KEY` (Jev, necesaria para el mismo tono que producción), `REGIONES_CSV_URL`, `INTERNET_CSV_URL`: en Colab *Secrets* (icono de llave, *Acceso del cuaderno* activado).
 2. Pegar `Grill_API_Colab.py` completo en una celda (se muestra como formulario; *Editar → Mostrar/ocultar código* para ocultarlo) y ejecutarla. Las instalaciones son silenciosas.
-3. Abrir el enlace `https://….trycloudflare.com` que imprime al final. La celda debe quedar corriendo.
+3. Abrir el enlace que imprime al final (proxy propio de Colab, sin servicios externos). La celda debe quedar corriendo.
+   Si al subir el xlsx aparece un error 403/500, marcar `USAR_ENLACE_CLOUDFLARE` y volver a ejecutar: abre la app con un túnel público de `trycloudflare.com`.
 
 Con `GUARDAR_EN_DRIVE = True` los perfiles de cliente y el historial se guardan en Google Drive.
 
