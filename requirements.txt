@@ -1,4 +1,7 @@
-streamlit==1.62.0
+# 1.56.0 = ultima version con el servidor Tornado (el que Streamlit Cloud uso por anos).
+# Desde 1.57 el servidor es Starlette/Uvicorn y en Cloud fallan cargas de JS
+# ("Failed to fetch dynamically imported module") y la subida del xlsx (500).
+streamlit==1.56.0
 # pyarrow 26 tiene un segfault conocido (apache/arrow#50471); Streamlit Cloud ya lo baja a <25.
 pyarrow>=14,<25
 pandas>=2.0.0,<3.0.0
