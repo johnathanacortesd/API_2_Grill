@@ -1,0 +1,37 @@
+{
+  "nombre": "Defensoría del Pueblo",
+  "brand": "Defensoría del Pueblo",
+  "aliases": [
+    "Defensoría",
+    "la Defensoría",
+    "Defensoría del Pueblo",
+    "Defensoría del Pueblo de Colombia",
+    "defensoría delegada",
+    "defensor regional",
+    "DP"
+  ],
+  "voceros": [
+    "Iris Marín Ortiz",
+    "Iris Marín"
+  ],
+  "criterio": "Aspectual estricto (recomendado)",
+  "criterio_custom": "El tono mide SOLO cómo queda la imagen de la Defensoría del Pueblo de Colombia, sus defensorías regionales o delegadas y la defensora Iris Marín Ortiz (sus alias y voceros) según lo que la nota dice de ellos; no es el tono general de la noticia. No confundir con defensorías de otros países, la Procuraduría ni las personerías.\n- Positivo: la nota destaca la labor de la Defensoría: emite o actualiza una Alerta Temprana, advierte riesgos, denuncia vulneraciones de derechos (denunciar es su función, no una crítica contra ella), acompaña a comunidades o víctimas, verifica, media en conflictos o protestas, logra acuerdos, presenta informes o recomendaciones, defiende derechos ante otras entidades, o recibe un reconocimiento.\n- Negativo: la nota critica a la Defensoría, a la defensora o a sus funcionarios (inacción, alertas tardías o deficientes atribuidas a ella, parcialidad, mal uso de recursos), o funcionarios de la entidad están involucrados en corrupción, investigaciones, sanciones o escándalos.\n- Neutro: la nota no afecta la imagen de la Defensoría: la menciona de paso, cita una alerta o una cifra suya solo como dato o antecedente en una nota sobre otro tema, o es una fuente más entre varias.\n- Alertas Tempranas: depende de la nota. Si la noticia trata de que la Defensoría emite o advierte con una alerta, es Positivo (su labor de prevención); si la alerta solo se cita como antecedente, Neutro; Negativo solo si se critica a la Defensoría por la alerta.\n- Los hechos graves que la Defensoría denuncia o alerta (violencia, desplazamiento, reclutamiento, asesinato de líderes) NO hacen Negativa la nota para ella. Si otra entidad ignora una alerta o una recomendación de la Defensoría, la crítica es para esa entidad, no para la Defensoría.",
+  "taxonomia": null,
+  "notas": "Enfoque: lo que dicen para la Defensoría del Pueblo de Colombia y palabras similares relacionadas (defensoría delegada, defensor regional, sigla DP; comúnmente se le menciona directamente como 'la Defensoría'). La comparación es sin mayúsculas ni acentos: valen 'iris marín' en minúsculas y 'Iris Marín' (nombre + primer apellido), además del nombre completo 'Iris Marín Ortiz'. No confundir con defensorías de otros países ni con la Procuraduría o las personerías: son entidades distintas. El tono se mide solo sobre la marca/alias/vocero, no sobre la noticia en general. Subtema clave: las Alertas Tempranas (ver guia_subtema). Vocera verificada en 2026: Iris Marín Ortiz, defensora del Pueblo.",
+  "guia_subtema": "Para este cliente, las Alertas Tempranas son un subtema clave: siempre que el titular o el texto de la nota mencione 'alerta temprana' o 'alertas tempranas' —incluida la Alerta Temprana 028 de 2026 y cualquier otra, sin importar su número, año o zona—, el sub_tema debe ser EXACTAMENTE 'Alertas Defensoría del Pueblo', sin número, sin zona y sin variantes (no 'Alerta Temprana en Cauca' ni subtemas genéricos sobre violencia, seguridad o derechos). No inventes un número de alerta ni una zona que no aparezcan en el cuerpo. Fuera de las Alertas Tempranas, el sub-tema indica de qué habla ESA nota, con precisión: el asunto o hecho concreto en 2 a 5 palabras (p. ej. 'Informe sobre líderes sociales asesinados', 'Crisis humanitaria en el Catatumbo', 'Defensa de derechos de migrantes'). Nunca la entidad o la persona como tema: no 'Defensoría del Pueblo', 'Gestión de la Defensoría' ni 'Declaraciones de Iris Marín'; si la Defensoría o su vocera solo opinan sobre un asunto, el sub-tema es ese asunto. NO fuerces una nota a un sub-tema que no es el suyo. Solo las notas iguales o muy parecidas (mismo titular, mismo texto o el mismo hecho contado casi igual) comparten exactamente el mismo sub-tema; las demás conservan el suyo.",
+  "subtemas_fijos": [
+    {
+      "contiene": "alerta temprana",
+      "subtema": "Alertas Defensoría del Pueblo"
+    }
+  ],
+  "clasificar_tipo_genero": false,
+  "agrupacion_estricta": true,
+  "tono_alertas_tempranas": true,
+  "tono_labor_positiva": true,
+  "formato_boletin": true,
+  "hora_boletin_corte_manana": 8,
+  "hora_boletin_corte_tarde": 16,
+  "hora_boletin_manana": "8:00 a.m.",
+  "hora_boletin_tarde": "4:00 p.m."
+}

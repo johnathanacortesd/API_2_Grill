@@ -9048,6 +9048,41 @@ def unificar_por_noticia(rows: List[dict], mapa: Dict[int, int],
     return stats
 
 
+def _etiquetar_con_haiku(cfg: dict, grupos: List[dict], candidatos_tax: Sequence[str],
+                         incluir_tema: bool, progreso: Callable[[int, str], None],
+                         tono_pkl: bool = False):
+    """Etiquetado de grupos con el agente Claude Haiku (motor_haiku.py).
+
+    Devuelve (etiquetas {gid: {'sub_tema','tono'}}, temas {gid: tema}, info).
+    Reemplaza a `etiquetar_grupos` en modo haiku: todo lo demás del analizador
+    (guardas deterministas, unificaciones, PKL, volcado) corre igual.
+    Con `tono_pkl` el agente no analiza el tono (lo pone el PKL del cliente).
+    """
+    import motor_haiku
+    criterio_texto = ((cfg.get('criterio_texto') or '').strip()
+                      or str(CRITERIOS_TONO.get(cfg.get('criterio') or '', '') or ''))
+    items = [{'id': str(g['grupo']), 'titulo': g.get('titulo') or '',
+              'contexto': g.get('contexto_marca') or g.get('contexto') or g.get('texto') or ''}
+             for g in grupos]
+    res = motor_haiku.clasificar_con_haiku(
+        items, cfg.get('brand') or '', cfg.get('aliases') or [], cfg.get('voceros') or [],
+        criterio_texto=criterio_texto, incluir_tema=incluir_tema,
+        taxonomia=list(candidatos_tax or []) or None, progreso_cb=progreso,
+        guia_subtema=cfg.get('guia_subtema') or '', tono_pkl=tono_pkl)
+    if res.get('error') and not res.get('etiquetas'):
+        raise RuntimeError('El motor Claude Haiku falló: %s' % res['error'])
+    etiquetas: Dict[int, dict] = {}
+    temas: Dict[int, str] = {}
+    for g in grupos:
+        e = (res.get('etiquetas') or {}).get(str(g['grupo'])) or {}
+        tono = e.get('tono') if e.get('tono') in TONOS else 'Neutro'
+        etiquetas[g['grupo']] = {'sub_tema': sq(e.get('subtema') or ''), 'tono': tono}
+        if incluir_tema and e.get('tema'):
+            temas[g['grupo']] = sq(e['tema'])
+    res['modelo'] = motor_haiku.MODELO_HAIKU
+    return etiquetas, temas, res
+
+
 def enrich_rows_with_ai(
     rows: List[dict],
     km: dict,
@@ -9076,6 +9111,8 @@ def enrich_rows_with_ai(
         'subtemas_fijos': extra.get('subtemas_fijos') or [],
         'clasificar_tipo_genero': bool(extra.get('clasificar_tipo_genero')),
         'tono_distrito_positivo': bool(extra.get('tono_distrito_positivo')),
+        'tono_alertas_tempranas': bool(extra.get('tono_alertas_tempranas')),
+        'tono_labor_positiva': bool(extra.get('tono_labor_positiva')),
         # v4.71 (Grill): la agrupación estricta (Secretaría v1.31) es el
         # default: solo comparten subtema y tono las noticias iguales o muy
         # parecidas (título, Contexto analizado o CuerpoEs). Un perfil puede
@@ -9114,6 +9151,16 @@ def enrich_rows_with_ai(
     if theme_model is not None:
         incluir_tema = True
     progreso = progress_callback or (lambda pct, msg: None)
+    # Clausifier: motor de clasificación "haiku" (agente Claude Haiku,
+    # motor_haiku.py) u "openai" (Luna, sin cambios). En modo haiku no se usan
+    # OpenAI ni Jev (sin claves, los pases LLM caen a su camino determinista),
+    # pero los PKL de tono/tema del cliente SÍ se aplican y mandan.
+    motor = str(extra.get('motor') or 'openai').strip().lower()
+    haiku = motor == 'haiku'
+    info_haiku: dict = {}
+    if haiku:
+        cfg['api_key'] = ''
+        cfg['typesafe_api_key'] = ''
 
     # --- contexto de marca (funcion existente, se conserva para la columna de auditoria) ---
     progreso(71, 'Extrayendo contexto de la marca y sus variantes…')
@@ -9152,8 +9199,16 @@ def enrich_rows_with_ai(
     # `uso` acumula tokens de TODAS las llamadas OpenAI de la corrida
     # (etiquetado + reparaciones + temas) para la tarjeta de costo aprox.
     uso = {'input': 0, 'output': 0, 'llamadas': 0}
-    etiquetas = etiquetar_grupos(cfg, grupos, progreso, tam_lote=tam_lote, workers=workers,
-                                 votos=votos, uso=uso)
+    temas_haiku: Dict[int, str] = {}
+    if haiku:
+        # Con PKL de tema, Haiku no pide tema (lo pone el PKL); sin PKL, lo
+        # pide solo si el usuario marcó "Agregar Tema_IA".
+        etiquetas, temas_haiku, info_haiku = _etiquetar_con_haiku(
+            cfg, grupos, candidatos_tax, incluir_tema and theme_model is None, progreso,
+            tono_pkl=tone_model is not None)
+    else:
+        etiquetas = etiquetar_grupos(cfg, grupos, progreso, tam_lote=tam_lote, workers=workers,
+                                     votos=votos, uso=uso)
     # v4.74: subtema que el etiquetador le dio a cada grupo, antes de las
     # unificaciones (la coherencia por texto lo usa para devolverle a cada
     # noticia su rótulo propio cuando una unificación la forzó).
@@ -9168,7 +9223,7 @@ def enrich_rows_with_ai(
         ajenos = reparar_subtemas_ajenos(grupos, etiquetas)
         if ajenos:
             _ULTIMO_RESUMEN['subtemas_ajenos_reparados'] = ajenos
-        extra_llm = consolidar_por_evidencia(cfg, grupos, etiquetas, uso=uso, workers=workers)
+        extra_llm = 0 if haiku else consolidar_por_evidencia(cfg, grupos, etiquetas, uso=uso, workers=workers)
     else:
         cambios = canonizar_subtemas(etiquetas)
         extra_uni = unificar_subtemas_noticias_similares(grupos, etiquetas,
@@ -9181,7 +9236,7 @@ def enrich_rows_with_ai(
         # v1.29: consolidación por hecho con la noticia a la vista (titular +
         # entrada), validada en código por fidelidad. Si el modelo no responde,
         # cae a la unificación anterior por lista de subtemas.
-        extra_llm = consolidar_hechos_llm(cfg, grupos, etiquetas, uso=uso, workers=workers)
+        extra_llm = 0 if haiku else consolidar_hechos_llm(cfg, grupos, etiquetas, uso=uso, workers=workers)
         if extra_llm is None:
             extra_llm = unificar_subtemas_llm(cfg, grupos, etiquetas, uso=uso)
         # v4.18: repara etiquetas cruzadas del modelo (el subtema de un grupo
@@ -9336,7 +9391,10 @@ def enrich_rows_with_ai(
     # Jev, ni PKL de tema). Ahorra las llamadas secuenciales de nombrar_familias_tema.
     temas: Dict[int, str] = {}
     origen: Dict[int, str] = {}
-    if incluir_tema and theme_model is None:
+    if incluir_tema and haiku and theme_model is None:
+        temas = dict(temas_haiku)
+        origen = {gid: 'haiku' for gid in temas}
+    elif incluir_tema and theme_model is None:
         tax_lote = {'temas': candidatos_tax, 'reglas': derivar_reglas(candidatos_tax) if candidatos_tax else []}
         temas, origen = asignar_temas(cfg, grupos, etiquetas, tax_lote, progreso, uso=uso)
         corregir_temas_con_jev(cfg, grupos, etiquetas, temas, workers=workers)
@@ -9422,6 +9480,19 @@ def enrich_rows_with_ai(
     # v1.24/v1.28 (2026-11-02): homónimo extranjero (ver
     # aplicar_regla_homonimo_extranjero). Corre después de Jev y junto
     # al decreto/distrito: una Defensoría de otro país no es el cliente.
+    # Clausifier: reglas de perfil de Defensoría (v1.27/v1.28). Solo sin PKL
+    # de tono: con PKL el tono del cliente manda y no se sube por regla.
+    if cfg.get('tono_labor_positiva') and tone_model is None:
+        _labor = aplicar_regla_labor_positiva(
+            grupos, etiquetas, brand, aliases, voceros=cfg.get('voceros') or [])
+        if _labor:
+            _ULTIMO_RESUMEN['tono_labor_positiva'] = _labor
+    if cfg.get('tono_alertas_tempranas') and tone_model is None:
+        _alertas = aplicar_regla_alerta_temprana(
+            grupos, etiquetas, brand, aliases, voceros=cfg.get('voceros') or [])
+        if _alertas:
+            _ULTIMO_RESUMEN['tono_alertas_tempranas'] = _alertas
+
     _bajados_homonimo = aplicar_regla_homonimo_extranjero(
         grupos, etiquetas, brand, aliases, voceros=cfg.get('voceros') or [])
     if _bajados_homonimo:
@@ -9547,6 +9618,20 @@ def enrich_rows_with_ai(
                                      'llamadas': uso['llamadas']}
     _ULTIMO_RESUMEN['costo_aprox_usd'] = costo
     _ULTIMO_RESUMEN['costo_modelo'] = model
+    _ULTIMO_RESUMEN['motor'] = 'haiku' if haiku else 'openai'
+    _ULTIMO_RESUMEN.pop('haiku', None)
+    _ULTIMO_RESUMEN['origen_columnas'] = {
+        'tono': 'pkl' if tone_model is not None else ('haiku' if haiku else 'openai'),
+        'tema': ('omitido' if not incluir_tema else 'pkl' if theme_model is not None
+                 else ('haiku' if haiku else 'openai')),
+        'subtema': 'haiku' if haiku else 'openai',
+    }
+    if haiku:
+        _ULTIMO_RESUMEN['costo_aprox_usd'] = round(float(info_haiku.get('costo_usd') or 0.0), 4)
+        _ULTIMO_RESUMEN['costo_modelo'] = info_haiku.get('modelo') or 'claude-haiku'
+        _ULTIMO_RESUMEN['haiku'] = {k: info_haiku.get(k) for k in (
+            'costo_usd', 'turnos', 'filas', 'faltan', 'cambios_revision',
+            'grupos_revision', 'subtype', 'error')}
     _ULTIMO_RESUMEN['costo_precios'] = {'input_por_millon': pin, 'output_por_millon': pout}
     if progress_callback:
         if incluir_tema:
@@ -10795,6 +10880,100 @@ def _contiene_frase(toks, frase):
     if n == 1:
         return partes[0] in toks
     return any(toks[k:k + n] == partes for k in range(len(toks) - n + 1))
+
+
+# Clausifier: portado de API_Defensoria_del_Pueblo (flags de perfil).
+# ============================================================================
+# v1.27 Defensoría (2026-11-02): tono de las Alertas Tempranas (flag de
+# perfil `tono_alertas_tempranas`). Criterio: depende de la nota.
+#   - La Defensoría (o su vocera) emite, actualiza o advierte mediante una
+#     Alerta Temprana: es su labor de prevención => Positivo.
+#   - La alerta solo se cita como dato o antecedente => no se toca (lo
+#     decide el modelo; normalmente Neutro).
+#   - Crítica dirigida a la Defensoría o a su vocera => no se sube (el
+#     Negativo del modelo se respeta).
+# Que el hecho alertado sea grave (violencia, reclutamiento) o que otra
+# entidad haya ignorado la alerta no es crítica a la Defensoría.
+# ============================================================================
+_ALERTA_TEMPRANA_PAT = re.compile(r'\balertas?\s+tempranas?\b')
+_VERBOS_ALERTA = (r'(emiti\w*|emite\w*|expidi\w*|expide\w*|lanz\w*|public\w*|'
+                  r'advirti\w*|advierte\w*|alert\w*|activ\w*|actualiz\w*|reiter\w*|'
+                  r'present\w*|elev\w*|prend\w*)')
+
+
+def _marca_emite_alerta(texto: str, actores) -> bool:
+    """True si un actor de la marca es sujeto (≤4 palabras antes, misma
+    cláusula) de un verbo de emitir/advertir/alertar."""
+    formas = [a for a in (actores or []) if a and len(a) >= 2]
+    if not texto or not formas:
+        return False
+    mpat = '(?:' + '|'.join(re.escape(a) for a in sorted(formas, key=len, reverse=True)) + ')'
+    pat = re.compile(r'\b' + mpat + r'\b(?:\s+\w+){0,4}?\s+' + _VERBOS_ALERTA)
+    for clausula in re.split(r'[,.;:!?()\n]+', ctrl(texto)):
+        if pat.search(nz(clausula)):
+            return True
+    return False
+
+
+_VERBOS_LABOR_DEFENSORIA = (
+    r'(acompa[ñn]\w*|verific\w*|medi[oó]|media|mediar\w*|advirti\w*|advierte\w*|alert\w*|'
+    r'denunci\w*|recomend\w*|present\w*|defend\w*|defiende|visit\w*|intervin\w*|interviene|'
+    r'atend\w*|atiende|asesor\w*|orient\w*|exhort\w*|instal\w*|lider\w*|logr\w*|'
+    r'gestion\w*|ayud\w*|protegi\w*|protege|document\w*|registr\w*|monitore\w*)')
+
+
+def aplicar_regla_labor_positiva(grupos, etiquetas, brand, aliases, voceros=()):
+    """v1.28 Defensoría (flag `tono_labor_positiva`): Neutro -> Positivo
+    cuando la marca o su vocera es SUJETO de su labor (acompaña, verifica,
+    advierte, denuncia vulneraciones, media, presenta un informe…) en la
+    misma cláusula, sin crítica dirigida a ella. Criterio del perfil: la
+    nota que destaca la labor de la Defensoría es Positiva. No toca Neutros
+    pegajosos. Devuelve los grupos corregidos."""
+    blancos = _con_voceros(aliases, voceros)
+    actores = [nz(x) for x in [brand] + blancos if x and len(nz(x)) >= 4]
+    if not actores:
+        return []
+    mpat = '(?:' + '|'.join(re.escape(a) for a in sorted(actores, key=len, reverse=True)) + ')'
+    pat = re.compile(r'\b' + mpat + r'\b(?:\s+\w+){0,4}?\s+' + _VERBOS_LABOR_DEFENSORIA)
+    corregidos = []
+    for g in grupos:
+        e = etiquetas.get(g.get('grupo'))
+        if not e or e.get('tono') != 'Neutro':
+            continue
+        if (e.get('flags') or {}).get('neutro_pegajoso'):
+            continue
+        texto = '%s. %s' % (g.get('titulo') or '', g.get('contexto') or g.get('texto') or '')
+        if _marca_blanco_de_critica(texto, brand, blancos):
+            continue
+        if any(pat.search(nz(c)) for c in re.split(r'[,.;:!?()\n]+', ctrl(texto))) \
+                or _marca_sujeto_de_gestion(texto, actores):
+            e['tono'] = 'Positivo'
+            corregidos.append(g.get('grupo'))
+    return corregidos
+
+
+def aplicar_regla_alerta_temprana(grupos, etiquetas, brand, aliases, voceros=()):
+    """Sube a Positivo las notas en que la marca emite o advierte mediante
+    una Alerta Temprana, sin crítica dirigida a ella. Devuelve los grupos
+    corregidos."""
+    blancos = _con_voceros(aliases, voceros)
+    actores = [nz(x) for x in [brand] + blancos if x and len(nz(x)) >= 2]
+    corregidos = []
+    for g in grupos:
+        e = etiquetas.get(g.get('grupo'))
+        if not e or e.get('tono') == 'Positivo':
+            continue
+        titulo = g.get('titulo') or ''
+        texto = '%s. %s' % (titulo, g.get('contexto') or g.get('texto') or '')
+        if not _ALERTA_TEMPRANA_PAT.search(nz(texto)):
+            continue
+        if not _marca_emite_alerta(texto, actores):
+            continue
+        if _marca_blanco_de_critica(texto, brand, blancos):
+            continue
+        e['tono'] = 'Positivo'
+        corregidos.append(g.get('grupo'))
+    return corregidos
 
 
 def aplicar_regla_homonimo_extranjero(grupos, etiquetas, brand, aliases, voceros=()):

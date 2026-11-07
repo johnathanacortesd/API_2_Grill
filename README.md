@@ -1,4 +1,8 @@
-# Grill-API — News Analytics & NLP Platform
+# Clausifier — News Analytics & NLP Platform
+
+> Clausifier · Creado por Johnathan Cortés y Claude
+
+**Motor de clasificación:** Claude Haiku (agente + revisor de subtemas, `motor_haiku.py`) por defecto, con `ANTHROPIC_API_KEY` en los Secrets; OpenAI Luna (gpt-6-luna + Jev) opcional. Los PKL de tono/tema funcionan con ambos motores: el PKL pone Tono/Tema y el motor el Subtema. Sin TIPO/GÉNERO.
 
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://grill-api.streamlit.app/)
 [![Python](https://img.shields.io/badge/Python-3.10+-3776AB.svg?logo=python&logoColor=white)](https://www.python.org/)

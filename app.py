@@ -5,6 +5,7 @@ import html
 import io
 import json
 import logging
+import os
 import re
 import time
 import streamlit as st
@@ -29,6 +30,46 @@ try:
     SELLO_ANALIZADOR = getattr(_mod_analizador, "ANALYZER_BUILD", "sin-sello")
 except Exception:
     SELLO_ANALIZADOR = "sin-sello"
+
+# Clausifier: motores de clasificación. Haiku (agente + revisor) es el
+# predeterminado; OpenAI Luna (gpt-6-luna + Jev) sigue disponible igual.
+MOTORES = ["Claude Haiku (agente + revisor)", "OpenAI Luna (gpt-6-luna)"]
+CREDITO = "Clausifier · Creado por Johnathan Cortés y Claude"
+
+# Flags de perfil que afectan tono/subtema (portados de Secretaría y
+# Defensoría). TIPO/GÉNERO y el formato boletín no se usan en Clausifier.
+FLAGS_PERFIL = ("guia_subtema", "subtemas_fijos", "tono_distrito_positivo",
+                "tono_solo_gestion", "tono_alertas_tempranas", "tono_labor_positiva",
+                "agrupacion_estricta")
+
+
+def _flags_de_perfil(perfil: dict) -> dict:
+    """Flags del perfil que viajan en el ai_config. `agrupacion_estricta`
+    None (perfil sin la clave) se omite y rige el default del analizador."""
+    out = {}
+    for k in FLAGS_PERFIL:
+        v = (perfil or {}).get(k)
+        if k == "agrupacion_estricta" and v is None:
+            continue
+        if v not in (None, "", []):
+            out[k] = v
+        elif k != "agrupacion_estricta" and isinstance(v, bool):
+            out[k] = v
+    return out
+
+
+def _activar_clave_claude() -> bool:
+    """Copia ANTHROPIC_API_KEY de st.secrets al entorno (la lee el agente)."""
+    clave = st.secrets.get("ANTHROPIC_API_KEY")
+    if not clave:
+        st.error("❌ Falta configurar ANTHROPIC_API_KEY en los Secrets de Streamlit: "
+                 "el motor Claude Haiku la necesita. Elige «OpenAI Luna» para procesar sin ella.")
+        return False
+    for otra in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_PROFILE"):
+        os.environ.pop(otra, None)
+    os.environ["ANTHROPIC_API_KEY"] = str(clave)
+    return True
+
 
 logger = logging.getLogger("limpieza_grill")
 if not logging.getLogger().handlers:
@@ -117,7 +158,7 @@ div[data-baseweb="tab-border"]{display:none!important;}
 .app-header-title{font-family:'Inter',sans-serif;font-size:1.2rem;font-weight:700;color:var(--text);letter-spacing:-0.01em;line-height:1.25}
 .app-header-version{font-family:'Inter',sans-serif;font-size:0.72rem;font-weight:500;color:var(--text3);letter-spacing:0.02em;margin-top:0.2rem}
 .app-header-badge{background:var(--acento-soft);border:1px solid var(--acento-line);color:var(--acento);font-family:'Inter',sans-serif;font-size:0.66rem;font-weight:600;padding:0.28rem 0.75rem;border-radius:6px;letter-spacing:0.12em;text-transform:uppercase;white-space:nowrap;}
-.metrics-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:0.75rem;margin:0.9rem 0}
+.metrics-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:0.75rem;margin:0.9rem 0}
 .metric-card{background:var(--s1);border:1px solid var(--border);border-radius:var(--r2);padding:1rem 0.6rem;text-align:center;box-shadow:var(--shadow-sm);}
 .metric-card-legacy::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;border-radius:var(--r2) var(--r2) 0 0}
 
@@ -172,6 +213,9 @@ label[data-testid="stWidgetLabel"] p{font-family:'Inter',sans-serif!important;co
 [data-testid="stVerticalBlock"]>div{gap:0.55rem!important}
 [data-testid="stHorizontalBlock"]>div{gap:0.5rem!important}
 hr{border-color:var(--border)!important;margin:0.6rem 0!important}
+.credit{font-family:'Inter',sans-serif;font-size:0.78rem;font-weight:500;color:var(--text3);text-align:center;padding:0.2rem 0 0.8rem;}
+.engine-badge{display:inline-flex;flex-wrap:wrap;gap:0.35rem;margin:0.2rem 0 0.7rem}
+.engine-badge span{background:var(--acento-soft);border:1px solid var(--acento-line);color:var(--acento);border-radius:6px;padding:0.2rem 0.6rem;font-family:'Inter',sans-serif;font-size:0.72rem;font-weight:600}
 .config-badge{display:inline-flex;align-items:center;gap:0.4rem;background:var(--s2);border:1px solid var(--border);border-radius:6px;padding:0.25rem 0.7rem;font-family:'Inter',sans-serif;font-size:0.66rem;font-weight:500;color:var(--text3);margin-bottom:0.6rem;letter-spacing:0.08em;}
 .live-panel{background:#ffffff;border:1px solid var(--border);border-radius:var(--r3);padding:1.4rem 1.6rem;margin:1.5rem auto;max-width:720px;box-shadow:var(--shadow-sm);}
 .live-panel-legacy::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--grad-br);box-shadow:0 2px 8px rgba(156,61,18,0.35);}
@@ -314,11 +358,42 @@ def _fmt_size(n_bytes: int) -> str:
     if mb < 0.1: return f"{n_bytes / 1024:.0f} KB"
     return f"{mb:.1f} MB"
 
-def _active_step(pct: int, msg: str) -> str:
+def _pasos(motor: str = "openai"):
+    """Pasos del panel en vivo; en Haiku el análisis se muestra como agente +
+    revisor de subtemas."""
+    if motor != "haiku":
+        return PIPELINE_STEPS
+    pasos = []
+    for key, label in PIPELINE_STEPS:
+        if key == "ai":
+            pasos.append(("ai", "Agente Claude Haiku (páginas de noticias)"))
+            pasos.append(("review", "Revisor de subtemas + guardas"))
+        else:
+            pasos.append((key, label))
+    return pasos
+
+
+def _badge_motor(motor: str, tono_pkl: bool, tema_pkl: bool, incluir_tema: bool) -> str:
+    """Texto del badge de configuración: «Motor: Haiku · Tono: PKL · …»."""
+    ia = "Haiku" if motor == "haiku" else "Luna"
+    tema = "PKL" if tema_pkl else (ia if incluir_tema else "—")
+    return "Motor: %s · Tono: %s · Tema: %s · Subtema: %s" % (
+        ia, "PKL" if tono_pkl else ia, tema, ia)
+
+
+def _badge_html(texto: str) -> str:
+    return '<div class="engine-badge">%s</div>' % "".join(
+        "<span>%s</span>" % html.escape(p.strip()) for p in texto.split("·"))
+
+
+def _active_step(pct: int, msg: str, motor: str = "openai") -> str:
     if pct >= 100 or "completad" in msg.lower():
         return "done"
     if pct >= 94 or "Generando archivo" in msg or "Guardando" in msg:
         return "export"
+    if motor == "haiku" and (pct >= 89 or "Revisor" in msg or "Verificando" in msg
+                             or "Unificando" in msg):
+        return "review"
     if pct >= 70 or "IA" in msg or "Analizando" in msg or "semántica" in msg:
         return "ai"
     if pct >= 55 or "duplicad" in msg.lower() or "Expandiendo" in msg:
@@ -329,10 +404,11 @@ def _active_step(pct: int, msg: str) -> str:
         return "read"
     return "config"
 
-def _render_live_html(pct, msg, elapsed, file_label, active_key):
+def _render_live_html(pct, msg, elapsed, file_label, active_key, motor="openai",
+                      badge="", haiku_prog=None):
     steps_html = []
     reached_active = False
-    for key, label in PIPELINE_STEPS:
+    for key, label in _pasos(motor):
         if active_key == "done":
             cls, mark = "is-done", "✓"
         elif key == active_key:
@@ -345,6 +421,18 @@ def _render_live_html(pct, msg, elapsed, file_label, active_key):
         steps_html.append(f'<div class="step-item {cls}"><span class="dot">{mark}</span>{label}</div>')
         
     file_line = f" · {html.escape(file_label)}" if file_label else ""
+    estado, estado_lbl = "en curso", "Estado"
+    hp = haiku_prog or {}
+    if motor == "haiku" and hp.get("total"):
+        faltan = hp.get("faltan")
+        hechas = hp["total"] - (faltan if faltan is not None else hp["total"])
+        if hp.get("revisado"):
+            estado = "%d grupos" % int(hp.get("grupos") or 0)
+            estado_lbl = "Revisor · %d correcciones" % int(hp.get("cambios_revision") or 0)
+        else:
+            estado = "%d/%d" % (max(0, hechas), hp["total"])
+            estado_lbl = "Haiku · leídas %d" % int(hp.get("leidas") or 0)
+    badge_html = _badge_html(badge) if badge else ""
     title = "Limpieza completada" if active_key == "done" else "Procesando dossier de noticias"
     safe_msg = html.escape(str(msg or ""))
     
@@ -360,8 +448,9 @@ def _render_live_html(pct, msg, elapsed, file_label, active_key):
       <div class="live-metrics">
         <div class="live-metric"><div class="live-metric-val">{int(pct)}%</div><div class="live-metric-lbl">Avance</div></div>
         <div class="live-metric"><div class="live-metric-val">{elapsed}</div><div class="live-metric-lbl">Tiempo</div></div>
-        <div class="live-metric"><div class="live-metric-val">en curso</div><div class="live-metric-lbl">Estado</div></div>
+        <div class="live-metric"><div class="live-metric-val">{estado}</div><div class="live-metric-lbl">{estado_lbl}</div></div>
       </div>
+      {badge_html}
       <div class="step-list">{''.join(steps_html)}</div>
       <div class="live-hint">Límite de seguridad: máximo 1.000 filas por archivo. La deduplicación previa agrupa las notas idénticas antes del análisis.</div>
       <div class="live-detail">{safe_msg}</div>
@@ -376,13 +465,29 @@ def run_cleaning_process(df_file, file_meta=None, ai_config=None):
         file_label = f"{file_label} ({size_lbl})"
 
     t_start = time.time()
+    motor = str((ai_config or {}).get("motor") or "openai")
+    if not (ai_config or {}).get("enabled"):
+        motor = "openai"
+    badge = ""
+    if ai_config and ai_config.get("enabled"):
+        badge = _badge_motor(motor, bool(ai_config.get("tone_pkl_bytes")),
+                             bool(ai_config.get("theme_pkl_bytes")),
+                             bool(ai_config.get("incluir_tema")))
     panel = st.empty()
     progress_bar = st.progress(0, text="Iniciando…")
 
     def paint(pct, msg):
         elapsed = _fmt_elapsed(time.time() - t_start)
-        active = _active_step(pct, msg)
-        panel.markdown(_render_live_html(pct, msg, elapsed, file_label, active), unsafe_allow_html=True)
+        active = _active_step(pct, msg, motor)
+        hp = None
+        if motor == "haiku":
+            try:
+                import motor_haiku
+                hp = dict(motor_haiku.PROGRESO)
+            except Exception:
+                hp = None
+        panel.markdown(_render_live_html(pct, msg, elapsed, file_label, active, motor=motor,
+                                         badge=badge, haiku_prog=hp), unsafe_allow_html=True)
         progress_bar.progress(min(100, max(0, int(pct))), text=msg)
 
     paint(1, "Cargando configuración…")
@@ -421,6 +526,8 @@ def run_cleaning_process(df_file, file_meta=None, ai_config=None):
 
     st.session_state["medios_sin_mapear"] = result.get("medios_sin_mapear") or None
     st.session_state["analisis"] = result.get("analisis") or {}
+    st.session_state["duplicadas"] = result.get("duplicadas") or []
+    st.session_state["badge_motor"] = badge
     st.session_state["output_data"] = result["output_data"]
     st.session_state["output_filename"] = result["output_filename"]
     st.session_state["processing_complete"] = True
@@ -441,7 +548,7 @@ def run_cleaning_process(df_file, file_meta=None, ai_config=None):
 # ======================================
 def main():
     st.set_page_config(
-        page_title="Limpieza y Análisis de Noticias",
+        page_title="Clausifier",
         page_icon="◈",
         layout="wide",
         initial_sidebar_state="collapsed"
@@ -467,10 +574,10 @@ def main():
             <div class="app-header">
                 <div class="app-header-icon">◈</div>
                 <div class="app-header-text">
-                    <div class="app-header-title">Limpieza y Análisis de Noticias</div>
+                    <div class="app-header-title">Clausifier</div>
                     <div class="app-header-version">{APP_VERSION}</div>
                 </div>
-                <div class="app-header-badge">Estructurador + IA</div>
+                <div class="app-header-badge">Limpieza · Claude Haiku · PKL</div>
             </div>""", unsafe_allow_html=True)
             col_cfg1, col_cfg2 = st.columns([4, 1])
             with col_cfg1:
@@ -482,6 +589,28 @@ def main():
                 if st.button("↻ Refrescar config", use_container_width=True):
                     refresh_config_cache()
                     st.success("Config recargada")
+
+            # Motor de clasificación (fuera de los formularios para que se
+            # actualice al instante). Aplica a las dos pestañas.
+            motor_sel = st.radio(
+                "Motor de clasificación",
+                MOTORES,
+                index=0,
+                horizontal=True,
+                key="motor_clasificacion",
+                help="Claude Haiku (por defecto) clasifica Tono y Subtema con un agente y un revisor "
+                     "de subtemas. OpenAI Luna es el motor anterior (gpt-6-luna + Jev). La limpieza, el "
+                     "Contexto analizado, las guardas deterministas y los PKL son los mismos.",
+            )
+            _haiku = motor_sel == MOTORES[0]
+            if _haiku and not st.secrets.get("ANTHROPIC_API_KEY"):
+                st.error("❌ Falta configurar ANTHROPIC_API_KEY en los Secrets de Streamlit: el motor "
+                         "Claude Haiku la necesita. El motor «OpenAI Luna» sigue disponible.")
+            if _haiku:
+                st.caption("Claude Haiku: un agente clasifica Tono y Subtema (y Tema si lo pides) y un "
+                           "revisor unifica los subtemas del mismo hecho. Se factura a la clave de Claude "
+                           "Platform (ANTHROPIC_API_KEY). Si subes PKL de tono o de tema, el PKL manda en "
+                           "ese eje y Haiku hace el Subtema. Lotes, paralelo y verificaciones no aplican.")
 
             tab_std, tab_custom = st.tabs(["📋 Dossier estándar", "🗂 Columnas personalizadas"])
             with tab_std:
@@ -513,12 +642,14 @@ def main():
                                 _perfil_actual.get("criterio") or list(CRITERIOS_TONO)[0])
                             st.session_state["criterio_custom_input"] = _perfil_actual.get("criterio_custom", "")
                             st.session_state["_perfil_taxonomia"] = _perfil_actual.get("taxonomia")
+                            st.session_state["_perfil_flags"] = _flags_de_perfil(_perfil_actual)
                             st.session_state["_perfil_aplicado"] = sel_perfil
                             st.rerun()
                         st.caption("📋 " + perfil_a_resumen(_perfil_actual))
                 else:
                     st.session_state["_perfil_aplicado"] = None
                     st.session_state["_perfil_taxonomia"] = None
+                    st.session_state["_perfil_flags"] = {}
 
                 with st.form("main_form"):
                     st.markdown('<div class="sec-label">1. Sube el archivo de entrada</div>', unsafe_allow_html=True)
@@ -613,9 +744,11 @@ def main():
                         ca, cb, cc, cd = st.columns(4)
                         with ca:
                             tam_lote_input = st.slider("Grupos por llamada", 5, 30, 10, 1,
+                                                       disabled=_haiku,
                                                        help="10 es un buen punto de partida.")
                         with cb:
                             workers_input = st.slider("Llamadas en paralelo", 1, 16, 8, 1,
+                                                      disabled=_haiku,
                                                       help="Sube para dossiers grandes; más hilos, más velocidad.")
                         with cc:
                             umbral_titulo_input = st.slider("Similitud de titulares (%)", 75, 100, 92, 1,
@@ -635,14 +768,18 @@ def main():
                             help="Cada grupo se etiqueta N veces y gana la mayoría; un empate cae a Neutro. "
                                  "Con 2 se reducen los vaivenes de los modelos pequeños; con 3 sube el costo "
                                  "una vez más.")
-                        modelo_input = st.text_input(
-                            "Modelo de IA",
-                            value="gpt-6-luna",
-                            disabled=True,
-                            key="modelo_fijo",
-                            help="Único modelo habilitado: gpt-6-luna (el más rápido y económico, "
-                                 "$0.10 por 1M tokens de entrada; ideal para dossiers de alto volumen).",
-                        )
+                        if _haiku:
+                            # Motor Claude Haiku: el modelo de OpenAI no aplica.
+                            modelo_input = "claude-haiku-5-5"
+                        else:
+                            modelo_input = st.text_input(
+                                "Modelo de IA",
+                                value="gpt-6-luna",
+                                disabled=True,
+                                key="modelo_fijo",
+                                help="Único modelo habilitado: gpt-6-luna (el más rápido y económico, "
+                                     "$0.10 por 1M tokens de entrada; ideal para dossiers de alto volumen).",
+                            )
                         st.markdown("**💾 Perfil de cliente**")
                         guardar_chk = st.checkbox(
                             "Guardar esta configuración como perfil al procesar",
@@ -672,6 +809,7 @@ def main():
                     st.markdown(
                         '<div class="pkl-hint">Puedes subir el PKL de tono, el de tema, ambos o ninguno. '
                         "Si un eje no tiene PKL, se mantiene el análisis actual (IA). "
+                        "Funcionan con los dos motores: con Claude Haiku el PKL pone Tono/Tema y Haiku el Subtema. "
                         "El subtema nunca se reemplaza por PKL. Si subes un PKL de tema, la columna "
                         "Tema_IA se genera automáticamente con sus clases (verbatim), aunque hayas "
                         "elegido el modo rápido.</div>",
@@ -711,10 +849,13 @@ def main():
                         else:
                             api_key = st.secrets.get("OPENAI_API_KEY")
                             typesafe_api_key = st.secrets.get("TYPESAFE_API_KEY")
-                            if enable_ai and not api_key:
+                            if enable_ai and _haiku:
+                                if not _activar_clave_claude():
+                                    st.stop()
+                            elif enable_ai and not api_key:
                                 st.error("❌ Falta configurar OPENAI_API_KEY en los Secrets de Streamlit: se usa para subtema y tema.")
                                 st.stop()
-                            if enable_ai and not typesafe_api_key:
+                            if enable_ai and not _haiku and not typesafe_api_key:
                                 st.warning("Sin TYPESAFE_API_KEY la verificación de temas con Jev queda desactivada "
                                            "(es opcional); el tono, el subtema y el tema se generan igual con la API de OpenAI.")
                     
@@ -813,6 +954,10 @@ def main():
                                     "historial_dir": st.secrets.get("HISTORIAL_DIR"),
                                     "tone_pkl_bytes": tone_bytes,
                                     "theme_pkl_bytes": theme_bytes,
+                                    "motor": "haiku" if _haiku else "openai",
+                                    # Flags de tono/subtema del perfil (sin TIPO/GÉNERO).
+                                    **(st.session_state.get("_perfil_flags") or {}),
+                                    "clasificar_tipo_genero": False,
                                 }
                             else:
                                 st.session_state["pending_ai_config"] = None
@@ -986,10 +1131,13 @@ def main():
                     else:
                         api_key = st.secrets.get("OPENAI_API_KEY")
                         typesafe_api_key = st.secrets.get("TYPESAFE_API_KEY")
-                        if enable_ai_c and not api_key:
+                        if enable_ai_c and _haiku:
+                            if not _activar_clave_claude():
+                                st.stop()
+                        elif enable_ai_c and not api_key:
                             st.error("❌ Falta configurar OPENAI_API_KEY en los Secrets de Streamlit: se usa para subtema y tema.")
                             st.stop()
-                        if enable_ai_c and not typesafe_api_key:
+                        if enable_ai_c and not _haiku and not typesafe_api_key:
                             st.warning("Sin TYPESAFE_API_KEY la verificación de temas con Jev queda desactivada "
                                        "(es opcional); el tono, el subtema y el tema se generan igual con la API de OpenAI.")
                         try:
@@ -1035,7 +1183,8 @@ def main():
                             historial_dir=st.secrets.get("HISTORIAL_DIR"),
                             tone_pkl_bytes=tone_bytes_c,
                             theme_pkl_bytes=theme_bytes_c,
-                            model=modelo_sel_c,
+                            model="claude-haiku-5-5" if _haiku else modelo_sel_c,
+                            motor="haiku" if _haiku else "openai",
                             criterio_texto=criterio_custom_c,
                             taxonomia=tax_eff_c,
                             cubos_objetivo=int(cubos_objetivo_c),
@@ -1074,6 +1223,15 @@ def main():
                 )
 
             analisis = st.session_state.get("analisis") or {}
+            _origen = (analisis or {}).get("origen_columnas") or {}
+            if _origen:
+                _ia = {"haiku": "Haiku", "openai": "Luna", "pkl": "PKL", "omitido": "—"}
+                st.markdown(_badge_html("Motor: %s · Tono: %s · Tema: %s · Subtema: %s" % (
+                    _ia.get(analisis.get("motor"), "Luna"), _ia.get(_origen.get("tono"), "—"),
+                    _ia.get(_origen.get("tema"), "—"), _ia.get(_origen.get("subtema"), "—"))),
+                    unsafe_allow_html=True)
+            elif st.session_state.get("badge_motor"):
+                st.markdown(_badge_html(st.session_state["badge_motor"]), unsafe_allow_html=True)
             if (analisis or {}).get("modo_taxonomia") == "pkl":
                 _n_pkl = analisis.get("temas_por_pkl") or 0
                 st.success(
@@ -1154,7 +1312,17 @@ def main():
             costo = (analisis or {}).get("costo_aprox_usd")
             uso_t = (analisis or {}).get("uso_tokens") or {}
             modelo_c = (analisis or {}).get("costo_modelo") or ""
-            if costo is not None:
+            _hk = (analisis or {}).get("haiku") or {}
+            if costo is not None and (analisis or {}).get("motor") == "haiku":
+                # Clausifier: en Haiku no hay tokens de OpenAI; el costo es el
+                # que reporta el agente (ResultMessage.total_cost_usd).
+                costo_txt = "$%.2f" % costo if costo >= 0.01 else "$%.4f" % costo
+                det_costo = ("%s · %d turnos del agente · %d filas clasificadas · revisor: %d "
+                             "grupos revisados, %d correcciones" % (
+                                 modelo_c, int(_hk.get("turnos") or 0), int(_hk.get("filas") or 0),
+                                 int(_hk.get("grupos_revision") or 0),
+                                 int(_hk.get("cambios_revision") or 0)))
+            elif costo is not None:
                 costo_txt = "$%.2f" % costo if costo >= 0.01 else "$%.4f" % costo
                 det_costo = "%s tokens de entrada / %s de salida · %d llamadas · %s" % (
                     f"{uso_t.get('input', 0):,}".replace(",", "."),
@@ -1169,10 +1337,23 @@ def main():
               <div class="metric-card m-unique"><div class="metric-val" style="color:var(--green)">{uniq}</div><div class="metric-lbl">Únicos</div></div>
               <div class="metric-card m-dup"><div class="metric-val" style="color:var(--amber)">{dups}</div><div class="metric-lbl">Duplicados</div></div>
               <div class="metric-card m-time"><div class="metric-val" style="color:var(--blue)">{dur}</div><div class="metric-lbl">Tiempo de Ejecución</div></div>
-              <div class="metric-card m-cost" title="{det_costo}"><div class="metric-val" style="color:var(--amber)">{costo_txt}</div><div class="metric-lbl">Costo IA aprox.</div></div>
+              <div class="metric-card m-cost" title="{html.escape(det_costo)}"><div class="metric-val" style="color:var(--amber)">{costo_txt}</div><div class="metric-lbl">Costo IA aprox.</div></div>
             </div>""", unsafe_allow_html=True)
             if det_costo:
                 st.caption("Costo estimado del análisis: " + det_costo + ".")
+
+            _dups = st.session_state.get("duplicadas") or []
+            with st.expander(f"Noticias duplicadas ({len(_dups)}) · ID duplicada → ID original",
+                             expanded=bool(_dups)):
+                if _dups:
+                    st.caption("Cada fila duplicada lleva en «ID duplicada» el ID de su original y hereda "
+                               "su tono y subtema. Regla: misma URL + misma mención (prensa, internet) o "
+                               "mismo medio + misma hora + misma mención (radio y TV).")
+                    st.dataframe(pd.DataFrame(_dups)[["ID duplicada", "ID original", "Título", "Medio",
+                                                      "Tipo de Medio", "Motivo", "Mención", "Fila salida"]],
+                                 hide_index=True, use_container_width=True)
+                else:
+                    st.caption("No hay noticias duplicadas en este archivo.")
         
             _historial = []
             try:
@@ -1221,6 +1402,7 @@ def main():
             '<div class="footer">Estructuración y Limpieza · Johnathan Cortés ©</div>',
             unsafe_allow_html=True
         )
+        st.markdown('<div class="credit">%s</div>' % html.escape(CREDITO), unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()

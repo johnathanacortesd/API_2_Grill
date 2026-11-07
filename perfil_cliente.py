@@ -57,6 +57,16 @@ def _defaults() -> dict:
         "criterio": list(CRITERIOS_TONO)[0],
         "criterio_custom": "",
         "taxonomia": None,
+        # Clausifier: flags de tono/subtema de los perfiles de Secretaría y
+        # Defensoría. `agrupacion_estricta` None = default del analizador.
+        # TIPO/GÉNERO y el formato boletín no se usan (se descartan).
+        "guia_subtema": "",
+        "subtemas_fijos": [],
+        "tono_distrito_positivo": False,
+        "tono_solo_gestion": False,
+        "tono_alertas_tempranas": False,
+        "tono_labor_positiva": False,
+        "agrupacion_estricta": None,
         "notas": "",
     }
 
@@ -75,6 +85,18 @@ def validar_perfil(data: dict) -> list:
     for campo in ("aliases", "voceros"):
         if not isinstance(d[campo], list) or any(not isinstance(x, str) for x in d[campo]):
             errores.append("'%s' debe ser una lista de textos" % campo)
+    sf = d["subtemas_fijos"]
+    if sf is not None:
+        if not isinstance(sf, list) or any(
+                not isinstance(r, dict) or not str(r.get("contiene") or "").strip()
+                or not str(r.get("subtema") or "").strip() for r in sf):
+            errores.append("'subtemas_fijos' debe ser una lista de {contiene, subtema} con textos no vacíos")
+    for campo in ("tono_distrito_positivo", "tono_solo_gestion",
+                  "tono_alertas_tempranas", "tono_labor_positiva"):
+        if not isinstance(d[campo], bool):
+            errores.append("'%s' debe ser true/false" % campo)
+    if d["agrupacion_estricta"] is not None and not isinstance(d["agrupacion_estricta"], bool):
+        errores.append("'agrupacion_estricta' debe ser true/false")
     tax = d["taxonomia"]
     if tax is not None:
         if not isinstance(tax, dict) or not isinstance(tax.get("temas"), list) \
@@ -94,6 +116,19 @@ def normalizar_perfil(data: dict) -> dict:
     d["aliases"] = [a.strip() for a in (d["aliases"] or []) if str(a).strip()]
     d["voceros"] = [v.strip() for v in (d["voceros"] or []) if str(v).strip()]
     d["criterio_custom"] = str(d["criterio_custom"] or "").strip()
+    d["guia_subtema"] = str(d["guia_subtema"] or "").strip()
+    d["subtemas_fijos"] = [
+        {"contiene": str(r.get("contiene") or "").strip(),
+         "subtema": str(r.get("subtema") or "").strip()}
+        for r in (d["subtemas_fijos"] or [])
+        if isinstance(r, dict) and str(r.get("contiene") or "").strip()
+        and str(r.get("subtema") or "").strip()
+    ]
+    for campo in ("tono_distrito_positivo", "tono_solo_gestion",
+                  "tono_alertas_tempranas", "tono_labor_positiva"):
+        d[campo] = bool(d[campo])
+    if d["agrupacion_estricta"] is not None:
+        d["agrupacion_estricta"] = bool(d["agrupacion_estricta"])
     d["notas"] = str(d["notas"] or "")
     if d["taxonomia"]:
         d["taxonomia"] = {

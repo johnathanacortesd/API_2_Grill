@@ -616,6 +616,34 @@ def _normalizar_hora(val) -> str:
     return s
 
 
+def resumen_duplicadas(rows, km, tope: int = 1000) -> list:
+    """Clausifier: lista para la tabla «ID duplicada → ID original» de la app.
+
+    Solo lee las filas (no cambia el xlsx). `km["idduplicada"]` guarda el ID
+    del original de cada fila duplicada.
+    """
+    salida = []
+    for i, r in enumerate(rows):
+        if not r.get("is_duplicate"):
+            continue
+        tipo = normalizar_tipo_medio(str(r.get(km["tipodemedio"], "")))
+        motivo = ("mismo medio + hora + mención (radio/TV)" if tipo in TIPOS_AV
+                  else "misma URL + mención")
+        salida.append({
+            "ID duplicada": str(r.get(km["idnoticia"], "") or ""),
+            "ID original": str(r.get(km["idduplicada"], "") or ""),
+            "Título": str(r.get(km["titulo"], "") or "")[:160],
+            "Medio": str(r.get(km["medio"], "") or ""),
+            "Tipo de Medio": str(r.get(km["tipodemedio"], "") or ""),
+            "Motivo": motivo,
+            "Mención": str(r.get(km["menciones"], "") or ""),
+            "Fila salida": i + 2,
+        })
+        if len(salida) >= tope:
+            break
+    return salida
+
+
 def detectar_duplicados_avanzado(rows, km):
     processed = rows
     seen_url = {}
@@ -850,7 +878,8 @@ def construir_ai_config_custom(brand, alias_txt, voceros_txt, criterio,
                                model="gpt-6-luna",
                                criterio_texto="", taxonomia=None,
                                cubos_objetivo=16, votos=2, tam_lote=10,
-                               workers=8, umbral_titulo=92, umbral_cuerpo=85):
+                               workers=8, umbral_titulo=92, umbral_cuerpo=85,
+                               motor="openai"):
     """ai_config de la pestaña "Columnas personalizadas" (v4.27/v4.28).
 
     Misma forma que el de la pestaña estándar. Devuelve None si no hay
@@ -891,6 +920,8 @@ def construir_ai_config_custom(brand, alias_txt, voceros_txt, criterio,
         # está (todas las columnas originales en su orden) y agrega al final
         # las columnas del análisis, en vez del esquema fijo de la estándar.
         "preservar_columnas": True,
+        # Clausifier: "haiku" (agente Claude Haiku) u "openai" (Luna).
+        "motor": str(motor or "openai"),
     }
 
 
@@ -1371,7 +1402,9 @@ def process_dossier(
             km=KEY_MAP,
             brand=ai_config["brand"],
             aliases=ai_config.get("aliases", []),
-            api_key=ai_config["api_key"],
+            # Clausifier: en motor "haiku" no hay clave de OpenAI; los PKL
+            # de tono/tema se cargan igual y mandan sobre el agente.
+            api_key=ai_config.get("api_key") or "",
             model=ai_config.get("model", "gpt-6-luna"),
             progress_callback=progress,
             tone_model=tone_model,
@@ -1455,6 +1488,7 @@ def process_dossier(
 
     output_data = generate_output_excel(rows, KEY_MAP, progress=export_progress, columns_to_use=cols_to_export)
     _conteo_tonos = _contar_tonos(rows)
+    _duplicadas = resumen_duplicadas(rows, KEY_MAP)
     del rows, rows_expanded
     gc.collect()
     duration = time.time() - t0
@@ -1482,6 +1516,8 @@ def process_dossier(
         "medios_sin_mapear": medios_sin_region,
         "analisis": analisis,
         "_filas": _conteo_tonos,
+        # Clausifier: tabla de duplicadas para la interfaz (no va al xlsx).
+        "duplicadas": _duplicadas,
     }
 
     # Auditoria de uso por correo (SMTP). Nunca interrumpe la corrida.
