@@ -31,6 +31,7 @@ MODELO_HAIKU = "claude-haiku-5-5"
 POR_PAGINA = 25           # noticias por llamada a leer_noticias
 TOPE_TEXTO = 1200         # caracteres de contexto por noticia
 TOPE_TITULO = 160
+TOPE_ETIQUETA_TITULO = 90  # título en leer_noticias: solo etiqueta de agrupación
 UMBRAL_TITULO = 0.92
 UMBRAL_CONTEXTO = 0.85
 UMBRAL_SUBTEMA = 0.90
@@ -78,6 +79,8 @@ except ImportError:  # pragma: no cover - respaldo sin dependencia
 
 MIN_PAL_SUBTEMA, MAX_PAL_SUBTEMA = 3, 7
 MAX_RECHAZOS = 2          # tras 2 rechazos de un id se acepta con marca
+_VACIAS_SUBTEMA = {"de", "del", "la", "las", "el", "los", "en", "y", "e", "a", "al", "para", "por",
+                   "con", "un", "una", "o", "u"}
 
 _NO_VERBO = {
     "mar", "lugar", "hogar", "taller", "mujer", "poder", "deber", "placer", "ser", "cancer",
@@ -119,6 +122,47 @@ vuelven volvio cae caen cayo huye huyen huyo pierde pierden niega niegan cierra 
 advierte advierten mantiene mantienen obtiene obtienen dio dieron vio trajo pudo puede pueden
 debe deben""".split())
 _FIN_VERBO = ("aron", "ieron", "aban", "ando", "iendo", "yendo", "abamos", "iamos")
+# Clausifier 2026-11-08: formas modales/auxiliares y conjugadas frecuentes
+# que la heurística de terminaciones no ve ("Puede agendar un turno",
+# "Podrán acceder", "Tenía información"). Se comparan sin tildes.
+_FORMAS_VERBO |= set("""puede pueden podra podran podria podrian pudieron podia podian
+debe deben debera deberan deberia deberian debia debian quiere quieren queria querian
+va van iba iban hay habra habria habia habian ha han hubo tiene tienen tenia tenian tendra
+tendran sera seran seria serian eran es son fue fueron esta estan estaba estaban estuvo
+hace hacen hacia hacian hara haran haria se sigue siguen dice dicen decia dijo dara daran
+llega llegan sale salen viene vienen vino tendria pide piden ofrece ofrecen permite permiten
+busca buscan""".split())
+# Formas finitas inequívocas (con tilde, tal como se escriben) que tampoco
+# pueden aparecer DENTRO del subtema: "Presunto hacker tenía información".
+# Se excluyen las ambiguas con sustantivos o demostrativos (esta, ha, se).
+# Clausifier 2026-11-08: sustantivos que coinciden con una forma generada
+# de los lemas (anuncio, entrega, denuncia, alerta…). El prompt los pide
+# como inicio correcto del subtema; el verbo ("Anuncia", "Entregó") sigue
+# rechazado porque su forma es otra.
+_NO_VERBO |= set("""anuncio entrega denuncia alerta firma visita captura mejora condena
+amenaza rechazo aumento inicio registro baja reclamo critica apoyo pedido cambio control
+trabajo estudio paso regreso llamado termino adelanto respuesta llegada""".split())
+_FORMAS_VERBO -= _NO_VERBO
+
+_FINITOS_INTERNOS = set("""tenía tenían había habían podía podían debía debían quería querían
+hacía hacían decía decían estaba estaban eran fue fueron es son está están hay tiene
+tienen puede pueden podrá podrán podría deberá debe deben será serán habrá va van iba iban
+hizo dijo dio pidió murió""".split())
+
+
+def contiene_verbo_finito(subtema: str) -> Optional[str]:
+    """Primera forma verbal finita que aparece después de la primera palabra
+    (la inicial ya la revisa `empieza_con_verbo`). Solo formas inequívocas:
+    lista cerrada + pretérito -ó de 5+ letras + -aron/-ieron."""
+    w = [x.strip("\"'«»“”¡¿()!?.,;:").lower() for x in str(subtema or "").split()[1:]]
+    for t in w:
+        n = _norm_tok(t)
+        if not n or n in _NO_VERBO:
+            continue
+        if t in _FINITOS_INTERNOS or (len(t) >= 5 and t.endswith("ó"))                 or (len(n) > 5 and n.endswith(("aron", "ieron"))):
+            return t
+    return None
+
 
 
 def _norm_tok(tok: str) -> str:
@@ -198,11 +242,17 @@ def problemas_subtema(subtema: str, titulo: str = "", contexto: str = "") -> Lis
     if not s:
         return ["vacío"]
     p = []
-    n = len(s.split())
-    if n < MIN_PAL_SUBTEMA or n > MAX_PAL_SUBTEMA:
-        p.append("tiene %d palabras (debe tener 3 a 7)" % n)
+    # Clausifier 2026-11-08: el largo 3-7 cuenta palabras de contenido; los
+    # artículos y preposiciones no suman ("Jornada de esterilización gratuita
+    # de mascotas en Engativá" = 5). Tope duro de 10 palabras en total.
+    n = len([x for x in s.split() if _norm_tok(x) not in _VACIAS_SUBTEMA])
+    if n < MIN_PAL_SUBTEMA or n > MAX_PAL_SUBTEMA or len(s.split()) > 10:
+        p.append("tiene %d palabras de contenido (debe tener 3 a 7)" % n)
     if empieza_con_verbo(s):
         p.append("empieza con verbo (%s)" % s.split()[0])
+    vf = contiene_verbo_finito(s)
+    if vf:
+        p.append("contiene verbo conjugado (%s)" % vf)
     c = es_copia(s, titulo, contexto)
     if c:
         p.append(c)
@@ -301,7 +351,10 @@ async def _leer_noticias(args: Dict[str, Any]) -> Dict[str, Any]:
         dup = _ESTADO["hereda"].get(fid)
         if fid in _ESTADO["explicitos"]:
             continue                    # duplicado explícito: ni se envía
-        reg = {"id": fid, "titulo": d["titulo"][:TOPE_TITULO]}
+        # Clausifier 2026-11-08: el campo principal es el Contexto analizado
+        # completo (título + resumen + extracto de marca/alias/vocero, >=403
+        # caracteres); el título va solo como etiqueta corta para agrupar.
+        reg = {"id": fid, "titulo_solo_para_agrupar": d["titulo"][:TOPE_ETIQUETA_TITULO]}
         if dup is not None:
             reg["igual_a"] = _raiz(fid)
         else:
@@ -502,7 +555,7 @@ Recibes el CLIENTE, sus ALIAS y VOCEROS. A cada noticia le asignas TONO y SUBTEM
 </cliente_alias_voceros>
 
 <como_trabajas>
-TONO y SUBTEMA se juzgan desde el "contexto" de cada noticia, no desde el título: el título es solo una etiqueta para agrupar.
+Analiza la columna Contexto analizado completa (incluye título, resumen y el extracto de la marca/alias/vocero); el subtema y el tono salen de ese contenido, no de una frase suelta del titular. En leer_noticias ese contenido llega en "contexto"; "titulo_solo_para_agrupar" es solo una etiqueta corta para reconocer notas del mismo hecho: no lo uses para redactar el subtema ni copies fragmentos suyos. MAL "Presunto hacker tenía información inteligencia" (recorte del titular con verbo conjugado) -> BIEN "Captura de hacker con información de inteligencia".
 
 SUBTEMA: clasificación precisa y específica del hecho que cuenta el "contexto" de la noticia. Reglas obligatorias (guardar_clasificacion RECHAZA el subtema que no las cumpla):
 - Frase NOMINAL de 3 a 7 palabras que define el hecho (quién, qué) y lo distingue de otros.

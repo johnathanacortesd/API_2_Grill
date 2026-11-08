@@ -9365,6 +9365,20 @@ def enrich_rows_with_ai(
     else:
         etiquetas = etiquetar_grupos(cfg, grupos, progreso, tam_lote=tam_lote, workers=workers,
                                      votos=votos, uso=uso)
+    # Clausifier 2026-11-08: agente evaluador de agrupación (modo Haiku).
+    # Grupos candidatos por Título / Resumen / texto / Contexto analizado
+    # parecidos (rapidfuzz); el agente decide agrupar o separar ANTES de las
+    # unificaciones deterministas, y `hacer_cumplir` lo garantiza al final.
+    _eval_dec: List[dict] = []
+    _eval_estado: dict = {}
+    _ULTIMO_RESUMEN.pop('evaluador_agrupacion', None)
+    if haiku and cfg.get('evaluador_agrupacion', True):
+        import evaluador_agrupacion as _ev
+        progreso(76, 'Evaluador de agrupación: revisando grupos candidatos…')
+        _cands = _ev.construir_candidatos(rows, mapa, km, umbral_titulo, umbral_cuerpo)
+        _eval_dec = _ev.evaluar(_cands, rows, mapa, etiquetas, km)
+        _eval_estado = _ev.aplicar_inicial(_eval_dec, _cands, mapa, etiquetas)
+        _ULTIMO_RESUMEN['evaluador_agrupacion'] = dict(_ev.ULTIMO)
     # v4.74: subtema que el etiquetador le dio a cada grupo, antes de las
     # unificaciones (la coherencia por texto lo usa para devolverle a cada
     # noticia su rótulo propio cuando una unificación la forzó).
@@ -9728,6 +9742,11 @@ def enrich_rows_with_ai(
         rotulos_compartidos=[(r or {}).get('subtema') for r in (cfg.get('subtemas_fijos') or [])
                              if isinstance(r, dict)])
     _ULTIMO_RESUMEN['unificacion_por_noticia'] = _por_noticia
+    if _eval_dec:
+        # Clausifier: las decisiones del evaluador mandan sobre todas las
+        # unificaciones deterministas anteriores (por grupo y por fila).
+        _ULTIMO_RESUMEN['evaluador_agrupacion']['cumplimiento'] = _ev.hacer_cumplir(
+            _eval_dec, _eval_estado, rows, mapa)
     if haiku:
         _ULTIMO_RESUMEN['subtemas_forma_final'] = guarda_final_forma_subtema(
             rows, km, {i: subtemas_originales.get(g) or '' for i, g in mapa.items() if g})
@@ -9794,6 +9813,9 @@ def enrich_rows_with_ai(
         _ref = _ULTIMO_RESUMEN.get('haiku_reformulacion') or {}
         _ULTIMO_RESUMEN['costo_aprox_usd'] = round(
             _ULTIMO_RESUMEN['costo_aprox_usd'] + float(_ref.get('costo_usd') or 0.0), 4)
+        _ULTIMO_RESUMEN['costo_aprox_usd'] = round(
+            _ULTIMO_RESUMEN['costo_aprox_usd'] + float(
+                (_ULTIMO_RESUMEN.get('evaluador_agrupacion') or {}).get('costo_usd') or 0.0), 4)
     _ULTIMO_RESUMEN['costo_precios'] = {'input_por_millon': pin, 'output_por_millon': pout}
     if progress_callback:
         if incluir_tema:
