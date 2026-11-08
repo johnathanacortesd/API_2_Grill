@@ -71,6 +71,144 @@ except ImportError:  # pragma: no cover - respaldo sin dependencia
         return SequenceMatcher(None, a, b).ratio()
 
 
+# ─── forma del subtema (validador determinista, sin IA) ───────────────────
+# Regla del usuario 2026-11-07: el subtema es una frase nominal de 3 a 7
+# palabras, nunca empieza con verbo (infinitivo, conjugado, gerundio) y
+# nunca es un extracto o casi-copia del título o del contexto.
+
+MIN_PAL_SUBTEMA, MAX_PAL_SUBTEMA = 3, 7
+MAX_RECHAZOS = 2          # tras 2 rechazos de un id se acepta con marca
+
+_NO_VERBO = {
+    "mar", "lugar", "hogar", "taller", "mujer", "poder", "deber", "placer", "ser", "cancer",
+    "bienestar", "militar", "popular", "ejecucion", "altar", "collar", "azucar", "dolar", "par",
+    "bar", "martir", "lider", "caracter", "alquiler", "cadaver", "master", "primer", "familiar",
+    "particular", "escolar", "titular", "celular", "solar", "polar", "pilar", "hangar", "lunar",
+    "auxiliar", "regular", "similar", "singular", "nuclear", "molecular", "circular", "muscular",
+    "ejemplar", "peculiar", "estelar", "secular", "nectar", "radar", "menester", "sueter",
+    "alfiler", "quehacer", "haber", "parecer", "amanecer", "atardecer", "saber", "elixir",
+    "escobar", "aguilar", "bolivar", "salazar", "villamizar", "cesar", "gaspar", "oscar",
+    "baltasar", "omar", "edgar", "vilar", "linares", "palmar", "manzanar", "olivar", "pinar",
+    "comando", "mando", "bando", "contrabando", "fernando", "orlando", "rolando", "armando",
+    "guayaba", "haba", "traba", "baba", "aaron", "super", "ester", "esther", "chofer", "cuadrar",
+    "mujeres", "ayer", "mayor", "menor", "exterior", "interior", "ingeniero", "tener",
+}
+# Lemas frecuentes en titulares: se generan sus formas de 3.ª persona.
+_LEMAS = """anunciar realizar presentar buscar entregar lanzar firmar denunciar alertar advertir
+pedir exigir rechazar criticar señalar asegurar confirmar solicitar recibir obtener lograr liderar
+adelantar ejecutar mejorar aumentar disminuir reducir destinar aprobar celebrar visitar recorrer
+supervisar verificar capacitar inaugurar instalar abrir cerrar iniciar terminar culminar llegar
+morir matar atacar capturar revelar responder negar acusar perder ganar caer subir bajar crecer
+proponer querer poner hacer tener ir pasar cumplir enfrentar ordenar prohibir suspender amenazar
+desaparecer huir volver regresar llamar invitar promover impulsar fortalecer acompañar atender
+defender proteger garantizar reclamar insistir afirmar explicar indicar informar declarar
+reportar registrar dejar mantener seguir trabajar participar evaluar estudiar analizar
+investigar sancionar condenar destituir anular radicar""".split()
+_FORMAS_VERBO = set()
+for _l in _LEMAS:
+    _r, _t = _l[:-2], _l[-2:]
+    _r = _r.replace("ñ", "n")
+    if _t == "ar":
+        _FORMAS_VERBO |= {_r + s for s in ("a", "an", "o", "aron", "aba", "aban", "ara", "aran")}
+    else:
+        _FORMAS_VERBO |= {_r + s for s in ("e", "en", "io", "ieron", "ia", "ian", "era", "eran")}
+_FORMAS_VERBO |= set("""quiere quieren quiso quisieron pide piden pidio pidieron sigue siguen
+siguio siguieron dice dicen dijo dijeron va van fue fueron es son esta estan hay hubo tiene
+tienen tuvo hace hacen hizo pone ponen puso propone proponen muere mueren murio murieron vuelve
+vuelven volvio cae caen cayo huye huyen huyo pierde pierden niega niegan cierra cierran
+advierte advierten mantiene mantienen obtiene obtienen dio dieron vio trajo pudo puede pueden
+debe deben""".split())
+_FIN_VERBO = ("aron", "ieron", "aban", "ando", "iendo", "yendo", "abamos", "iamos")
+
+
+def _norm_tok(tok: str) -> str:
+    t = unicodedata.normalize("NFKD", str(tok or "")).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z]", "", t.lower())
+
+
+def empieza_con_verbo(subtema: str) -> bool:
+    """True si la primera palabra del subtema es un verbo (infinitivo,
+    conjugado o gerundio). Usa las listas de Grill y una heurística de
+    terminaciones con excepciones de sustantivos frecuentes."""
+    w = str(subtema or "").split()
+    if not w:
+        return False
+    crudo = w[0].strip("\"'«»“”¡¿()").lower()
+    n = _norm_tok(crudo)
+    if not n or n in _NO_VERBO:
+        return False
+    try:  # misma regla que validar() de Grill
+        import analyzer_tono_tema as _a
+        if _a._empieza_con_verbo(w):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    if n in _FORMAS_VERBO:
+        return True
+    if crudo.endswith(("ían", "íamos")) or (len(crudo) >= 4 and crudo.endswith("ó")):
+        return True
+    if len(n) > 4 and n.endswith(_FIN_VERBO):
+        return True
+    if len(n) >= 4 and n.endswith(("ar", "er", "ir")):
+        return True  # infinitivo
+    return False
+
+
+def _toks(s: str) -> List[str]:
+    return _simple(s).split()
+
+
+def _corrida_contigua(sub: List[str], fuente: List[str]) -> int:
+    """Largo de la corrida contigua más larga de `sub` que aparece tal cual en `fuente`."""
+    mejor = 0
+    if not sub or not fuente:
+        return 0
+    for i in range(len(sub)):
+        for j in range(len(fuente)):
+            k = 0
+            while i + k < len(sub) and j + k < len(fuente) and sub[i + k] == fuente[j + k]:
+                k += 1
+            mejor = max(mejor, k)
+    return mejor
+
+
+def es_copia(subtema: str, titulo: str, contexto: str = "") -> Optional[str]:
+    """Motivo si el subtema es extracto/casi-copia del título o del contexto."""
+    sub = _toks(subtema)
+    if not sub:
+        return None
+    try:
+        import analyzer_tono_tema as _a
+        if titulo and "copia_titular" in [x.split("(")[0] for x in
+                                          _a.validar(subtema, "Neutro", [titulo])]:
+            return "copia del título"
+    except Exception:  # noqa: BLE001
+        pass
+    if titulo and _similitud(" ".join(sub), _simple(titulo)) >= 0.85:
+        return "casi igual al título"
+    for nombre, fuente in (("título", titulo), ("contexto", contexto)):
+        if fuente and _corrida_contigua(sub, _toks(fuente)) >= max(3, 0.7 * len(sub)):
+            return "extracto literal del %s" % nombre
+    return None
+
+
+def problemas_subtema(subtema: str, titulo: str = "", contexto: str = "") -> List[str]:
+    """Problemas de forma del subtema. Lista vacía = válido."""
+    s = str(subtema or "").strip()
+    if not s:
+        return ["vacío"]
+    p = []
+    n = len(s.split())
+    if n < MIN_PAL_SUBTEMA or n > MAX_PAL_SUBTEMA:
+        p.append("tiene %d palabras (debe tener 3 a 7)" % n)
+    if empieza_con_verbo(s):
+        p.append("empieza con verbo (%s)" % s.split()[0])
+    c = es_copia(s, titulo, contexto)
+    if c:
+        p.append(c)
+    return p
+
+
 def _texto(contenido: str, error: bool = False) -> Dict[str, Any]:
     r: Dict[str, Any] = {"content": [{"type": "text", "text": contenido}]}
     if error:
@@ -202,6 +340,33 @@ async def _guardar_clasificacion(args: Dict[str, Any]) -> Dict[str, Any]:
     except Exception as e:  # noqa: BLE001 - el error vuelve como contexto
         return _texto("Error guardando: %s" % e, error=True)
 
+    # Validador determinista de forma: rechaza (no guarda) los subtemas con
+    # verbo inicial, copia del título/contexto o fuera de 3-7 palabras. Tras
+    # MAX_RECHAZOS rechazos de un id se acepta con marca (la reparación
+    # posterior de Grill lo corrige).
+    rechazos = _ESTADO.setdefault("rechazos", {})
+    marcados = _ESTADO.setdefault("marcados", {})
+    rechazadas: Dict[str, List[str]] = {}
+    for fid in list(nuevas):
+        f = nuevas[fid]
+        sub = str(f.get("subtema") or f.get("sub_tema") or "").strip()
+        if not sub:
+            continue
+        d = _ESTADO["datos"].get(_raiz(fid)) or {}
+        if _simple(sub) in _ESTADO.get("permitidos", set()):
+            continue   # rótulo exacto que fija el perfil del cliente
+        prob = problemas_subtema(sub, d.get("titulo", ""), d.get("contexto", ""))
+        if not prob:
+            marcados.pop(_raiz(fid), None)
+            continue
+        if rechazos.get(fid, 0) >= MAX_RECHAZOS:
+            marcados[_raiz(fid)] = prob
+            continue
+        rechazos[fid] = rechazos.get(fid, 0) + 1
+        _ESTADO.setdefault("log_rechazos", []).append({"id": fid, "subtema": sub, "motivos": prob})
+        rechazadas[fid] = prob
+        del nuevas[fid]
+
     res = _ESTADO["res"]
     cambios = 0
     for fid, f in nuevas.items():
@@ -224,6 +389,12 @@ async def _guardar_clasificacion(args: Dict[str, Any]) -> Dict[str, Any]:
     total = max(1, PROGRESO.get("total") or 1)
     _avisar(76 + int(12 * (total - len(faltan)) / total),
             "Haiku clasificó %d de %d noticias" % (total - len(faltan), total))
+    if rechazadas:
+        det = "; ".join("id %s: %s" % (i, ", ".join(m)) for i, m in list(rechazadas.items())[:40])
+        return _texto("SUBTEMAS RECHAZADOS (no se guardaron): %s. Rehaz SOLO esos ids con una frase "
+                      "nominal de 3 a 7 palabras que no empiece con verbo y no copie el título ni el "
+                      "contexto, y vuelve a llamar guardar_clasificacion. Faltan por clasificar: %d."
+                      % (det, len(faltan)), error=True)
     if faltan:
         ids = ", ".join(faltan[:40]) + (", ..." if len(faltan) > 40 else "")
         return _texto("Guardado parcial. Faltan por clasificar: %d (ids: %s). Si quedan páginas, "
@@ -333,7 +504,21 @@ Recibes el CLIENTE, sus ALIAS y VOCEROS. A cada noticia le asignas TONO y SUBTEM
 <como_trabajas>
 TONO y SUBTEMA se juzgan desde el "contexto" de cada noticia, no desde el título: el título es solo una etiqueta para agrupar.
 
-SUBTEMA: frase nominal específica de 3 a 6 palabras que defina el hecho y lo distinga de otros. Nunca copies el titular ni su recorte, nunca el nombre del medio, sin comas ni punto final. Evita subtemas genéricos como "Gestión de la alcaldía".
+SUBTEMA: clasificación precisa y específica del hecho que cuenta el "contexto" de la noticia. Reglas obligatorias (guardar_clasificacion RECHAZA el subtema que no las cumpla):
+- Frase NOMINAL de 3 a 7 palabras que define el hecho (quién, qué) y lo distingue de otros.
+- NUNCA empieza con un verbo en ninguna forma: ni infinitivo (Realizar, Volver), ni conjugado (Anuncia, Querían, Denunció), ni gerundio (Realizando), ni participio (Anunciado). Empieza con un sustantivo: Anuncio, Riesgo, Entrega, Denuncia, Alerta.
+- NUNCA es un extracto, recorte o casi-copia del título ni del contexto: sintetiza el hecho con tus palabras.
+- Específico, no genérico: nada de "Gestión de la alcaldía" ni "Situación de orden público".
+- Nunca el nombre del medio, sin comas ni punto final.
+Reglas de Grill (literales):
+__REGLAS_SUBTEMA__
+Ejemplos:
+- MAL "querían volver a la guerra" (verbo y extracto) -> BIEN "Riesgo de reactivación del conflicto armado"
+- MAL "Anuncia nuevas medidas" (verbo) -> BIEN "Nuevas medidas de protección a líderes sociales"
+- MAL "Realizando jornada" (gerundio y genérico) -> BIEN "Jornada de atención a víctimas en Tumaco"
+- MAL "Denunció amenazas contra líderes en el Cauca" (verbo y extracto) -> BIEN "Amenazas a líderes sociales del Cauca"
+- MAL "La Defensoría del Pueblo emitió una alerta temprana" (copia y verbo) -> BIEN "Alerta temprana por reclutamiento de menores"
+- BIEN "Bienestar de la población migrante", "Taller de liderazgo juvenil"
 
 TEMA (solo si el pedido dice INCLUIR TEMA): categoría amplia de 1 a 4 palabras que agrupa varios subtemas (por ejemplo "Seguridad", "Movilidad", "Derechos humanos"). Pocos temas para todo el lote. Si el pedido trae <lista_temas>, el tema DEBE ser exactamente uno de esa lista. Si el pedido dice SIN TEMA, no envíes "tema".
 
@@ -361,6 +546,22 @@ No tienes terminal ni puedes leer ni escribir archivos.
 Al terminar responde en una sola línea: filas clasificadas y cuántas por tono. Paras cuando no falten filas y la revisión haya terminado.
 </formato_de_salida>"""
 
+try:
+    from catalogo_tono_tema import REGLAS_SUBTEMA as _REGLAS_GRILL
+except Exception:  # pragma: no cover
+    _REGLAS_GRILL = ""
+SYSTEM_PROMPT = SYSTEM_PROMPT.replace("__REGLAS_SUBTEMA__", _REGLAS_GRILL)
+
+REGLAS_FORMA_REVISOR = (
+    "FORMA DEL SUBTEMA (obligatoria; las correcciones que no la cumplan se rechazan): frase nominal "
+    "de 3 a 7 palabras; NUNCA empieza con verbo (ni infinitivo, ni conjugado, ni gerundio, ni "
+    "participio); NUNCA es extracto ni casi-copia del título o del contexto; específica del hecho "
+    "(quién, qué), no genérica. MAL 'querían volver a la guerra' -> BIEN 'Riesgo de reactivación del "
+    "conflicto armado'. MAL 'Anuncia nuevas medidas' -> BIEN 'Nuevas medidas de protección a líderes "
+    "sociales'. Si ves en un grupo un subtema que viola esta forma, corrígelo aunque el grupo no sea "
+    "el mismo hecho.\nReglas de Grill (literales):\n" + _REGLAS_GRILL + "\n"
+)
+
 PROMPT_REVISOR = (
     "Eres revisor de consistencia de una clasificación de noticias en español. Recibes un rango de "
     "grupos (desde y cuántos) y quizá un CRITERIO DEL TONO. Lee los grupos con "
@@ -369,7 +570,7 @@ PROMPT_REVISOR = (
     "el mismo momento. Mismo tema general o mismo medio NO es el mismo hecho.\n"
     "- Si es el mismo hecho: todas las filas llevan un solo subtema (reutiliza el más específico) y "
     "un solo tono (el que mejor sostiene el contexto).\n"
-    "- Si no lo es: déjalas separadas y haz cada subtema lo bastante específico (3 a 6 palabras). "
+    "- Si no lo es: déjalas separadas y haz cada subtema lo bastante específico (3 a 7 palabras). "
     "Los grupos 'posible_sobreagrupacion' casi siempre son hechos distintos con un subtema genérico.\n"
     "Nunca fusiones solo porque los subtemas comparten palabras. Tono solo Positivo, Neutro o "
     "Negativo, para el cliente; si te pasan un CRITERIO DEL TONO, decide con él.\n"
@@ -452,7 +653,7 @@ def construir_opciones(sdk, cwd: str, max_turns: int, max_budget_usd: float, mod
                 description=("Revisa la consistencia de tono y subtema: decide si cada grupo candidato "
                              "es el MISMO hecho y devuelve correcciones en JSON. Úsalo una vez al "
                              "final, después de guardar todas las páginas; pásale el rango de grupos."),
-                prompt=PROMPT_REVISOR,
+                prompt=PROMPT_REVISOR + "\n" + REGLAS_FORMA_REVISOR,
                 tools=["mcp__medios__candidatos_consistencia"],
                 model="haiku",
                 maxTurns=6,
@@ -508,13 +709,94 @@ def _ejecutar(coro):
     return caja["r"]
 
 
+PROMPT_REFORMULAR = (
+    "Eres editor de subtemas de un monitoreo de medios en español de Colombia. Recibes subtemas "
+    "MAL formados con su título, contexto y problemas. Devuelve para cada id un subtema NUEVO.\n"
+    + REGLAS_FORMA_REVISOR +
+    "Responde SOLO con JSON compacto, sin texto alrededor: "
+    '{"resultados":[{"id":"...","subtema":"..."}]}'
+)
+
+# Costo acumulado de la reformulación (lo suma el analizador al resumen).
+REFORMULACION: Dict[str, Any] = {}
+
+
+def reformular_subtemas(fallos: Sequence[dict], modelo: str = MODELO_HAIKU,
+                        query_fn=None, max_budget_usd: float = 0.0) -> Dict[str, str]:
+    """Equivalente Haiku de la reformulación LLM de `reparar_copias_finales`.
+
+    `fallos`: [{id, titulo, texto, sub_tema, problemas}]. Una sola llamada
+    `query()` sin herramientas (max_turns=1). Devuelve {id: subtema} solo con
+    los que pasan el validador determinista; los demás quedan al respaldo
+    determinista de Grill. Nunca lanza: ante cualquier error devuelve {}.
+    """
+    REFORMULACION.clear()
+    REFORMULACION.update(costo_usd=0.0, pedidos=len(fallos or []), aceptados=0, error=None)
+    if not fallos:
+        return {}
+    try:
+        sdk = _sdk()
+        if query_fn is None:
+            _preparar_credencial()
+            query_fn = sdk.query
+    except Exception as e:  # noqa: BLE001
+        REFORMULACION["error"] = str(e)
+        return {}
+    detalle = [{"id": str(f.get("id")), "titulo": str(f.get("titulo") or "")[:200],
+                "contexto": str(f.get("texto") or "")[:700], "subtema_actual": f.get("sub_tema"),
+                "problemas": list(f.get("problemas") or [])} for f in fallos[:60]]
+    prompt = json.dumps({"subtemas": detalle}, ensure_ascii=False)
+    salida: Dict[str, Any] = {"texto": ""}
+
+    async def _uno():
+        with tempfile.TemporaryDirectory(prefix="motor_haiku_ref_") as cwd:
+            op = sdk.ClaudeAgentOptions(
+                model=modelo, system_prompt=PROMPT_REFORMULAR, tools=[], allowed_tools=[],
+                setting_sources=[], permission_mode="default", cwd=cwd, max_turns=1,
+                max_budget_usd=max_budget_usd or round(min(1.0, 0.03 + 0.003 * len(detalle)), 2),
+                disallowed_tools=["Bash", "Edit", "Read", "Grep", "Glob", "Write", "WebSearch",
+                                  "WebFetch", "Agent"],
+                stderr=lambda linea: None)
+            async for m in query_fn(prompt=prompt, options=op):
+                if isinstance(m, sdk.ResultMessage):
+                    REFORMULACION["costo_usd"] = float(m.total_cost_usd or 0.0)
+                    salida["texto"] = m.result or ""
+    try:
+        _ejecutar(_uno())
+        txt = salida["texto"]
+        ini, fin = txt.find("{"), txt.rfind("}")
+        data = json.loads(txt[ini:fin + 1]) if ini >= 0 else {}
+    except Exception as e:  # noqa: BLE001
+        REFORMULACION["error"] = "%s: %s" % (type(e).__name__, e)
+        return {}
+    por_id = {str(f.get("id")): f for f in fallos}
+    out: Dict[str, str] = {}
+    for r in (data.get("resultados") or []):
+        fid, sub = str(r.get("id")), str(r.get("subtema") or "").strip().rstrip(".")
+        f = por_id.get(fid)
+        if f and sub and not problemas_subtema(sub, f.get("titulo") or "", f.get("texto") or ""):
+            out[fid] = sub
+    REFORMULACION["aceptados"] = len(out)
+    return out
+
+
+def rotulos_permitidos_de(guia_subtema: str = "", extra: Sequence[str] = ()) -> set:
+    """Rótulos exactos que el perfil impone (subtemas fijos y los que la guía
+    pide 'EXACTAMENTE'): el validador de forma no los rechaza."""
+    out = {_simple(x) for x in (extra or []) if str(x or "").strip()}
+    for m in re.finditer(r"EXACTAMENTE\s+['\"«“]([^'\"»”]{3,80})['\"»”]", guia_subtema or ""):
+        out.add(_simple(m.group(1)))
+    return out
+
+
 def clasificar_con_haiku(items: Sequence[dict], brand: str, aliases: Sequence[str] = (),
                          voceros: Sequence[str] = (), criterio_texto: str = "",
                          incluir_tema: bool = False, taxonomia: Optional[Sequence[str]] = None,
                          progreso_cb: Optional[Callable[[int, str], None]] = None,
                          guia_subtema: str = "", modelo: str = MODELO_HAIKU,
                          max_turns: int = 0, max_budget_usd: float = 0.0,
-                         query_fn=None, tono_pkl: bool = False) -> Dict[str, Any]:
+                         query_fn=None, tono_pkl: bool = False,
+                         rotulos_permitidos: Sequence[str] = ()) -> Dict[str, Any]:
     """Clasifica `items` ({id, titulo, contexto, duplicado_de?}) con el agente Haiku.
 
     Devuelve {"etiquetas": {id: {"tono","subtema"[, "tema"]}}, "costo_usd", "turnos",
@@ -533,6 +815,7 @@ def clasificar_con_haiku(items: Sequence[dict], brand: str, aliases: Sequence[st
     max_budget_usd = max_budget_usd or round(min(5.0, 0.10 + 0.004 * n), 2)
     with _CANDADO:
         preparar_estado(items, incluir_tema, taxonomia, progreso_cb)
+        _ESTADO["permitidos"] = rotulos_permitidos_de(guia_subtema, rotulos_permitidos)
         if not items:
             return {"etiquetas": {}, "costo_usd": 0.0, "turnos": 0, "filas": 0, "faltan": 0,
                     "cambios_revision": 0, "grupos_revision": 0, "subtype": None, "error": None}
@@ -545,6 +828,8 @@ def clasificar_con_haiku(items: Sequence[dict], brand: str, aliases: Sequence[st
             final = _ejecutar(_correr(sdk, prompt, opciones, query_fn))
         _propagar()
         etiquetas = {fid: dict(r) for fid, r in _ESTADO["res"].items() if r.get("tono")}
+        final.update(rechazos=list(_ESTADO.get("log_rechazos") or []),
+                     marcados={k: list(v) for k, v in (_ESTADO.get("marcados") or {}).items()})
         final.update(etiquetas=etiquetas, filas=len(etiquetas), faltan=len(_faltantes()),
                      cambios_revision=PROGRESO.get("cambios_revision", 0),
                      grupos_revision=PROGRESO.get("grupos", 0))

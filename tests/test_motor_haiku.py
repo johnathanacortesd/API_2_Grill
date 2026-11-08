@@ -132,7 +132,10 @@ class TestMotorHaiku(unittest.TestCase):
             {'filas_json': json.dumps([{'id': '1', 'subtema': 's', 'tono': 'Neutro', 'tema': 'Deportes'}])}))
         self.assertTrue(fuera.get('is_error'))
         ok = asyncio.run(mh._guardar_clasificacion(
-            {'filas_json': json.dumps([{'id': '1', 'subtema': 's', 'tono': 'Neutro', 'tema': 'educacion'}])}))
+            # Clausifier 2026-11-07: el subtema debe pasar el validador de forma
+            # (3-7 palabras, sin verbo inicial); 's' ahora se rechaza.
+            {'filas_json': json.dumps([{'id': '1', 'subtema': 'Feria escolar de ciencias',
+                                        'tono': 'Neutro', 'tema': 'educacion'}])}))
         self.assertFalse(ok.get('is_error'))
         self.assertEqual(mh._ESTADO['res']['2']['tema'], 'Educación')
 

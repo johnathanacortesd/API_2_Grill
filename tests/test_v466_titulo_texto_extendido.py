@@ -60,10 +60,12 @@ class TestExtensionTextoCorto(unittest.TestCase):
         # Sin título con marca: texto = 3 oraciones (12 palabras) -> 4.
         ctx = A._contexto_con_titulo_y_extension(
             self.EXTRACTO, "El turismo crece", "cuerpo", "Cotelco", [], [])
+        # Clausifier 403: el cuerpo ("cuerpo") es más corto que el mínimo de
+        # 403 caracteres: se agrega entero tras la extensión a 4 oraciones.
         self.assertEqual(texto_de(ctx, "El turismo crece"),
                          "Cotelco anunció la feria. Cotelco anunció el foro. "
                          "Cotelco anunció la jornada. "
-                         "Cotelco anunció el congreso.")
+                         "Cotelco anunció el congreso. cuerpo")
 
     def test_texto_corto_con_titulo_tambien_se_extiende(self):
         # Con título con marca: Contexto lleva título + 4 oraciones;
@@ -74,7 +76,7 @@ class TestExtensionTextoCorto(unittest.TestCase):
         self.assertEqual(texto_de(ctx, "Cotelco abre feria"),
                          "Cotelco anunció la feria. Cotelco anunció el foro. "
                          "Cotelco anunció la jornada. "
-                         "Cotelco anunció el congreso.")
+                         "Cotelco anunció el congreso. cuerpo")
 
     def test_texto_largo_se_deja_tal_cual(self):
         larga = ("Cotelco presentó un informe extenso sobre la reactivación "
@@ -123,7 +125,9 @@ class TestExtensionTextoCorto(unittest.TestCase):
         extracto = "Cotelco anunció la feria. Cotelco anunció el foro."
         ctx = A._contexto_con_titulo_y_extension(
             extracto, "El turismo crece", "cuerpo", "Cotelco", [], [])
-        self.assertEqual(texto_de(ctx, "El turismo crece"), extracto)
+        # Clausifier 403: sin cuarta oración, el mínimo de 403 caracteres
+        # agrega el cuerpo (más corto que el mínimo: entero).
+        self.assertEqual(texto_de(ctx, "El turismo crece"), extracto + " cuerpo")
 
 
 class TestExtensionConOracionSiguienteDelCuerpo(unittest.TestCase):
@@ -134,7 +138,9 @@ class TestExtensionConOracionSiguienteDelCuerpo(unittest.TestCase):
         ctx = A._contexto_con_titulo_y_extension(
             extracto, "El turismo crece", cuerpo, "Cotelco", [], [])
         self.assertEqual(texto_de(ctx, "El turismo crece"),
-                         extracto + " Siguiente oración del cuerpo.")
+                         extracto + " Siguiente oración del cuerpo. Otra más.")
+        # Clausifier 403: tras la siguiente oración, se sigue completando
+        # con el cuerpo hasta 403 caracteres o hasta agotarlo.
 
     def test_extracto_agotado_sin_siguiente_no_cambia(self):
         cuerpo = "Cotelco anunció la feria. Cotelco anunció el foro."

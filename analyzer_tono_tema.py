@@ -270,7 +270,72 @@ def _contexto_con_titulo_y_extension(ctx_exact: str, titulo: str,
             siguiente = _oracion_siguiente_en_cuerpo(ctx_exact, cuerpo)
             if siguiente:
                 base = (base + ' ' + siguiente).strip() if base else siguiente
-    return (prefijo + base).strip()
+    return _extender_a_minimo(prefijo, base, cuerpo, titulo_limpio)
+
+
+# Clausifier 2026-11-07 (regla del usuario): Contexto analizado mide al
+# menos 403 caracteres (LARGO() de Excel = len() de Python sobre la celda).
+# Se completa con oraciones literales del cuerpo, alternando la anterior a
+# la primera mención y la posterior a la última, sin cortar oraciones ni
+# duplicar. Única excepción: el cuerpo entero es más corto.
+MIN_CONTEXTO_CARACTERES = 403
+CONTEXTO_CUERPO_CORTO = {'filas': 0}
+
+
+def _oraciones_cuerpo(cuerpo: str) -> List[str]:
+    out = []
+    for o in re.split(r'(?<=[.!?…])\s+|\r?\n+', cuerpo or ''):
+        o = re.sub(r'\s+', ' ', o).strip()
+        if o:
+            out.append(o)
+    return out
+
+
+def _extender_a_minimo(prefijo: str, base: str, cuerpo: str, titulo: str,
+                       minimo: int = MIN_CONTEXTO_CARACTERES) -> str:
+    """Extiende `prefijo + base` hasta `minimo` caracteres con oraciones
+    literales del cuerpo (antes de la primera mención / después de la
+    última, alternando). Conserva el orden original del cuerpo."""
+    actual = (prefijo + base).strip()
+    if len(actual) >= minimo:
+        return actual
+    orac = _oraciones_cuerpo(cuerpo)
+    if not orac:
+        return actual
+    base_n = re.sub(r'\s+', ' ', base or '').strip()
+    tit_n = nz(titulo or '')
+    usadas = [i for i, o in enumerate(orac) if o in base_n]
+    if usadas:
+        lo, hi = min(usadas) - 1, max(usadas) + 1
+    else:
+        lo, hi = -1, 0           # sin ancla: se completa desde el inicio
+    antes: List[str] = []
+    despues: List[str] = []
+
+    def _largo():
+        return len(' '.join(x for x in [prefijo.strip(), ' '.join(antes),
+                                        base_n, ' '.join(despues)] if x))
+
+    def _sirve(o):
+        return o not in base_n and nz(o) != tit_n
+
+    turno_antes = True
+    while _largo() < minimo and (lo >= 0 or hi < len(orac)):
+        if (turno_antes and lo >= 0) or hi >= len(orac):
+            o = orac[lo]
+            lo -= 1
+            if _sirve(o):
+                antes.insert(0, o)
+        else:
+            o = orac[hi]
+            hi += 1
+            if _sirve(o):
+                despues.append(o)
+        turno_antes = not turno_antes
+    if _largo() < minimo:
+        CONTEXTO_CUERPO_CORTO['filas'] += 1
+    return ' '.join(x for x in [prefijo.strip(), ' '.join(antes), base_n,
+                                ' '.join(despues)] if x).strip()
 
 
 def _contexto_minimo_util(ctx: str, titulo: str, texto: str) -> str:
@@ -8192,6 +8257,16 @@ def reparar_copias_finales(cfg: dict, grupos: Sequence[dict],
     """
     ajustes = dict(ajustes_subtema or {})
     grupo_por_id = {g.get('grupo'): g for g in grupos}
+    _haiku_mode = (cfg or {}).get('motor') == 'haiku'
+    if _haiku_mode:
+        import motor_haiku as _mh
+        _permit = _mh.rotulos_permitidos_de(
+            cfg.get('guia_subtema') or '',
+            [str((r or {}).get('subtema') or '') for r in (cfg.get('subtemas_fijos') or [])
+             if isinstance(r, dict)])
+
+        def _forma_haiku(s, tit, ctx):
+            return [] if _mh._simple(s) in _permit else _mh.problemas_subtema(s, tit, ctx)
     # Medios por grupo / por fila, desde la columna Medio del dossier.
     medios_grupo: Dict[int, set] = defaultdict(set)
     for _i, _gid in (mapa or {}).items():
@@ -8225,6 +8300,11 @@ def reparar_copias_finales(cfg: dict, grupos: Sequence[dict],
         _mal = [x for x in ('copia_titular', 'subtema_sin_hecho',
                              'verbo_inicial', 'preposicion_inicial', 'puntuacion',
                              'inicio_pronombre', 'clausula_verbal') if x in _base]
+        if _haiku_mode:
+            # Clausifier: en modo Haiku también entra el validador de forma
+            # del motor (verbo inicial en cualquier forma, extracto, 3-7).
+            _mal += _forma_haiku(_s, _g.get('titulo') or '',
+                                          _g.get('contexto_marca') or '')
         if _mal:
             # v4.63: una llamada o lista de nombres tampoco se exporta,
             # aunque no copie el titular: va a la misma reformulación.
@@ -8242,6 +8322,9 @@ def reparar_copias_finales(cfg: dict, grupos: Sequence[dict],
         _malf = [x for x in ('copia_titular', 'subtema_sin_hecho',
                               'verbo_inicial', 'preposicion_inicial', 'puntuacion',
                               'inicio_pronombre', 'clausula_verbal') if x in _basef]
+        if _haiku_mode:
+            _malf += _forma_haiku(_s, _tit, rows[_i].get('Contexto analizado') or ''
+                                           if _i < len(rows) else '')
         if _malf:
             fallos_fila.append({'grupo': 900000 + _i, 'titulo': _tit,
                                 'texto': _txt, 'sub_tema': _s,
@@ -8320,6 +8403,18 @@ def reparar_copias_finales(cfg: dict, grupos: Sequence[dict],
             for _fid, _v in _corr.items():
                 if _v.get('sub_tema'):
                     reparados[_fid] = _v['sub_tema']
+    elif _haiku_mode:
+        # Equivalente Haiku de la reformulación LLM: una llamada query()
+        # sin herramientas solo con los rótulos marcados.
+        _pedido = [dict(f, id=f['grupo'],
+                        texto=(grupo_por_id.get(f['grupo']) or {}).get('contexto_marca')
+                        or f.get('texto') or '') for f in fallos_grupo + fallos_fila]
+        for _k, _v in _mh.reformular_subtemas(_pedido).items():
+            try:
+                reparados[int(_k)] = _v
+            except ValueError:
+                pass
+        _ULTIMO_RESUMEN['haiku_reformulacion'] = dict(_mh.REFORMULACION)
     reparados_ok = 0
     sin_reparar = 0
     for _f in fallos_grupo:
@@ -9068,7 +9163,9 @@ def _etiquetar_con_haiku(cfg: dict, grupos: List[dict], candidatos_tax: Sequence
         items, cfg.get('brand') or '', cfg.get('aliases') or [], cfg.get('voceros') or [],
         criterio_texto=criterio_texto, incluir_tema=incluir_tema,
         taxonomia=list(candidatos_tax or []) or None, progreso_cb=progreso,
-        guia_subtema=cfg.get('guia_subtema') or '', tono_pkl=tono_pkl)
+        guia_subtema=cfg.get('guia_subtema') or '', tono_pkl=tono_pkl,
+        rotulos_permitidos=[str((r or {}).get('subtema') or '')
+                            for r in (cfg.get('subtemas_fijos') or []) if isinstance(r, dict)])
     if res.get('error') and not res.get('etiquetas'):
         raise RuntimeError('El motor Claude Haiku falló: %s' % res['error'])
     etiquetas: Dict[int, dict] = {}
@@ -9081,6 +9178,60 @@ def _etiquetar_con_haiku(cfg: dict, grupos: List[dict], candidatos_tax: Sequence
             temas[g['grupo']] = sq(e['tema'])
     res['modelo'] = motor_haiku.MODELO_HAIKU
     return etiquetas, temas, res
+
+
+def guarda_final_forma_subtema(rows: List[dict], km: dict,
+                               originales: Optional[Dict[int, str]] = None) -> dict:
+    """Clausifier (modo Haiku): guarda FINAL sobre las filas volcadas. Ningún
+    Subtema_IA empieza con verbo ni copia el título. Intenta la reparación
+    determinista de forma de Grill (sin inventar palabras); lo que no se
+    puede reparar se reporta como sobreviviente en el resumen."""
+    import motor_haiku as _mh
+
+    def _malo(s, tit):
+        return _mh.empieza_con_verbo(s) or bool(
+            tit and _mh.es_copia(s, tit) in ('copia del título', 'casi igual al título',
+                                             'extracto literal del título'))
+
+    reparados, sobrevivientes = 0, []
+    cache: Dict[Tuple[str, str], str] = {}
+    # Títulos de las filas que comparten cada subtema: un rótulo tampoco
+    # puede ser el recorte del titular de OTRA fila del mismo subtema.
+    titulos_por_sub: Dict[str, List[str]] = defaultdict(list)
+    for row in rows:
+        if not row.get('is_duplicate'):
+            titulos_por_sub[str(row.get('Subtema_IA') or '').strip()].append(_titulo_fila(row, km))
+    for i, row in enumerate(rows):
+        s = str(row.get('Subtema_IA') or '').strip()
+        if row.get('is_duplicate') or not s or s == '-':
+            continue
+        tit = _titulo_fila(row, km)
+        otros = [t for t in titulos_por_sub.get(s, []) if t != tit]
+        if not _malo(s, tit) and not any(_malo(s, t) for t in otros):
+            continue
+        tit = next((t for t in [tit] + otros if _malo(s, t)), tit)
+        clave = (s, tit)
+        if clave not in cache:
+            nuevo = _reparar_forma_subtema(s)
+            w = nuevo.split()
+            while w and _mh.empieza_con_verbo(' '.join(w)):
+                w = w[1:]
+                while w and (nz(w[0]) in _ART_INICIAL or nz(w[0]) in _PREP_INICIO_ETIQUETA):
+                    w = w[1:]
+            nuevo = ' '.join(w)
+            if nuevo:
+                nuevo = nuevo[0].upper() + nuevo[1:]
+            if len(w) < 2 or _malo(nuevo, tit):
+                # Respaldo: el rótulo que Haiku le dio al grupo, si es válido.
+                orig = str((originales or {}).get(i) or '').strip()
+                nuevo = orig if (orig and not _malo(orig, tit)) else ''
+            cache[clave] = nuevo
+        if cache[clave]:
+            row['Subtema_IA'] = cache[clave]
+            reparados += 1
+        else:
+            sobrevivientes.append({'fila': i, 'subtema': s})
+    return {'reparados': reparados, 'sobrevivientes': sobrevivientes}
 
 
 def enrich_rows_with_ai(
@@ -9163,7 +9314,11 @@ def enrich_rows_with_ai(
         cfg['typesafe_api_key'] = ''
 
     # --- contexto de marca (funcion existente, se conserva para la columna de auditoria) ---
+    cfg['motor'] = 'haiku' if haiku else 'openai'
+    _ULTIMO_RESUMEN.pop('haiku_reformulacion', None)
+    _ULTIMO_RESUMEN.pop('subtemas_forma_final', None)
     progreso(71, 'Extrayendo contexto de la marca y sus variantes…')
+    CONTEXTO_CUERPO_CORTO['filas'] = 0
     for row in rows:
         if row.get('is_duplicate'):
             row['Contexto analizado'] = '-'
@@ -9183,6 +9338,7 @@ def enrich_rows_with_ai(
             row['Contexto analizado'] = _contexto_con_titulo_y_extension(
                 ctx, _titulo_fila(row, km), fuente_ctx,
                 brand, aliases, cfg.get('voceros') or [])
+    _ULTIMO_RESUMEN['contexto_cuerpo_menor_403'] = CONTEXTO_CUERPO_CORTO['filas']
 
     # --- agrupacion ---
     progreso(73, 'Agrupando notas equivalentes…')
@@ -9572,6 +9728,9 @@ def enrich_rows_with_ai(
         rotulos_compartidos=[(r or {}).get('subtema') for r in (cfg.get('subtemas_fijos') or [])
                              if isinstance(r, dict)])
     _ULTIMO_RESUMEN['unificacion_por_noticia'] = _por_noticia
+    if haiku:
+        _ULTIMO_RESUMEN['subtemas_forma_final'] = guarda_final_forma_subtema(
+            rows, km, {i: subtemas_originales.get(g) or '' for i, g in mapa.items() if g})
 
     temas_lote: List[str] = []
     vistos = set()
@@ -9631,7 +9790,10 @@ def enrich_rows_with_ai(
         _ULTIMO_RESUMEN['costo_modelo'] = info_haiku.get('modelo') or 'claude-haiku'
         _ULTIMO_RESUMEN['haiku'] = {k: info_haiku.get(k) for k in (
             'costo_usd', 'turnos', 'filas', 'faltan', 'cambios_revision',
-            'grupos_revision', 'subtype', 'error')}
+            'grupos_revision', 'subtype', 'error', 'rechazos', 'marcados')}
+        _ref = _ULTIMO_RESUMEN.get('haiku_reformulacion') or {}
+        _ULTIMO_RESUMEN['costo_aprox_usd'] = round(
+            _ULTIMO_RESUMEN['costo_aprox_usd'] + float(_ref.get('costo_usd') or 0.0), 4)
     _ULTIMO_RESUMEN['costo_precios'] = {'input_por_millon': pin, 'output_por_millon': pout}
     if progress_callback:
         if incluir_tema:
