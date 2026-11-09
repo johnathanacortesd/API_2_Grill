@@ -41,6 +41,13 @@ def _resultado():
 
 async def fake_query(prompt, options):
     """Agente falso: clasifica cada página con reglas fijas usando las tools reales."""
+    if 'auditor-tono' in (options.system_prompt or ''):
+        # Auditor de tono (llamada aparte, sin herramientas): no cambia nada.
+        VISTO['auditor'] = prompt
+        yield ResultMessage(subtype='success', duration_ms=1, duration_api_ms=1, is_error=False,
+                            num_turns=1, session_id='fake', total_cost_usd=0.0,
+                            result='{"resultados":[]}')
+        return
     VISTO['prompt'] = prompt
     VISTO['options'] = options
     incluir = 'INCLUIR TEMA' in prompt

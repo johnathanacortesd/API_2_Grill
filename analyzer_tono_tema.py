@@ -9164,6 +9164,7 @@ def _etiquetar_con_haiku(cfg: dict, grupos: List[dict], candidatos_tax: Sequence
         criterio_texto=criterio_texto, incluir_tema=incluir_tema,
         taxonomia=list(candidatos_tax or []) or None, progreso_cb=progreso,
         guia_subtema=cfg.get('guia_subtema') or '', tono_pkl=tono_pkl,
+        auditor_tono=bool(cfg.get('auditor_tono', True)),
         rotulos_permitidos=[str((r or {}).get('subtema') or '')
                             for r in (cfg.get('subtemas_fijos') or []) if isinstance(r, dict)])
     if res.get('error') and not res.get('etiquetas'):
@@ -9271,6 +9272,9 @@ def enrich_rows_with_ai(
         'agrupacion_estricta': bool(extra.get('agrupacion_estricta', True)),
         'tono_solo_gestion': bool(extra.get('tono_solo_gestion')),
         'tipo_por_actor': bool(extra.get('tipo_por_actor')),
+        # Modo Haiku: agentes de apoyo (se pueden apagar desde ai_config).
+        'evaluador_agrupacion': bool(extra.get('evaluador_agrupacion', True)),
+        'auditor_tono': bool(extra.get('auditor_tono', True)),
         'api_key': api_key,
         'typesafe_api_key': extra.get('typesafe_api_key') or '',
         'typesafe_model': extra.get('typesafe_model') or 'jev-latest',
@@ -9376,7 +9380,14 @@ def enrich_rows_with_ai(
         import evaluador_agrupacion as _ev
         progreso(76, 'Evaluador de agrupación: revisando grupos candidatos…')
         _cands = _ev.construir_candidatos(rows, mapa, km, umbral_titulo, umbral_cuerpo)
-        _eval_dec = _ev.evaluar(_cands, rows, mapa, etiquetas, km)
+        _eval_dec = _ev.evaluar(
+            _cands, rows, mapa, etiquetas, km,
+            cliente={'brand': brand, 'aliases': list(aliases or []),
+                     'voceros': cfg.get('voceros') or [],
+                     # Con PKL de tono el criterio no aplica (el tono lo pone el PKL).
+                     'criterio_texto': '' if tone_model is not None else (
+                         (cfg.get('criterio_texto') or '').strip()
+                         or str(CRITERIOS_TONO.get(cfg.get('criterio') or '', '') or ''))})
         _eval_estado = _ev.aplicar_inicial(_eval_dec, _cands, mapa, etiquetas)
         _ULTIMO_RESUMEN['evaluador_agrupacion'] = dict(_ev.ULTIMO)
     # v4.74: subtema que el etiquetador le dio a cada grupo, antes de las
@@ -9809,7 +9820,8 @@ def enrich_rows_with_ai(
         _ULTIMO_RESUMEN['costo_modelo'] = info_haiku.get('modelo') or 'claude-haiku'
         _ULTIMO_RESUMEN['haiku'] = {k: info_haiku.get(k) for k in (
             'costo_usd', 'turnos', 'filas', 'faltan', 'cambios_revision',
-            'grupos_revision', 'subtype', 'error', 'rechazos', 'marcados')}
+            'grupos_revision', 'subtype', 'error', 'rechazos', 'marcados',
+            'auditor_tono', 'roles')}
         _ref = _ULTIMO_RESUMEN.get('haiku_reformulacion') or {}
         _ULTIMO_RESUMEN['costo_aprox_usd'] = round(
             _ULTIMO_RESUMEN['costo_aprox_usd'] + float(_ref.get('costo_usd') or 0.0), 4)

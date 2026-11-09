@@ -1322,6 +1322,10 @@ def main():
                                  modelo_c, int(_hk.get("turnos") or 0), int(_hk.get("filas") or 0),
                                  int(_hk.get("grupos_revision") or 0),
                                  int(_hk.get("cambios_revision") or 0)))
+                _aud = _hk.get("auditor_tono") or {}
+                if _aud.get("candidatos"):
+                    det_costo += " · auditor de tono: %d filas revisadas, %d tonos corregidos" % (
+                        int(_aud.get("candidatos") or 0), len(_aud.get("cambios") or []))
             elif costo is not None:
                 costo_txt = "$%.2f" % costo if costo >= 0.01 else "$%.4f" % costo
                 det_costo = "%s tokens de entrada / %s de salida · %d llamadas · %s" % (

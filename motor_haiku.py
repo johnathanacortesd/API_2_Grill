@@ -6,10 +6,17 @@ de noticias y su "Contexto analizado" igual que siempre, y en lugar de
 
 - lee las noticias por páginas con una herramienta MCP en proceso (solo id,
   titulo y contexto; los títulos repetidos llegan con `igual_a`),
-- guarda tono/subtema (y tema, si se pide) con otra herramienta que valida el
-  tono y hereda los valores en los duplicados,
+- guarda rol/tono/subtema (y tema, si se pide) con otra herramienta que
+  valida la forma del subtema, que el tono corresponda al rol del cliente en
+  la nota (`ROLES`) y hereda los valores en los duplicados,
 - revisa la consistencia con el subagente `revisor-subtemas` sobre los grupos
-  candidatos que arma `candidatos_consistencia` (rapidfuzz, sin IA).
+  candidatos que arma `candidatos_consistencia` (rapidfuzz, sin IA). El
+  subagente recibe en su propio prompt el cliente, alias, voceros y criterio.
+
+Al terminar el agente, `auditar_tono` (agente aparte, lanzado por código)
+verifica las filas con tono de riesgo: Negativos, tonos sin mención literal
+del cliente, Positivos sin el cliente en el título y subtemas con tonos
+distintos.
 
 Todo pasa EN MEMORIA: las herramientas leen y escriben un dict, no un xlsx.
 La credencial es solo ANTHROPIC_API_KEY (la fija app.py desde st.secrets).
@@ -40,6 +47,21 @@ MIN_CTX = 120
 GRUPOS_POR_PAGINA = 30
 TOPE_CTX_GRUPO = 300
 TONOS = ("Positivo", "Neutro", "Negativo")
+
+# Papel del cliente (marca, alias o voceros) en la nota. El tono NO es el
+# ánimo general de la noticia: es cómo la noticia evalúa al cliente, y sale
+# del rol. guardar_clasificacion rechaza la fila si rol y tono no coinciden.
+ROLES = {
+    "gestion": "Positivo",       # gestión, acción, obra o pronunciamiento propio
+    "logro": "Positivo",         # reconocimiento o impacto favorable que se le atribuye
+    "critica": "Negativo",       # crítica, denuncia, sanción o cuestionamiento dirigido
+    "afectacion": "Negativo",    # falla, crisis o impacto adverso que se le atribuye
+    "equilibrada": "Neutro",     # señalamiento con respuesta o descargo del cliente
+    "referencial": "Neutro",     # mención de paso: dato, fuente, antecedente, contexto
+}
+LOTE_AUDITOR = 20         # filas por llamada del auditor de tono
+MAX_AUDITOR = 160         # tope de filas auditadas por corrida
+TOPE_CTX_AUDITOR = 700
 
 # Progreso para la app (las tools corren en este mismo proceso).
 PROGRESO: Dict[str, Any] = {}
@@ -275,9 +297,31 @@ def _avisar(pct: int, msg: str) -> None:
             pass
 
 
+def terminos_cliente(brand: str = "", aliases: Sequence[str] = (),
+                     voceros: Sequence[str] = ()) -> List[str]:
+    """Marca, alias y voceros normalizados (sin tildes ni mayúsculas)."""
+    out: List[str] = []
+    for t in [brand, *(aliases or []), *(voceros or [])]:
+        n = _simple(t)
+        if n and n not in out:
+            out.append(n)
+    return out
+
+
+def menciona_cliente(texto: str, terminos: Optional[Sequence[str]] = None) -> bool:
+    """True si el texto nombra literalmente a la marca, un alias o un vocero
+    (palabra completa). Sin términos configurados no se puede saber: True."""
+    terminos = _ESTADO.get("terminos") if terminos is None else terminos
+    if not terminos:
+        return True
+    t = " %s " % _simple(texto)
+    return any(" %s " % x in t for x in terminos)
+
+
 def preparar_estado(items: Sequence[dict], incluir_tema: bool,
                     taxonomia: Optional[Sequence[str]] = None,
-                    progreso_cb: Optional[Callable[[int, str], None]] = None) -> None:
+                    progreso_cb: Optional[Callable[[int, str], None]] = None,
+                    terminos: Sequence[str] = (), tono_pkl: bool = False) -> None:
     """Carga los items en memoria. Cada item: {id, titulo, contexto, duplicado_de?}.
 
     `duplicado_de` (opcional) marca un duplicado explícito; además, los títulos
@@ -308,7 +352,8 @@ def preparar_estado(items: Sequence[dict], incluir_tema: bool,
     _ESTADO.clear()
     _ESTADO.update(orden=orden, datos=datos, hereda=hereda, explicitos=explicitos, res={},
                    incluir_tema=bool(incluir_tema), taxonomia=tax,
-                   tax_norm={_simple(t): t for t in tax}, progreso_cb=progreso_cb)
+                   tax_norm={_simple(t): t for t in tax}, progreso_cb=progreso_cb,
+                   terminos=list(terminos or []), tono_pkl=bool(tono_pkl))
     PROGRESO.clear()
     PROGRESO.update(paso="Clasificando", total=len(orden) - len(hereda), leidas=0,
                     guardadas=0, faltan=None, revisado=False, cambios_revision=0, grupos=0)
@@ -359,6 +404,8 @@ async def _leer_noticias(args: Dict[str, Any]) -> Dict[str, Any]:
             reg["igual_a"] = _raiz(fid)
         else:
             reg["contexto"] = d["contexto"][:TOPE_TEXTO]
+            if not menciona_cliente(d["titulo"] + " " + d["contexto"]):
+                reg["sin_mencion_literal"] = True
         salida.append(reg)
     desde = max(0, int(args.get("desde") or 0))
     pagina = salida[desde:desde + POR_PAGINA]
@@ -383,6 +430,12 @@ async def _guardar_clasificacion(args: Dict[str, Any]) -> Dict[str, Any]:
         desconocidos = [i for i in nuevas if i not in _ESTADO["datos"]]
         if desconocidos:
             raise ValueError("ids desconocidos %s" % desconocidos[:10])
+        for f in nuevas.values():
+            if f.get("rol") not in (None, ""):
+                f["rol"] = _simple(f["rol"])
+        sin_rol = [i for i, f in nuevas.items() if f.get("rol") and f["rol"] not in ROLES]
+        if sin_rol:
+            raise ValueError("rol inválido en ids %s: usa %s" % (sin_rol[:10], ", ".join(ROLES)))
         tax = _ESTADO["tax_norm"]
         if _ESTADO["incluir_tema"] and tax:
             fuera = [i for i, f in nuevas.items()
@@ -403,17 +456,23 @@ async def _guardar_clasificacion(args: Dict[str, Any]) -> Dict[str, Any]:
     for fid in list(nuevas):
         f = nuevas[fid]
         sub = str(f.get("subtema") or f.get("sub_tema") or "").strip()
-        if not sub:
-            continue
         d = _ESTADO["datos"].get(_raiz(fid)) or {}
-        if _simple(sub) in _ESTADO.get("permitidos", set()):
-            continue   # rótulo exacto que fija el perfil del cliente
-        prob = problemas_subtema(sub, d.get("titulo", ""), d.get("contexto", ""))
+        prob = []
+        if sub and _simple(sub) not in _ESTADO.get("permitidos", set()):
+            # (los rótulos exactos que fija el perfil del cliente no se validan)
+            prob = problemas_subtema(sub, d.get("titulo", ""), d.get("contexto", ""))
+        # Coherencia rol ↔ tono: el tono sale del papel del cliente en la nota.
+        rol = f.get("rol")
+        if rol and not _ESTADO.get("tono_pkl") and ROLES[rol] != f["tono"]:
+            prob.append("rol '%s' corresponde a tono %s, no a %s (decide primero el rol del "
+                        "cliente en la nota y pon el tono de ese rol)" % (rol, ROLES[rol], f["tono"]))
         if not prob:
             marcados.pop(_raiz(fid), None)
             continue
         if rechazos.get(fid, 0) >= MAX_RECHAZOS:
             marcados[_raiz(fid)] = prob
+            if any(x.startswith("rol ") for x in prob):
+                _ESTADO.setdefault("tono_dudoso", set()).add(_raiz(fid))
             continue
         rechazos[fid] = rechazos.get(fid, 0) + 1
         _ESTADO.setdefault("log_rechazos", []).append({"id": fid, "subtema": sub, "motivos": prob})
@@ -429,6 +488,11 @@ async def _guardar_clasificacion(args: Dict[str, Any]) -> Dict[str, Any]:
                                                   or f.get("sub_tema") or "").strip()}
         if not ahora["subtema"]:
             ahora["subtema"] = antes.get("subtema", "")
+        # El rol se conserva si sigue siendo coherente con el tono guardado
+        # (una corrección del revisor puede traer solo id, subtema y tono).
+        rol = f.get("rol") or antes.get("rol")
+        if rol and (_ESTADO.get("tono_pkl") or ROLES.get(rol) == ahora["tono"]):
+            ahora["rol"] = rol
         if _ESTADO["incluir_tema"]:
             t = str(f.get("tema") or "").strip() or antes.get("tema", "")
             ahora["tema"] = _ESTADO["tax_norm"].get(_simple(t), t) if t else ""
@@ -444,9 +508,10 @@ async def _guardar_clasificacion(args: Dict[str, Any]) -> Dict[str, Any]:
             "Haiku clasificó %d de %d noticias" % (total - len(faltan), total))
     if rechazadas:
         det = "; ".join("id %s: %s" % (i, ", ".join(m)) for i, m in list(rechazadas.items())[:40])
-        return _texto("SUBTEMAS RECHAZADOS (no se guardaron): %s. Rehaz SOLO esos ids con una frase "
-                      "nominal de 3 a 7 palabras que no empiece con verbo y no copie el título ni el "
-                      "contexto, y vuelve a llamar guardar_clasificacion. Faltan por clasificar: %d."
+        return _texto("FILAS CON SUBTEMAS RECHAZADOS o rol/tono incoherente (no se guardaron): %s. "
+                      "Rehaz SOLO esos ids: subtema = frase nominal de 3 a 7 palabras que no empiece "
+                      "con verbo y no copie el título ni el contexto; tono = el que corresponde al "
+                      "rol. Vuelve a llamar guardar_clasificacion. Faltan por clasificar: %d."
                       % (det, len(faltan)), error=True)
     if faltan:
         ids = ", ".join(faltan[:40]) + (", ..." if len(faltan) > 40 else "")
@@ -540,18 +605,38 @@ async def _candidatos_consistencia(args: Dict[str, Any]) -> Dict[str, Any]:
 
 # ─── prompts ──────────────────────────────────────────────────────────────
 
+RUBRICA_TONO = """El TONO mide cómo la noticia EVALÚA o deja al CLIENTE (la marca, sus alias o sus voceros). No es el ánimo general de la noticia ni la gravedad del asunto. Se decide en dos pasos.
+Paso 1, el "rol": qué papel tiene el cliente en la nota.
+- gestion: el cliente o su vocero HACE algo que la nota presenta a su favor: gestión, obra, programa, inversión, alianza, estudio, informe, pronunciamiento, o actúa frente a un problema.
+- logro: la nota le atribuye un resultado o impacto favorable: reconocimiento, premio, cifra buena, respaldo o elogio de terceros.
+- critica: hay crítica, denuncia, queja, sanción, investigación o cuestionamiento DIRIGIDO al cliente, a su administración, a sus funcionarios o a su vocero.
+- afectacion: la nota le atribuye un hecho adverso que daña su imagen u operación: falla, crisis, escándalo, incumplimiento, pérdida.
+- equilibrada: hay un señalamiento contra el cliente Y la nota trae su respuesta, descargo o versión.
+- referencial: el cliente solo aparece mencionado: dato, antecedente, fuente citada entre varias, lugar, lista o contexto. La nota no lo evalúa ni le atribuye una acción.
+Paso 2, el "tono" sale del rol: gestion y logro = Positivo; critica y afectacion = Negativo; equilibrada y referencial = Neutro.
+Comprobaciones:
+- ¿De quién habla la nota? Un asunto grave (muertes, violencia, crisis, quejas contra otros) no es Negativo si el cliente no es el señalado ni el responsable. Una buena noticia de un tercero no es Positivo si el cliente solo está mencionado.
+- Lo que hace o dice un VOCERO en su cargo cuenta como del cliente. Si el cliente o su vocero denuncia, advierte o critica a OTRO, es su labor (gestion), no una crítica contra él.
+- Una entidad con nombre parecido (otro país, otra ciudad, otra institución) no es el cliente: referencial.
+- Ante duda entre Positivo o Negativo y Neutro, elige referencial (Neutro)."""
+
+RUBRICA_SUBTEMA = """Cómo se redacta un SUBTEMA preciso:
+1. Identifica el HECHO principal de la nota: qué pasó (no el papel del cliente, no un párrafo lateral). Si el cliente solo opina sobre un asunto, el subtema es ese asunto.
+2. Redáctalo como: sustantivo del hecho (Entrega, Denuncia, Convenio, Informe, Captura, Jornada…) + su objeto + el dato que lo distingue (actor, lugar, programa o población).
+3. Prueba de precisión: si el rótulo le sirve igual a OTRA noticia distinta del lote, le falta el dato distintivo; si solo le sirve a UN medio (trae una cita, una cifra menor o un detalle anecdótico), le sobra detalle. Dos notas del mismo hecho deben poder llevarlo palabra por palabra."""
+
 SYSTEM_PROMPT = """<rol>
 Eres un analista de monitoreo de medios que clasifica noticias en español de Colombia. Tu trabajo lo usa un equipo que entrega informes a instituciones, así que la consistencia entre filas importa tanto como acertar cada una.
 </rol>
 
 <objetivo>
-Recibes el CLIENTE, sus ALIAS y VOCEROS. A cada noticia le asignas TONO y SUBTEMA (y TEMA cuando el pedido lo indique) y los guardas con guardar_clasificacion. Las noticias ya vienen con su "contexto" (las oraciones literales donde aparece el cliente). No supongas un cliente que el pedido no nombre.
+Recibes el CLIENTE, sus ALIAS y VOCEROS. A cada noticia le asignas ROL, TONO y SUBTEMA (y TEMA cuando el pedido lo indique) y los guardas con guardar_clasificacion. Las noticias ya vienen con su "contexto" (título, resumen y las oraciones literales donde aparece el cliente). No supongas un cliente que el pedido no nombre.
 </objetivo>
 
 <cliente_alias_voceros>
 - Una mención de cualquier ALIAS cuenta como mención del cliente.
 - Una mención de un VOCERO, o lo que él dice o se dice de él en su rol, cuenta como mención del cliente y pesa en el TONO.
-- Si una noticia no menciona al cliente, a sus alias ni a sus voceros: TONO Neutro, salvo que la noticia afecte claramente al cliente.
+- Si leer_noticias marca "sin_mencion_literal": el texto no nombra al cliente, a sus alias ni a sus voceros. Comprueba si de verdad se habla de él (por su cargo o por "la entidad"); si no, el rol es referencial y el tono Neutro.
 </cliente_alias_voceros>
 
 <como_trabajas>
@@ -563,6 +648,8 @@ SUBTEMA: clasificación precisa y específica del hecho que cuenta el "contexto"
 - NUNCA es un extracto, recorte o casi-copia del título ni del contexto: sintetiza el hecho con tus palabras.
 - Específico, no genérico: nada de "Gestión de la alcaldía" ni "Situación de orden público".
 - Nunca el nombre del medio, sin comas ni punto final.
+__RUBRICA_SUBTEMA__
+Si el pedido trae un bloque <guia_subtema>, esa guía del cliente MANDA sobre estas reglas en los casos que nombre.
 Reglas de Grill (literales):
 __REGLAS_SUBTEMA__
 Ejemplos:
@@ -571,25 +658,31 @@ Ejemplos:
 - MAL "Realizando jornada" (gerundio y genérico) -> BIEN "Jornada de atención a víctimas en Tumaco"
 - MAL "Denunció amenazas contra líderes en el Cauca" (verbo y extracto) -> BIEN "Amenazas a líderes sociales del Cauca"
 - MAL "La Defensoría del Pueblo emitió una alerta temprana" (copia y verbo) -> BIEN "Alerta temprana por reclutamiento de menores"
+- MAL "Jornada de salud" (le sirve a cualquier jornada) -> BIEN "Jornada de vacunación infantil en Soacha"
 - BIEN "Bienestar de la población migrante", "Taller de liderazgo juvenil"
 
 TEMA (solo si el pedido dice INCLUIR TEMA): categoría amplia de 1 a 4 palabras que agrupa varios subtemas (por ejemplo "Seguridad", "Movilidad", "Derechos humanos"). Pocos temas para todo el lote. Si el pedido trae <lista_temas>, el tema DEBE ser exactamente uno de esa lista. Si el pedido dice SIN TEMA, no envíes "tema".
 
-TONO: Positivo, Neutro o Negativo, solo desde la perspectiva del cliente.
-- Positivo: gestiones a favor, logros, reconocimientos, inversiones u obras del cliente.
-- Negativo: críticas, denuncias, sanciones o afectación directa al cliente.
-- Neutro: menciones informativas sin efecto claro para el cliente.
-Si el pedido trae un bloque <criterio_tono>, ese criterio del cliente MANDA: aplícalo a cada fila por encima de estas definiciones y pásaselo completo y literal al ayudante revisor-subtemas cuando lo lances.
+TONO y ROL: Positivo, Neutro o Negativo, solo desde la perspectiva del cliente.
+__RUBRICA_TONO__
+Ejemplos (cliente: una alcaldía):
+- "La Alcaldía entregó 300 viviendas" -> rol gestion, Positivo.
+- "Concejales denuncian sobrecostos en contrato de la Alcaldía" -> rol critica, Negativo.
+- "Denuncian sobrecostos; la Alcaldía respondió que el contrato cumple la ley" -> rol equilibrada, Neutro.
+- "Homicidios aumentaron 12 %, según cifras de la Alcaldía" -> rol referencial, Neutro (asunto grave, pero la nota no evalúa a la Alcaldía).
+- "Empresa privada ganó premio; al acto asistió un delegado de la Alcaldía" -> rol referencial, Neutro.
+guardar_clasificacion RECHAZA la fila si el rol y el tono no coinciden.
+Si el pedido trae un bloque <criterio_tono>, ese criterio del cliente MANDA en los casos que nombre: usa el tono que indique y el rol que corresponde a ese tono.
 
 Consistencia, en este orden:
 1. Agrupa las noticias que cuentan el mismo hecho ("igual_a" ya junta títulos idénticos: esas filas no se clasifican, heredan).
 2. A cada grupo dale exactamente el mismo SUBTEMA y TONO. Reutiliza un subtema existente cuando el hecho sea el mismo.
-3. Cuando guardar_clasificacion diga "Faltan por clasificar: 0", llama candidatos_consistencia con desde=0. Si total es 0, terminas. Si no, lanza el ayudante revisor-subtemas con Agent pasándole el rango de grupos (desde y cuántos) y el criterio del tono; si hay más de 30 grupos, lanza dos en paralelo, cada uno con su mitad. Con sus correcciones llama UNA vez guardar_clasificacion solo con las filas que cambian. No repitas la revisión.
+3. Cuando guardar_clasificacion diga "Faltan por clasificar: 0", llama candidatos_consistencia con desde=0. Si total es 0, terminas. Si no, lanza el ayudante revisor-subtemas con Agent pasándole solo el rango de grupos (desde y cuántos): él ya conoce al cliente, sus alias, voceros y el criterio del tono. Si hay más de 30 grupos, lanza dos en paralelo, cada uno con su mitad. Con sus correcciones llama UNA vez guardar_clasificacion solo con las filas que cambian. No repitas la revisión. (Después, un auditor de tono independiente revisa por su cuenta los tonos de riesgo: no es tarea tuya.)
 </como_trabajas>
 
 <herramientas>
 - mcp__medios__leer_noticias(desde): páginas de noticias; empieza en desde=0, clasifica y guarda esa página, y pide la siguiente con "siguiente" hasta que sea null.
-- mcp__medios__guardar_clasificacion(filas_json): lista JSON [{"id":"…","subtema":"…","tono":"Positivo|Neutro|Negativo","tema":"…"}]. Puedes llamarla por tandas; las filas repetidas se corrigen. Dice cuántas filas faltan.
+- mcp__medios__guardar_clasificacion(filas_json): lista JSON [{"id":"…","subtema":"…","rol":"gestion|logro|critica|afectacion|equilibrada|referencial","tono":"Positivo|Neutro|Negativo","tema":"…"}]. Puedes llamarla por tandas; las filas repetidas se corrigen. Dice cuántas filas faltan.
 - mcp__medios__candidatos_consistencia(desde): solo al final (paso 3).
 - Agent (ayudante revisor-subtemas): solo en el paso 3.
 No tienes terminal ni puedes leer ni escribir archivos.
@@ -603,7 +696,9 @@ try:
     from catalogo_tono_tema import REGLAS_SUBTEMA as _REGLAS_GRILL
 except Exception:  # pragma: no cover
     _REGLAS_GRILL = ""
-SYSTEM_PROMPT = SYSTEM_PROMPT.replace("__REGLAS_SUBTEMA__", _REGLAS_GRILL)
+SYSTEM_PROMPT = (SYSTEM_PROMPT.replace("__REGLAS_SUBTEMA__", _REGLAS_GRILL)
+                 .replace("__RUBRICA_SUBTEMA__", RUBRICA_SUBTEMA)
+                 .replace("__RUBRICA_TONO__", RUBRICA_TONO))
 
 REGLAS_FORMA_REVISOR = (
     "FORMA DEL SUBTEMA (obligatoria; las correcciones que no la cumplan se rechazan): frase nominal "
@@ -616,22 +711,69 @@ REGLAS_FORMA_REVISOR = (
 )
 
 PROMPT_REVISOR = (
-    "Eres revisor de consistencia de una clasificación de noticias en español. Recibes un rango de "
-    "grupos (desde y cuántos) y quizá un CRITERIO DEL TONO. Lee los grupos con "
+    "Eres revisor de consistencia y precisión de los SUBTEMAS de una clasificación de noticias en "
+    "español. Recibes un rango de grupos (desde y cuántos). Lee los grupos con "
     "mcp__medios__candidatos_consistencia (desde), solo los de tu rango.\n"
-    "Para cada grupo decide si sus filas cuentan el MISMO hecho: el mismo evento, la misma entidad y "
-    "el mismo momento. Mismo tema general o mismo medio NO es el mismo hecho.\n"
-    "- Si es el mismo hecho: todas las filas llevan un solo subtema (reutiliza el más específico) y "
-    "un solo tono (el que mejor sostiene el contexto).\n"
-    "- Si no lo es: déjalas separadas y haz cada subtema lo bastante específico (3 a 7 palabras). "
-    "Los grupos 'posible_sobreagrupacion' casi siempre son hechos distintos con un subtema genérico.\n"
-    "Nunca fusiones solo porque los subtemas comparten palabras. Tono solo Positivo, Neutro o "
-    "Negativo, para el cliente; si te pasan un CRITERIO DEL TONO, decide con él.\n"
+    "TAREA 1, mismo hecho. Para cada grupo decide si sus filas cuentan el MISMO hecho. Lo son solo "
+    "si coinciden las cuatro cosas: el mismo evento, los mismos actores, el mismo lugar y el mismo "
+    "momento (fecha, edición o cifra). Mismo tema general, misma entidad o mismo medio NO es el "
+    "mismo hecho. Nunca fusiones solo porque los subtemas comparten palabras.\n"
+    "TAREA 2, subtema preciso.\n"
+    "- Si es el mismo hecho: todas las filas llevan UN solo subtema, el que mejor pasa la prueba de "
+    "precisión (reutiliza uno existente antes de escribir otro), y un solo tono.\n"
+    "- Si no lo es: déjalas separadas y dale a cada una el dato que la distingue (actor, lugar, "
+    "programa). Los grupos 'posible_sobreagrupacion' casi siempre son hechos distintos con un "
+    "subtema genérico.\n"
+    + RUBRICA_SUBTEMA + "\n"
+    "TAREA 3, tono del grupo. Solo cuando las filas del mismo hecho traen tonos distintos, elige "
+    "el que sostiene el contexto con esta regla (un auditor de tono aparte revisa el resto, no "
+    "cambies tonos de filas que no son del mismo hecho):\n" + RUBRICA_TONO + "\n"
     "Responde SOLO con JSON compacto, sin texto alrededor: "
     '{"correcciones":[{"id":"...","subtema":"...","tono":"..."}],'
     '"grupos":[{"grupo":0,"mismo_hecho":true,"razon":"una línea"}]}. '
     "En correcciones incluye solo las filas cuyo subtema o tono cambia."
 )
+
+PROMPT_AUDITOR_TONO = (
+    "Eres el agente auditor-tono de un monitoreo de medios en español de Colombia. Tu única tarea "
+    "es verificar el TONO de las filas que recibes, mirando SOLO cómo la nota evalúa al CLIENTE "
+    "(marca, alias o voceros) que trae el pedido. No cambias subtemas.\n"
+    + RUBRICA_TONO + "\n"
+    "Cada fila trae su titulo, su contexto (las oraciones donde aparece el cliente), el tono y rol "
+    "actuales y los \"motivos\" por los que se audita. Para cada fila:\n"
+    "1. Ubica en el contexto la mención del cliente, alias o vocero y qué se dice de él.\n"
+    "2. Decide el rol y, con él, el tono. Un Negativo exige que la crítica o el hecho adverso recaiga "
+    "en el cliente; un Positivo exige que la acción o el resultado favorable sea del cliente.\n"
+    "3. Las filas con el mismo \"subtema\" que cuentan el mismo hecho llevan el mismo tono.\n"
+    "Si el pedido trae \"criterio_tono\", ese criterio del cliente MANDA en los casos que nombre: "
+    "usa el tono que indique y el rol que corresponde a ese tono.\n"
+    "Responde SOLO con JSON compacto, sin texto alrededor, con TODAS las filas recibidas: "
+    '{"resultados":[{"id":"...","rol":"gestion|logro|critica|afectacion|equilibrada|referencial",'
+    '"tono":"Positivo|Neutro|Negativo","razon":"máximo 12 palabras"}]}'
+)
+
+
+def limpiar_criterio(texto: str) -> str:
+    """Criterio de tono listo para el prompt: los '\\n' literales del
+    catálogo pasan a saltos de línea reales."""
+    return str(texto or "").replace("\\n", "\n").strip()
+
+
+def bloque_cliente(brand: str, aliases: Sequence[str] = (), voceros: Sequence[str] = (),
+                   criterio_texto: str = "") -> str:
+    """Contexto del cliente que se incrusta en el prompt de cada subagente:
+    así no depende de que el agente principal se lo copie al lanzarlo."""
+    partes = ["<cliente>", "CLIENTE: %s" % (brand or "")]
+    if aliases:
+        partes.append("ALIAS: %s" % ", ".join(aliases))
+    if voceros:
+        partes.append("VOCEROS: %s" % ", ".join(voceros))
+    partes.append("</cliente>")
+    crit = limpiar_criterio(criterio_texto)
+    if crit:
+        partes.append("<criterio_tono>\n%s\n</criterio_tono>\nEl criterio_tono del cliente MANDA "
+                      "sobre la regla general del tono en los casos que nombre." % crit)
+    return "\n".join(partes)
 
 
 def armar_prompt(brand: str, aliases: Sequence[str], voceros: Sequence[str],
@@ -642,8 +784,8 @@ def armar_prompt(brand: str, aliases: Sequence[str], voceros: Sequence[str],
     if tono_pkl:
         # Clausifier: con PKL de tono el modelo del cliente pone el TONO; el
         # agente no lo analiza (envía Neutro) y se concentra en el SUBTEMA.
-        partes.append('TONO POR MODELO DEL CLIENTE: no analices el tono; envía siempre '
-                      '"tono":"Neutro" y dedica el trabajo al SUBTEMA.')
+        partes.append('TONO POR MODELO DEL CLIENTE: no analices el tono ni el rol; envía siempre '
+                      '"tono":"Neutro", sin "rol", y dedica el trabajo al SUBTEMA.')
         criterio_texto = ""
     if aliases:
         partes.append("ALIAS: %s" % ", ".join(aliases))
@@ -653,7 +795,7 @@ def armar_prompt(brand: str, aliases: Sequence[str], voceros: Sequence[str],
     if incluir_tema and taxonomia:
         partes.append("<lista_temas>\n%s\n</lista_temas>" % "\n".join("- %s" % t for t in taxonomia))
     if (criterio_texto or "").strip():
-        partes.append("<criterio_tono>\n%s\n</criterio_tono>" % criterio_texto.strip())
+        partes.append("<criterio_tono>\n%s\n</criterio_tono>" % limpiar_criterio(criterio_texto))
     if (guia_subtema or "").strip():
         partes.append("<guia_subtema>\n%s\n</guia_subtema>" % guia_subtema.strip())
     partes.append("Clasifica todas las noticias y guárdalas con guardar_clasificacion.")
@@ -673,15 +815,19 @@ def _sdk():
 def _servidor(sdk):
     leer = sdk.tool(
         "leer_noticias",
-        "Devuelve PÁGINAS de %d noticias con id, 'titulo' (etiqueta corta) y 'contexto' (oraciones "
-        "donde aparece el cliente). 'desde' = 0 la primera vez y luego 'siguiente' hasta null. Las "
-        "filas con 'igual_a' repiten el título de otra fila y heredan su clasificación." % POR_PAGINA,
+        "Devuelve PÁGINAS de %d noticias con id, 'titulo_solo_para_agrupar' (etiqueta corta) y "
+        "'contexto' (título, resumen y oraciones donde aparece el cliente). 'desde' = 0 la primera "
+        "vez y luego 'siguiente' hasta null. Las filas con 'igual_a' repiten el título de otra fila "
+        "y heredan su clasificación. 'sin_mencion_literal' = el texto no nombra al cliente, sus "
+        "alias ni sus voceros." % POR_PAGINA,
         {"desde": int})(_leer_noticias)
     guardar = sdk.tool(
         "guardar_clasificacion",
-        "Guarda subtema, tono (Positivo|Neutro|Negativo) y tema (si se pidió). 'filas_json': lista "
-        'JSON [{"id":"1","subtema":"...","tono":"Neutro","tema":"..."}]. Se puede llamar por tandas. '
-        "Devuelve cuántas filas faltan.",
+        "Guarda subtema, rol del cliente, tono (Positivo|Neutro|Negativo) y tema (si se pidió). "
+        "'filas_json': lista JSON "
+        '[{"id":"1","subtema":"...","rol":"referencial","tono":"Neutro","tema":"..."}]. '
+        "Rechaza subtemas mal formados y filas cuyo rol no corresponde al tono. Se puede llamar por "
+        "tandas. Devuelve cuántas filas faltan.",
         {"filas_json": str})(_guardar_clasificacion)
     candidatos = sdk.tool(
         "candidatos_consistencia",
@@ -693,7 +839,8 @@ def _servidor(sdk):
                                      tools=[leer, guardar, candidatos])
 
 
-def construir_opciones(sdk, cwd: str, max_turns: int, max_budget_usd: float, modelo: str):
+def construir_opciones(sdk, cwd: str, max_turns: int, max_budget_usd: float, modelo: str,
+                       contexto_cliente: str = ""):
     return sdk.ClaudeAgentOptions(
         model=modelo,
         system_prompt=SYSTEM_PROMPT,
@@ -706,7 +853,8 @@ def construir_opciones(sdk, cwd: str, max_turns: int, max_budget_usd: float, mod
                 description=("Revisa la consistencia de tono y subtema: decide si cada grupo candidato "
                              "es el MISMO hecho y devuelve correcciones en JSON. Úsalo una vez al "
                              "final, después de guardar todas las páginas; pásale el rango de grupos."),
-                prompt=PROMPT_REVISOR + "\n" + REGLAS_FORMA_REVISOR,
+                prompt=(PROMPT_REVISOR + "\n" + REGLAS_FORMA_REVISOR
+                        + ("\n" + contexto_cliente if contexto_cliente else "")),
                 tools=["mcp__medios__candidatos_consistencia"],
                 model="haiku",
                 maxTurns=6,
@@ -833,6 +981,148 @@ def reformular_subtemas(fallos: Sequence[dict], modelo: str = MODELO_HAIKU,
     return out
 
 
+# ─── auditor de tono (agente aparte, orquestado por código) ───────────────
+# Después del agente principal y su revisor de subtemas, las filas con tono
+# de riesgo pasan por un agente que solo mira una cosa: cómo evalúa la nota
+# al cliente. Lo lanza el código (no depende de que el agente principal se
+# acuerde), por lotes en paralelo, sin herramientas y con la salida validada.
+
+AUDITORIA: Dict[str, Any] = {}
+
+
+def candidatos_tono() -> List[dict]:
+    """Filas cuyo tono conviene verificar, con el motivo. Sin IA."""
+    res, datos = _ESTADO["res"], _ESTADO["datos"]
+    dudosos = _ESTADO.get("tono_dudoso") or set()
+    tonos_sub: Dict[str, set] = {}
+    for fid in _ESTADO["orden"]:
+        r = res.get(fid) or {}
+        if fid not in _ESTADO["hereda"] and r.get("tono") and r.get("subtema"):
+            tonos_sub.setdefault(_simple(r["subtema"]), set()).add(r["tono"])
+    out = []
+    for fid in _ESTADO["orden"]:
+        r = res.get(fid) or {}
+        if fid in _ESTADO["hereda"] or r.get("tono") not in TONOS:
+            continue
+        d = datos[fid]
+        motivos, peso = [], 0
+        if fid in dudosos:
+            motivos.append("el rol y el tono guardados no coincidían")
+            peso = 4
+        if r["tono"] != "Neutro" and not menciona_cliente(d["titulo"] + " " + d["contexto"]):
+            motivos.append("tono %s sin mención literal del cliente, alias ni voceros" % r["tono"])
+            peso = max(peso, 4)
+        if len(tonos_sub.get(_simple(r.get("subtema")), ())) > 1:
+            motivos.append("su subtema tiene filas con tonos distintos")
+            peso = max(peso, 3)
+        if r["tono"] == "Negativo":
+            motivos.append("Negativo: confirma que la crítica o el hecho adverso recae en el cliente")
+            peso = max(peso, 2)
+        elif r["tono"] == "Positivo" and not menciona_cliente(d["titulo"]):
+            motivos.append("Positivo y el cliente no está en el título: confirma que la acción o "
+                           "el resultado favorable es suyo y no una mención de paso")
+            peso = max(peso, 1)
+        if motivos:
+            out.append({"id": fid, "titulo": d["titulo"][:TOPE_TITULO],
+                        "contexto": d["contexto"][:TOPE_CTX_AUDITOR],
+                        "subtema": r.get("subtema") or "", "tono_actual": r["tono"],
+                        "rol_actual": r.get("rol") or "", "motivos": motivos, "_peso": peso})
+    # Los de más riesgo primero si hay que recortar; dentro del lote, las
+    # filas del mismo subtema quedan juntas para que se decidan igual.
+    out.sort(key=lambda c: -c["_peso"])
+    out = out[:MAX_AUDITOR]
+    out.sort(key=lambda c: _simple(c["subtema"]))
+    for c in out:
+        del c["_peso"]
+    return out
+
+
+def auditar_tono(brand: str, aliases: Sequence[str] = (), voceros: Sequence[str] = (),
+                 criterio_texto: str = "", modelo: str = MODELO_HAIKU, query_fn=None,
+                 lote: int = LOTE_AUDITOR) -> Dict[str, Any]:
+    """Audita el tono de `candidatos_tono()` y aplica los cambios en el estado.
+
+    Una llamada `query()` por lote (max_turns=1, sin herramientas), lotes en
+    paralelo. Solo se aplica un resultado con tono válido y rol coherente.
+    Nunca lanza: ante un error deja los tonos como estaban.
+    """
+    AUDITORIA.clear()
+    AUDITORIA.update(candidatos=0, lotes=0, costo_usd=0.0, cambios=[], confirmados=0, error=None)
+    cands = candidatos_tono()
+    AUDITORIA["candidatos"] = len(cands)
+    if not cands:
+        return dict(AUDITORIA)
+    try:
+        sdk = _sdk()
+        if query_fn is None:
+            _preparar_credencial()
+            query_fn = sdk.query
+    except Exception as e:  # noqa: BLE001
+        AUDITORIA["error"] = str(e)
+        return dict(AUDITORIA)
+    _avisar(89, "Auditor de tono: %d filas de riesgo" % len(cands))
+    PROGRESO.update(paso="Auditando tono", auditoria_tono=len(cands))
+    lotes = [cands[i:i + lote] for i in range(0, len(cands), lote)]
+    AUDITORIA["lotes"] = len(lotes)
+    textos = [""] * len(lotes)
+    costos = [0.0] * len(lotes)
+    cliente = {"marca": brand, "alias": list(aliases or []), "voceros": list(voceros or [])}
+    criterio = limpiar_criterio(criterio_texto)
+
+    async def _uno(n: int, chunk):
+        pedido: Dict[str, Any] = {"cliente": cliente}
+        if criterio:
+            pedido["criterio_tono"] = criterio
+        pedido["filas"] = chunk
+        with tempfile.TemporaryDirectory(prefix="motor_haiku_tono_") as cwd:
+            op = sdk.ClaudeAgentOptions(
+                model=modelo, system_prompt=PROMPT_AUDITOR_TONO, tools=[], allowed_tools=[],
+                setting_sources=[], permission_mode="default", cwd=cwd, max_turns=1,
+                max_budget_usd=round(min(1.0, 0.03 + 0.004 * len(chunk)), 2),
+                disallowed_tools=["Bash", "Edit", "Read", "Grep", "Glob", "Write", "WebSearch",
+                                  "WebFetch", "Agent"],
+                stderr=lambda linea: None)
+            async for m in query_fn(prompt=json.dumps(pedido, ensure_ascii=False), options=op):
+                if isinstance(m, sdk.ResultMessage):
+                    costos[n] = float(m.total_cost_usd or 0.0)
+                    textos[n] = m.result or ""
+
+    async def _todos():
+        await asyncio.gather(*[_uno(n, c) for n, c in enumerate(lotes)], return_exceptions=True)
+
+    try:
+        _ejecutar(_todos())
+    except Exception as e:  # noqa: BLE001
+        AUDITORIA["error"] = "%s: %s" % (type(e).__name__, e)
+    AUDITORIA["costo_usd"] = round(sum(costos), 6)
+    pedidos = {c["id"] for c in cands}
+    res = _ESTADO["res"]
+    for txt in textos:
+        ini, fin = txt.find("{"), txt.rfind("}")
+        try:
+            data = json.loads(txt[ini:fin + 1]) if ini >= 0 else {}
+        except ValueError:
+            continue
+        for r in (data.get("resultados") or []) if isinstance(data, dict) else []:
+            if not isinstance(r, dict):
+                continue
+            fid, tono, rol = str(r.get("id")), r.get("tono"), _simple(r.get("rol"))
+            if fid not in pedidos or tono not in TONOS or ROLES.get(rol) != tono:
+                continue
+            pedidos.discard(fid)            # un veredicto por fila
+            antes = res.get(fid) or {}
+            if antes.get("tono") == tono:
+                AUDITORIA["confirmados"] += 1
+                antes["rol"] = rol
+                continue
+            AUDITORIA["cambios"].append({"id": fid, "de": antes.get("tono"), "a": tono, "rol": rol,
+                                         "razon": str(r.get("razon") or "")[:160]})
+            antes.update(tono=tono, rol=rol)
+            res[fid] = antes
+    _propagar()
+    return dict(AUDITORIA)
+
+
 def rotulos_permitidos_de(guia_subtema: str = "", extra: Sequence[str] = ()) -> set:
     """Rótulos exactos que el perfil impone (subtemas fijos y los que la guía
     pide 'EXACTAMENTE'): el validador de forma no los rechaza."""
@@ -849,7 +1139,8 @@ def clasificar_con_haiku(items: Sequence[dict], brand: str, aliases: Sequence[st
                          guia_subtema: str = "", modelo: str = MODELO_HAIKU,
                          max_turns: int = 0, max_budget_usd: float = 0.0,
                          query_fn=None, tono_pkl: bool = False,
-                         rotulos_permitidos: Sequence[str] = ()) -> Dict[str, Any]:
+                         rotulos_permitidos: Sequence[str] = (),
+                         auditor_tono: bool = True) -> Dict[str, Any]:
     """Clasifica `items` ({id, titulo, contexto, duplicado_de?}) con el agente Haiku.
 
     Devuelve {"etiquetas": {id: {"tono","subtema"[, "tema"]}}, "costo_usd", "turnos",
@@ -867,7 +1158,8 @@ def clasificar_con_haiku(items: Sequence[dict], brand: str, aliases: Sequence[st
     max_turns = max_turns or (2 * paginas + 14)
     max_budget_usd = max_budget_usd or round(min(5.0, 0.10 + 0.004 * n), 2)
     with _CANDADO:
-        preparar_estado(items, incluir_tema, taxonomia, progreso_cb)
+        preparar_estado(items, incluir_tema, taxonomia, progreso_cb,
+                        terminos=terminos_cliente(brand, aliases, voceros), tono_pkl=tono_pkl)
         _ESTADO["permitidos"] = rotulos_permitidos_de(guia_subtema, rotulos_permitidos)
         if not items:
             return {"etiquetas": {}, "costo_usd": 0.0, "turnos": 0, "filas": 0, "faltan": 0,
@@ -876,11 +1168,27 @@ def clasificar_con_haiku(items: Sequence[dict], brand: str, aliases: Sequence[st
                               incluir_tema, _ESTADO["taxonomia"], guia_subtema,
                               tono_pkl=tono_pkl)
         with tempfile.TemporaryDirectory(prefix="motor_haiku_") as cwd:
-            opciones = construir_opciones(sdk, cwd, max_turns, max_budget_usd, modelo)
+            opciones = construir_opciones(
+                sdk, cwd, max_turns, max_budget_usd, modelo,
+                contexto_cliente=bloque_cliente(brand, list(aliases or []), list(voceros or []),
+                                                "" if tono_pkl else criterio_texto))
             _avisar(75, "Clasificando con Claude Haiku (agente + revisor)…")
             final = _ejecutar(_correr(sdk, prompt, opciones, query_fn))
         _propagar()
+        # Auditor de tono: con PKL de tono no corre (el tono lo pone el PKL).
+        final["auditor_tono"] = None
+        if auditor_tono and not tono_pkl and _ESTADO["res"]:
+            aud = auditar_tono(brand, aliases, voceros, criterio_texto, modelo=modelo,
+                               query_fn=query_fn)
+            final["auditor_tono"] = aud
+            final["costo_usd"] = round(float(final.get("costo_usd") or 0.0)
+                                       + float(aud.get("costo_usd") or 0.0), 6)
         etiquetas = {fid: dict(r) for fid, r in _ESTADO["res"].items() if r.get("tono")}
+        final["roles"] = {}
+        for fid, r in _ESTADO["res"].items():
+            if fid not in _ESTADO["hereda"] and r.get("tono"):
+                k = r.get("rol") or "sin_rol"
+                final["roles"][k] = final["roles"].get(k, 0) + 1
         final.update(rechazos=list(_ESTADO.get("log_rechazos") or []),
                      marcados={k: list(v) for k, v in (_ESTADO.get("marcados") or {}).items()})
         final.update(etiquetas=etiquetas, filas=len(etiquetas), faltan=len(_faltantes()),

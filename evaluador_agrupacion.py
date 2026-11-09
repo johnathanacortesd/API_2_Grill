@@ -41,7 +41,8 @@ PROMPT_EVALUADOR = (
     "parecen. Para cada candidato decides si TODAS sus notas cuentan el MISMO hecho.\n"
     "- \"agrupar\" solo si es el mismo evento, de la misma entidad, en el mismo lugar y el mismo "
     "momento. Entonces das UN subtema común y UN tono común (Positivo, Neutro o Negativo, para el "
-    "cliente). Si solo una parte de las notas es el mismo hecho, pon en \"ids\" solo esas.\n"
+    "CLIENTE que trae el pedido en \"cliente\": marca, alias y voceros). Si solo una parte de las "
+    "notas es el mismo hecho, pon en \"ids\" solo esas.\n"
     "- \"separar\" si son hechos distintos; das un motivo corto y un subtema propio para cada id.\n"
     "Sé ESTRICTO: compartir el tema general, el medio, el texto de agencia (boilerplate), la "
     "entidad o palabras genéricas NO basta para agrupar. Dos titulares parecidos sobre lugares, "
@@ -50,10 +51,22 @@ PROMPT_EVALUADOR = (
     "marca/alias/vocero); el subtema y el tono salen de ese contenido, no de una frase suelta del "
     "titular. SUBTEMA: frase nominal de 3 a 7 palabras de contenido, específica del hecho; nunca "
     "empieza con verbo ni contiene un verbo conjugado; nunca copia ni recorta el título.\n"
+    "__RUBRICAS__"
+    "Si el pedido trae \"criterio_tono\", ese criterio del cliente MANDA sobre la regla general "
+    "del tono en los casos que nombre.\n"
     "Responde SOLO con JSON compacto, sin texto alrededor: "
     '{"grupos":[{"id":"c1","decision":"agrupar","ids":["..."],"subtema":"...","tono":"Neutro"},'
     '{"id":"c2","decision":"separar","motivo":"...","subtemas":{"<id>":"..."}}]}'
 )
+
+
+
+def _prompt_evaluador() -> str:
+    """Prompt con las rúbricas de subtema y tono del motor (una sola fuente)."""
+    import motor_haiku as mh
+    return PROMPT_EVALUADOR.replace(
+        "__RUBRICAS__", mh.RUBRICA_SUBTEMA + "\nTONO del grupo que agrupas:\n" + mh.RUBRICA_TONO + "\n")
+
 
 # Último resultado (lo copia el analizador al resumen).
 ULTIMO: Dict[str, Any] = {}
@@ -156,10 +169,14 @@ def _payload(comps: Sequence[List[int]], rows: List[dict], mapa: Dict[int, int],
 
 def evaluar(cands: Dict[str, Any], rows: List[dict], mapa: Dict[int, int],
             etiquetas: Dict[int, dict], km: Optional[dict] = None, query_fn=None,
-            lote: int = LOTE_CANDIDATOS, modelo: Optional[str] = None) -> List[dict]:
+            lote: int = LOTE_CANDIDATOS, modelo: Optional[str] = None,
+            cliente: Optional[dict] = None) -> List[dict]:
     """Llama al agente (una vez por lote, lotes en paralelo). Devuelve
     decisiones normalizadas [{agrupar:[u], separar:[u], subtema, tono,
-    subtemas:{u:str}, motivo}] con u = nota representante. Nunca lanza."""
+    subtemas:{u:str}, motivo}] con u = nota representante. Nunca lanza.
+
+    `cliente`: {brand, aliases, voceros, criterio_texto}. Sin él, el agente
+    decidía el tono común sin saber de quién se mide; ahora va en el pedido."""
     import motor_haiku as mh
     comps = list((cands or {}).get("comps") or [])
     ULTIMO.clear()
@@ -181,12 +198,23 @@ def evaluar(cands: Dict[str, Any], rows: List[dict], mapa: Dict[int, int],
     textos: List[str] = [""] * len(lotes)
     costos: List[float] = [0.0] * len(lotes)
 
+    cliente = cliente or {}
+    cabecera: Dict[str, Any] = {}
+    if cliente.get("brand"):
+        cabecera["cliente"] = {"marca": cliente.get("brand"),
+                               "alias": list(cliente.get("aliases") or []),
+                               "voceros": list(cliente.get("voceros") or [])}
+    if (cliente.get("criterio_texto") or "").strip():
+        cabecera["criterio_tono"] = mh.limpiar_criterio(cliente["criterio_texto"])
+    system = _prompt_evaluador()
+
     async def _uno(n: int, chunk):
-        prompt = json.dumps({"candidatos": _payload(chunk, rows, mapa, etiquetas, km, n * lote)},
+        prompt = json.dumps(dict(cabecera, candidatos=_payload(chunk, rows, mapa, etiquetas, km,
+                                                               n * lote)),
                             ensure_ascii=False)
         with tempfile.TemporaryDirectory(prefix="evaluador_agrupacion_") as cwd:
             op = sdk.ClaudeAgentOptions(
-                model=modelo or mh.MODELO_HAIKU, system_prompt=PROMPT_EVALUADOR, tools=[],
+                model=modelo or mh.MODELO_HAIKU, system_prompt=system, tools=[],
                 allowed_tools=[], setting_sources=[], permission_mode="default", cwd=cwd,
                 max_turns=1, max_budget_usd=round(min(1.0, 0.03 + 0.004 * len(chunk)), 2),
                 disallowed_tools=["Bash", "Edit", "Read", "Grep", "Glob", "Write", "WebSearch",
