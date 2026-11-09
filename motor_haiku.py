@@ -299,6 +299,15 @@ def problemas_subtema(subtema: str, titulo: str = "", contexto: str = "") -> Lis
     s = str(subtema or "").strip()
     if not s:
         return ["vacío"]
+    # 2026-11-09: el nombre propio de un programa, plan, obra u operación
+    # («Metro de Bogotá», «Jóvenes a la E», «Operación Kratos») es un subtema
+    # válido aunque sea corto o aparezca en el titular.
+    try:
+        import analyzer_tono_tema as _a
+        if _a._es_nombre_de_tema(s) and not empieza_con_verbo(s):
+            return []
+    except Exception:  # noqa: BLE001
+        pass
     p = []
     # Clausifier 2026-11-08: el largo 3-7 cuenta palabras de contenido; los
     # artículos y preposiciones no suman ("Jornada de esterilización gratuita
@@ -751,6 +760,7 @@ SUBTEMA: clasificación precisa y específica del hecho que cuenta el "contexto"
 - NUNCA es un extracto, recorte o casi-copia del título ni del contexto: sintetiza el hecho con tus palabras.
 - Específico, no genérico: nada de "Gestión de la alcaldía" ni "Situación de orden público".
 - Nunca el nombre del medio, sin comas ni punto final.
+- Excepción: si la nota trata de un programa, plan, obra, servicio u operación con NOMBRE PROPIO, el subtema es ese nombre tal como se le conoce, aunque sea corto o esté en el titular: "Jóvenes a la E", "Operación Kratos", "Plan Motos y Vehículos en Engativá", "Metro de Bogotá".
 __RUBRICA_SUBTEMA__
 Si el pedido trae un bloque <guia_subtema>, esa guía del cliente MANDA sobre estas reglas en los casos que nombre.
 Reglas de Grill (literales):

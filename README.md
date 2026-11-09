@@ -42,6 +42,24 @@ El acceso a la interfaz de producción está resguardado mediante autenticación
 
 ## 🚀 Funcionalidades
 
+### Nunca agrupar porque sí (caso «Jardín Olarte», 2026-11-09)
+
+Dossier real de la Secretaría General revisado a mano (51 filas). Con las
+etiquetas revisadas como respuesta del modelo, el código las dañaba en 7
+subtemas; ahora coinciden salvo una unificación legítima.
+
+- **El pie del medio no es evidencia.** El pase «una noticia = un subtema»
+  unía dos notas de Pulzo porque compartían «Pulzo.com se escribe con Z», y
+  dos de Bogotá.gov por su pie fijo. Los pasajes entre notas del mismo medio
+  ya no cuentan, y un pasaje compartido solo une si además los textos se
+  parecen (coseno >= 0,20).
+- **El nombre propio de un programa es un subtema válido** («Plan Motos y
+  Vehículos en Engativá», «Jóvenes a la E», «Operación Kratos»): no se
+  rechaza por corto ni por estar en el titular, y ninguna reparación lo
+  reemplaza por un recorte del texto.
+- **Una reparación nunca deja un rótulo peor**: si el respaldo recortado
+  empieza con verbo o es otro extracto, se conserva el del modelo.
+
 ### Agilidad, medición por etapa y pantalla de resultados
 
 **Agilidad (modo Claude Haiku)**
