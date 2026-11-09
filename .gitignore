@@ -1,2 +1,4 @@
 __pycache__/
 *.pyc
+# Memoria de clasificaciones por cliente (se genera al correr)
+historial/memoria_*.json

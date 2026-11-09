@@ -42,6 +42,79 @@ El acceso a la interfaz de producción está resguardado mediante autenticación
 
 ## 🚀 Funcionalidades
 
+### Agilidad, medición por etapa y pantalla de resultados
+
+**Agilidad (modo Claude Haiku)**
+
+- **Clasificación en paralelo.** Con 4 o más páginas de noticias (100+),
+  hasta 4 agentes clasifican tramos a la vez (`motor_haiku.planear_tramos`);
+  cada uno solo lee y guarda su tramo. Un agente de cierre clasifica lo que
+  haya quedado pendiente y hace la revisión de consistencia entre tramos.
+  `paralelo: 1` en `ai_config` vuelve a un solo agente.
+- **Auditor de tono y evaluador de agrupación a la vez**, en lugar de uno
+  después del otro.
+- **Memoria del cliente** (`memoria_cliente.py`). Una noticia ya clasificada
+  para el mismo cliente con la misma configuración hereda su tono, subtema y
+  tema sin volver al modelo. Vive junto al historial
+  (`memoria_<cliente>.json`), caduca a los 45 días y se descarta sola si
+  cambia la marca, los alias, voceros, criterio, guía, temas, PKL o las
+  instrucciones del motor. Se apaga con la casilla «Reutilizar
+  clasificaciones previas» o `memoria: false`.
+- **Candidatos por matriz.** El revisor y el evaluador buscan notas parecidas
+  con `rapidfuzz.process.cdist` en lugar de comparar par por par en Python
+  (mismo resultado, verificado contra el código anterior).
+
+**Medición por etapa.** `process_dossier` devuelve `tiempos`: lectura y
+limpieza, análisis (con sus sub-etapas: contexto, agrupación, clasificación,
+evaluador y auditor, unificación, reglas, pase final) y generación del Excel.
+
+**Pantalla de resultados.** Distribución de tono, tabla de subtemas con su
+reparto por tono, noticias clasificadas con filtro y búsqueda, pestaña «Para
+revisar» (tonos que corrigió el auditor con su razón, clasificaciones
+aceptadas con observaciones, notas sin mención literal de la marca) y tiempo
+por etapa. El historial del cliente se muestra como tabla.
+
+### Tono del cliente por rol y agentes con tareas precisas (modo Claude Haiku)
+
+El tono mide cómo la noticia evalúa al cliente (marca, alias o voceros), no
+el ánimo general de la nota. El agente decide primero el **rol** del cliente
+y de ahí sale el tono; `guardar_clasificacion` rechaza la fila si no
+coinciden.
+
+| Rol | Qué dice la nota del cliente | Tono |
+|---|---|---|
+| `gestion` | Hace algo a su favor: gestión, obra, programa, pronunciamiento | Positivo |
+| `logro` | Le atribuyen un resultado o impacto favorable, un reconocimiento | Positivo |
+| `critica` | Crítica, denuncia, sanción o cuestionamiento dirigido a él | Negativo |
+| `afectacion` | Le atribuyen una falla, crisis o impacto adverso | Negativo |
+| `equilibrada` | Señalamiento con su respuesta o descargo | Neutro |
+| `referencial` | Mención de paso: dato, fuente, antecedente, contexto | Neutro |
+
+El criterio de tono del perfil sigue mandando en los casos que nombre.
+
+Agentes del modo Haiku y su tarea:
+
+- **Clasificador** (agente principal): rol, tono y subtema por noticia.
+  `leer_noticias` marca `sin_mencion_literal` cuando el texto no nombra al
+  cliente, sus alias ni sus voceros. El subtema se redacta como hecho +
+  objeto + dato distintivo y pasa una prueba de precisión (no le sirve a
+  otra noticia del lote ni solo a un medio).
+- **revisor-subtemas** (subagente): mismo hecho solo si coinciden evento,
+  actores, lugar y momento; un subtema preciso por hecho. Recibe el cliente,
+  alias, voceros y criterio en su propio prompt (antes dependía de que el
+  agente principal se los copiara).
+- **auditor-tono** (`motor_haiku.auditar_tono`, lanzado por código al
+  terminar el agente): verifica solo el tono de las filas de riesgo:
+  Negativos, tonos sin mención literal del cliente, Positivos sin el cliente
+  en el título y subtemas con tonos distintos. Solo aplica veredictos con
+  rol y tono coherentes. No corre con PKL de tono. Se apaga con
+  `auditor_tono: false` en `ai_config`.
+- **evaluador-agrupacion**: ahora recibe el cliente, alias, voceros y
+  criterio (antes fijaba el tono común del grupo sin saber de quién se mide).
+
+El resumen (`analisis['haiku']`) trae `roles` (conteo por rol) y
+`auditor_tono` (filas revisadas, cambios con su razón y costo).
+
 ### Agrupación consistente (actualizada)
 
 El pipeline crea un identificador `Grupo noticia` para republicaciones y noticias equivalentes. La pertenencia se valida con título normalizado, palabras distintivas y similitud semántica; no se fusionan hechos con acciones contradictorias (por ejemplo, aprobación frente a rechazo). Una vez clasificado el grupo, se propagan sus valores canónicos de `Tono IA`, `Tema` y `Subtema` a todas sus filas, evitando que una misma noticia cambie de tono o tema entre medios.

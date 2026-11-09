@@ -169,6 +169,11 @@ div[data-baseweb="tab-border"]{display:none!important;}
 .metric-lbl{font-family:'Inter',sans-serif;font-size:0.64rem;font-weight:600;color:var(--text3);text-transform:uppercase;letter-spacing:0.12em;font-weight:500}
 [data-testid="stForm"]{background:var(--s1)!important;border:1px solid var(--border)!important;border-radius:var(--r3)!important;padding:1.5rem 1.75rem!important;box-shadow:var(--shadow-sm)!important;}
 .sec-label{font-family:'Inter',sans-serif;font-size:0.95rem;font-weight:600;color:var(--text);letter-spacing:0.005em;padding-bottom:0.45rem;border-bottom:1px solid var(--border);margin:1.2rem 0 0.8rem;display:flex;align-items:center;gap:0.6rem;}
+.tono-barra{display:flex;gap:2px;height:22px;margin:0.5rem 0 0.55rem;border-radius:4px;overflow:hidden}
+.tono-seg{height:100%;min-width:3px}
+.tono-ley{display:flex;flex-wrap:wrap;gap:1.4rem;font-size:0.88rem;color:var(--text2);margin-bottom:0.6rem}
+.tono-ley b{color:var(--text);font-weight:600}
+.tono-dot{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:0.4rem;vertical-align:baseline}
 .sec-label::before{content:'';display:inline-block;width:3px;height:15px;background:var(--acento);border-radius:2px;box-shadow:none}
 .upload-zone{display:grid;grid-template-columns:1fr;gap:0.6rem;margin:0.3rem 0}
 .upload-zone-card{background:var(--s2);border:1px dashed var(--border2);border-radius:var(--r2);padding:0.65rem 0.85rem;display:flex;align-items:center;gap:0.65rem;transition:var(--transition);}
@@ -457,6 +462,106 @@ def _render_live_html(pct, msg, elapsed, file_label, active_key, motor="openai",
     </div>
     """
 
+# ─── pantalla de resultados ───────────────────────────────────────────────
+# Tono: dos polos y un punto medio gris (validado para daltonismo); el
+# nombre, el conteo y el porcentaje van siempre en texto junto al color.
+COLORES_TONO = {"Positivo": "#2e7d4f", "Neutro": "#b5afa8", "Negativo": "#c0392b"}
+
+
+def resumen_tonos(vista: list) -> list:
+    """[(tono, n, pct)] en orden Positivo, Neutro, Negativo (solo con datos)."""
+    total = sum(1 for f in vista if f.get("Tono") in COLORES_TONO)
+    out = []
+    for t in COLORES_TONO:
+        n = sum(1 for f in vista if f.get("Tono") == t)
+        out.append((t, n, (100.0 * n / total) if total else 0.0))
+    return out
+
+
+def tabla_subtemas(vista: list) -> pd.DataFrame:
+    """Subtemas con número de notas y su reparto por tono, de mayor a menor."""
+    filas = [f for f in vista if f.get("Subtema")]
+    if not filas:
+        return pd.DataFrame()
+    df = pd.DataFrame(filas)
+    g = df.groupby("Subtema")
+    out = pd.DataFrame({"Notas": g.size()})
+    for t in COLORES_TONO:
+        out[t] = g["Tono"].apply(lambda x, t=t: int((x == t).sum()))
+    if "Tema" in df.columns and df["Tema"].astype(bool).any():
+        out.insert(0, "Tema", g["Tema"].agg(lambda x: x.mode().iat[0] if len(x.mode()) else ""))
+    return out.sort_values(["Notas"], ascending=False).reset_index()
+
+
+def _render_resultados(vista: list, analisis: dict, tiempos: list) -> None:
+    """Distribución de tono, subtemas, vista previa, filas para revisar y
+    tiempo por etapa. Todo sale de datos ya calculados (no relee el xlsx)."""
+    if vista and any(f.get("Tono") for f in vista):
+        st.markdown('<div class="sec-label">Resultado de la clasificación</div>',
+                    unsafe_allow_html=True)
+        tonos = resumen_tonos(vista)
+        segs = "".join(
+            '<div class="tono-seg" title="%s: %d notas (%.1f%%)" style="flex:%d 1 0;background:%s"></div>'
+            % (t, n, pct, n, COLORES_TONO[t]) for t, n, pct in tonos if n)
+        ley = "".join(
+            '<span><span class="tono-dot" style="background:%s"></span><b>%s</b> %d · %.1f%%</span>'
+            % (COLORES_TONO[t], t, n, pct) for t, n, pct in tonos)
+        st.markdown('<div class="tono-barra" role="img" aria-label="Distribución de tono">%s</div>'
+                    '<div class="tono-ley">%s</div>' % (segs, ley), unsafe_allow_html=True)
+
+        tab_sub, tab_filas, tab_rev = st.tabs(["Subtemas", "Noticias clasificadas", "Para revisar"])
+        with tab_sub:
+            df_sub = tabla_subtemas(vista)
+            if df_sub.empty:
+                st.caption("Esta corrida no generó subtemas.")
+            else:
+                st.caption("%d subtemas en %d noticias únicas." % (len(df_sub), len(vista)))
+                st.dataframe(
+                    df_sub, hide_index=True, use_container_width=True,
+                    column_config={"Notas": st.column_config.ProgressColumn(
+                        "Notas", format="%d", min_value=0, max_value=int(df_sub["Notas"].max()),
+                        color="gray")})
+        with tab_filas:
+            c1, c2 = st.columns([1, 3])
+            f_tono = c1.selectbox("Tono", ["Todos"] + list(COLORES_TONO), key="res_filtro_tono")
+            f_txt = c2.text_input("Buscar en título, subtema o medio", key="res_filtro_txt")
+            df = pd.DataFrame(vista)
+            df = df[[c for c in df.columns if df[c].astype(bool).any()]]
+            if f_tono != "Todos" and "Tono" in df.columns:
+                df = df[df["Tono"] == f_tono]
+            if f_txt.strip():
+                q = f_txt.strip().lower()
+                df = df[df.apply(lambda r: q in " ".join(map(str, r.values)).lower(), axis=1)]
+            st.caption("%d de %d noticias únicas." % (len(df), len(vista)))
+            st.dataframe(df, hide_index=True, use_container_width=True,
+                         height=360 if len(df) > 9 else "auto")
+        with tab_rev:
+            rev = (analisis or {}).get("para_revisar") or []
+            if rev:
+                st.caption("%d filas que conviene mirar antes de entregar. El tono y el subtema "
+                           "son los finales del archivo." % len(rev))
+                st.dataframe(
+                    pd.DataFrame(rev)[["motivo", "id", "titulo", "tono", "subtema", "detalle"]].rename(
+                        columns={"motivo": "Motivo", "id": "ID", "titulo": "Título", "tono": "Tono",
+                                 "subtema": "Subtema", "detalle": "Detalle"}),
+                    hide_index=True, use_container_width=True,
+                    height=320 if len(rev) > 8 else "auto")
+            elif (analisis or {}).get("motor") == "haiku":
+                st.caption("Ninguna fila quedó marcada para revisión.")
+            else:
+                st.caption("La lista de revisión solo está disponible con el motor Claude Haiku.")
+    if tiempos:
+        total = sum(t["segundos"] for t in tiempos if not t.get("sub")) or 1.0
+        with st.expander("Tiempo por etapa (%s)" % _fmt_elapsed(total)):
+            df_t = pd.DataFrame([{
+                "Etapa": ("   ↳ " if t.get("sub") else "") + t["etapa"],
+                "Segundos": t["segundos"],
+                "% del total": round(100.0 * t["segundos"] / total, 1)} for t in tiempos])
+            st.dataframe(df_t, hide_index=True, use_container_width=True,
+                         column_config={"% del total": st.column_config.ProgressColumn(
+                             "% del total", format="%.1f%%", min_value=0, max_value=100, color="gray")})
+
+
 def run_cleaning_process(df_file, file_meta=None, ai_config=None):
     file_meta = file_meta or {}
     file_label = file_meta.get("name", "")
@@ -527,6 +632,8 @@ def run_cleaning_process(df_file, file_meta=None, ai_config=None):
     st.session_state["medios_sin_mapear"] = result.get("medios_sin_mapear") or None
     st.session_state["analisis"] = result.get("analisis") or {}
     st.session_state["duplicadas"] = result.get("duplicadas") or []
+    st.session_state["vista"] = result.get("vista") or []
+    st.session_state["tiempos"] = result.get("tiempos") or []
     st.session_state["badge_motor"] = badge
     st.session_state["output_data"] = result["output_data"]
     st.session_state["output_filename"] = result["output_filename"]
@@ -780,6 +887,12 @@ def main():
                                 help="Único modelo habilitado: gpt-6-luna (el más rápido y económico, "
                                      "$0.10 por 1M tokens de entrada; ideal para dossiers de alto volumen).",
                             )
+                        memoria_chk = st.checkbox(
+                            "Reutilizar clasificaciones previas de este cliente", value=True,
+                            help="Solo Claude Haiku. Una noticia ya clasificada para este cliente con la "
+                                 "misma configuración hereda su tono y subtema sin volver al modelo: más "
+                                 "rápido, sin costo y con el mismo resultado. Desmárcalo para clasificar "
+                                 "todo de nuevo.")
                         st.markdown("**💾 Perfil de cliente**")
                         guardar_chk = st.checkbox(
                             "Guardar esta configuración como perfil al procesar",
@@ -942,6 +1055,7 @@ def main():
                                     "votos": int(votos_input),
                                     "incluir_tema": modo_tema_input == _OPCIONES_TEMA[1],
                                     "incluir_prominencia": bool(prominencia_chk),
+                                    "memoria": bool(memoria_chk),
                                     "permitir_cubos_nuevos": True,
                                     "tam_lote": int(tam_lote_input),
                                     "workers": int(workers_input),
@@ -1275,8 +1389,15 @@ def main():
                     piezas.append("Cubos nuevos específicos: " + ", ".join(cubos_nuevos[:4]))
                 if fallback:
                     piezas.append(f"⚠️ {fallback} etiquetas con respaldo determinista")
+                _mem = analisis.get("memoria") or {}
+                if _mem.get("reutilizadas"):
+                    piezas.append(f"{_mem['reutilizadas']} noticias reutilizadas de corridas anteriores "
+                                  f"(sin costo)")
+                _ag = (analisis.get("haiku") or {}).get("agentes") or 0
+                if _ag > 1:
+                    piezas.append(f"{_ag} agentes clasificaron en paralelo")
                 if piezas:
-                    st.info("Análisis de Tono/Tema/Sub-tema · " + " · ".join(piezas))
+                    st.info("**Análisis de Tono/Tema/Sub-tema**\n" + "\n".join("- " + x for x in piezas))
                 if errores:
                     st.caption("Avisos del modelo: " + " | ".join(map(str, errores[:2])))
                 temas_gen = analisis.get("taxonomia") or []
@@ -1322,6 +1443,10 @@ def main():
                                  modelo_c, int(_hk.get("turnos") or 0), int(_hk.get("filas") or 0),
                                  int(_hk.get("grupos_revision") or 0),
                                  int(_hk.get("cambios_revision") or 0)))
+                _aud = _hk.get("auditor_tono") or {}
+                if _aud.get("candidatos"):
+                    det_costo += " · auditor de tono: %d filas revisadas, %d tonos corregidos" % (
+                        int(_aud.get("candidatos") or 0), len(_aud.get("cambios") or []))
             elif costo is not None:
                 costo_txt = "$%.2f" % costo if costo >= 0.01 else "$%.4f" % costo
                 det_costo = "%s tokens de entrada / %s de salida · %d llamadas · %s" % (
@@ -1341,6 +1466,9 @@ def main():
             </div>""", unsafe_allow_html=True)
             if det_costo:
                 st.caption("Costo estimado del análisis: " + det_costo + ".")
+
+            _render_resultados(st.session_state.get("vista") or [], analisis,
+                               st.session_state.get("tiempos") or [])
 
             _dups = st.session_state.get("duplicadas") or []
             with st.expander(f"Noticias duplicadas ({len(_dups)}) · ID duplicada → ID original",
@@ -1366,10 +1494,12 @@ def main():
                 _historial = []
             if _historial:
                 with st.expander(f"Historial del cliente ({len(_historial)} corridas previas)"):
-                    for h in _historial[:10]:
-                        st.markdown(f"- **{h.get('fecha','')}** · {h.get('unique_rows','')} únicas"
-                                    f" · {h.get('total_rows','')} filas · {h.get('process_duration','')}"
-                                    f" · {len(h.get('taxonomia') or [])} temas · `{h.get('archivo','')}`")
+                    st.dataframe(pd.DataFrame([{
+                        "Fecha": h.get("fecha", ""), "Únicas": h.get("unique_rows", ""),
+                        "Filas": h.get("total_rows", ""), "Duración": h.get("process_duration", ""),
+                        "Temas": len(h.get("temas") or h.get("taxonomia") or []),
+                        "Archivo": h.get("archivo", "")} for h in _historial[:30]]),
+                        hide_index=True, use_container_width=True)
 
             c1, c2 = st.columns(2)
             c1.download_button(
