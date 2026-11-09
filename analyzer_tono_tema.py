@@ -9145,7 +9145,7 @@ def unificar_por_noticia(rows: List[dict], mapa: Dict[int, int],
 
 def _etiquetar_con_haiku(cfg: dict, grupos: List[dict], candidatos_tax: Sequence[str],
                          incluir_tema: bool, progreso: Callable[[int, str], None],
-                         tono_pkl: bool = False):
+                         tono_pkl: bool = False, memoria: Optional[dict] = None):
     """Etiquetado de grupos con el agente Claude Haiku (motor_haiku.py).
 
     Devuelve (etiquetas {gid: {'sub_tema','tono'}}, temas {gid: tema}, info).
@@ -9159,12 +9159,20 @@ def _etiquetar_con_haiku(cfg: dict, grupos: List[dict], candidatos_tax: Sequence
     items = [{'id': str(g['grupo']), 'titulo': g.get('titulo') or '',
               'contexto': g.get('contexto_marca') or g.get('contexto') or g.get('texto') or ''}
              for g in grupos]
+    # Memoria del cliente: las noticias ya clasificadas con esta misma
+    # configuración entran resueltas y no se envían al agente.
+    for it, g in zip(items, grupos):
+        previa = (memoria or {}).get(g.get('clave_memoria') or '')
+        if previa:
+            it['previa'] = previa
     res = motor_haiku.clasificar_con_haiku(
         items, cfg.get('brand') or '', cfg.get('aliases') or [], cfg.get('voceros') or [],
         criterio_texto=criterio_texto, incluir_tema=incluir_tema,
         taxonomia=list(candidatos_tax or []) or None, progreso_cb=progreso,
         guia_subtema=cfg.get('guia_subtema') or '', tono_pkl=tono_pkl,
-        auditor_tono=bool(cfg.get('auditor_tono', True)),
+        # El auditor de tono lo lanza enrich_rows_with_ai a la vez que el
+        # evaluador de agrupación (dos esperas en una).
+        auditor_tono=False, paralelo=int(cfg.get('paralelo') or 0),
         rotulos_permitidos=[str((r or {}).get('subtema') or '')
                             for r in (cfg.get('subtemas_fijos') or []) if isinstance(r, dict)])
     if res.get('error') and not res.get('etiquetas'):
@@ -9179,6 +9187,81 @@ def _etiquetar_con_haiku(cfg: dict, grupos: List[dict], candidatos_tax: Sequence
             temas[g['grupo']] = sq(e['tema'])
     res['modelo'] = motor_haiku.MODELO_HAIKU
     return etiquetas, temas, res
+
+
+def _para_revisar_y_memoria(rows, grupos, km, cfg, brand, aliases, info_haiku, incluir_tema,
+                            theme_model, mem, mem_huella, extra) -> None:
+    """Modo Haiku, al final de la corrida: arma la lista «para revisar» de la
+    interfaz y guarda la memoria del cliente con las etiquetas FINALES."""
+    import motor_haiku as _mh
+    id_col = km.get('idnoticia', 'ID Noticia')
+    primera: Dict[str, int] = {}
+    for g in grupos:
+        i = next((i for i in g.get('idxs', []) if not rows[i].get('is_duplicate')), None)
+        if i is not None:
+            primera[str(g['grupo'])] = i
+
+    def item(gid, motivo, detalle=''):
+        i = primera.get(str(gid))
+        if i is None:
+            return None
+        r = rows[i]
+        return {'motivo': motivo, 'id': str(r.get(id_col) or ''), 'titulo': _titulo_fila(r, km),
+                'tono': r.get('Tono_IA') or '', 'subtema': r.get('Subtema_IA') or '',
+                'detalle': detalle}
+
+    revisar = []
+    for c in ((info_haiku.get('auditor_tono') or {}).get('cambios') or []):
+        revisar.append(item(c.get('id'), 'Tono corregido por el auditor',
+                            '%s → %s (%s). %s' % (c.get('de'), c.get('a'), c.get('rol'),
+                                                  c.get('razon') or '')))
+    for gid, motivos in (info_haiku.get('marcados') or {}).items():
+        revisar.append(item(gid, 'Clasificación aceptada con observaciones',
+                            '; '.join(map(str, motivos))))
+    clasificados = set((info_haiku.get('etiquetas') or {}))
+    terminos = _mh.terminos_cliente(brand, aliases, cfg.get('voceros') or [])
+    for g in grupos:
+        gid = str(g['grupo'])
+        if gid not in clasificados:
+            revisar.append(item(gid, 'Sin clasificar por el agente',
+                                'Quedó con el respaldo determinista.'))
+        i = primera.get(gid)
+        if i is not None and not _mh.menciona_cliente(
+                '%s %s' % (_titulo_fila(rows[i], km), rows[i].get('Contexto analizado') or ''),
+                terminos):
+            revisar.append(item(gid, 'Sin mención literal de la marca',
+                                'El texto no nombra la marca, sus alias ni sus voceros.'))
+    for sv in ((_ULTIMO_RESUMEN.get('subtemas_forma_final') or {}).get('sobrevivientes') or []):
+        r = rows[sv['fila']]
+        revisar.append({'motivo': 'Subtema con forma por revisar', 'id': str(r.get(id_col) or ''),
+                        'titulo': _titulo_fila(r, km), 'tono': r.get('Tono_IA') or '',
+                        'subtema': r.get('Subtema_IA') or '',
+                        'detalle': 'Empieza con verbo o copia el título.'})
+    _ULTIMO_RESUMEN['para_revisar'] = [x for x in revisar if x][:500]
+
+    info_mem = {'activa': bool(cfg.get('memoria')), 'reutilizadas': int(info_haiku.get('reutilizadas') or 0),
+                'guardadas': 0}
+    if cfg.get('memoria') and mem_huella:
+        import memoria_cliente
+        con_tema = incluir_tema and theme_model is None
+        nuevas = {}
+        for g in grupos:
+            i = primera.get(str(g['grupo']))
+            if i is None or not g.get('clave_memoria'):
+                continue
+            r = rows[i]
+            sub, tono = str(r.get('Subtema_IA') or '').strip(), r.get('Tono_IA')
+            if not sub or sub == '-' or tono not in TONOS:
+                continue
+            e = {'tono': tono, 'subtema': sub}
+            if con_tema:
+                tema = str(r.get('Tema_IA') or '').strip()
+                if not tema or tema == '-':
+                    continue
+                e['tema'] = tema
+            nuevas[g['clave_memoria']] = e
+        info_mem['guardadas'] = memoria_cliente.guardar(brand, mem_huella, nuevas, extra)
+    _ULTIMO_RESUMEN['memoria'] = info_mem
 
 
 def guarda_final_forma_subtema(rows: List[dict], km: dict,
@@ -9275,6 +9358,10 @@ def enrich_rows_with_ai(
         # Modo Haiku: agentes de apoyo (se pueden apagar desde ai_config).
         'evaluador_agrupacion': bool(extra.get('evaluador_agrupacion', True)),
         'auditor_tono': bool(extra.get('auditor_tono', True)),
+        # Agilidad: agentes clasificadores en paralelo (0/1 = uno solo) y
+        # memoria de clasificaciones previas del cliente.
+        'paralelo': int(extra.get('paralelo', 4) or 0),
+        'memoria': bool(extra.get('memoria', True)),
         'api_key': api_key,
         'typesafe_api_key': extra.get('typesafe_api_key') or '',
         'typesafe_model': extra.get('typesafe_model') or 'jev-latest',
@@ -9321,6 +9408,15 @@ def enrich_rows_with_ai(
     cfg['motor'] = 'haiku' if haiku else 'openai'
     _ULTIMO_RESUMEN.pop('haiku_reformulacion', None)
     _ULTIMO_RESUMEN.pop('subtemas_forma_final', None)
+    # Medición por etapa: `_etapa(nombre)` cierra el tramo que acaba de correr.
+    _tiempos: Dict[str, float] = {}
+    _reloj = [time.time()]
+
+    def _etapa(nombre: str) -> None:
+        ahora = time.time()
+        _tiempos[nombre] = round(_tiempos.get(nombre, 0.0) + ahora - _reloj[0], 2)
+        _reloj[0] = ahora
+
     progreso(71, 'Extrayendo contexto de la marca y sus variantes…')
     CONTEXTO_CUERPO_CORTO['filas'] = 0
     for row in rows:
@@ -9344,6 +9440,7 @@ def enrich_rows_with_ai(
                 brand, aliases, cfg.get('voceros') or [])
     _ULTIMO_RESUMEN['contexto_cuerpo_menor_403'] = CONTEXTO_CUERPO_CORTO['filas']
 
+    _etapa('Contexto de la marca')
     # --- agrupacion ---
     progreso(73, 'Agrupando notas equivalentes…')
     grupos, mapa = construir_grupos(
@@ -9354,6 +9451,32 @@ def enrich_rows_with_ai(
         contexto = [str(rows[i].get('Contexto analizado') or '') for i in g.get('idxs', [])]
         g['contexto_marca'] = '\n\n'.join(dict.fromkeys(x for x in contexto if x and x != '-'))[:12000]
     progreso(75, '%d grupos (notas equivalentes comparten etiqueta)' % len(grupos))
+    _etapa('Agrupación de notas equivalentes')
+
+    # --- memoria del cliente (modo Haiku) ---
+    _mem: Dict[str, dict] = {}
+    _mem_huella = ''
+    _ULTIMO_RESUMEN.pop('memoria', None)
+    _ULTIMO_RESUMEN.pop('para_revisar', None)
+    if haiku and cfg.get('memoria'):
+        import memoria_cliente
+        import motor_haiku as _mhm
+        _mem_huella = memoria_cliente.huella({
+            'brand': brand, 'aliases': sorted(aliases or []), 'voceros': cfg.get('voceros'),
+            'criterio': (cfg.get('criterio_texto') or cfg.get('criterio')),
+            'guia': cfg.get('guia_subtema'), 'fijos': cfg.get('subtemas_fijos'),
+            'tema': bool(incluir_tema and theme_model is None), 'temas': candidatos_tax,
+            'tono_pkl': tone_model is not None, 'tema_pkl': theme_model is not None,
+            'flags': [cfg.get(k) for k in ('tono_distrito_positivo', 'tono_alertas_tempranas',
+                                           'tono_labor_positiva', 'tono_solo_gestion',
+                                           'agrupacion_estricta')],
+            'instrucciones': hashlib.sha1(_mhm.SYSTEM_PROMPT.encode()).hexdigest(),
+            'analizador': ANALYZER_BUILD})
+        _mem = memoria_cliente.cargar(brand, _mem_huella, extra)
+        for g in grupos:
+            _ctx0 = next((str(rows[i].get('Contexto analizado') or '') for i in g.get('idxs', [])
+                          if not rows[i].get('is_duplicate')), '')
+            g['clave_memoria'] = memoria_cliente.clave(g.get('titulo') or '', _ctx0)
 
     # --- etiquetado ---
     # `uso` acumula tokens de TODAS las llamadas OpenAI de la corrida
@@ -9365,10 +9488,23 @@ def enrich_rows_with_ai(
         # pide solo si el usuario marcó "Agregar Tema_IA".
         etiquetas, temas_haiku, info_haiku = _etiquetar_con_haiku(
             cfg, grupos, candidatos_tax, incluir_tema and theme_model is None, progreso,
-            tono_pkl=tone_model is not None)
+            tono_pkl=tone_model is not None, memoria=_mem)
     else:
         etiquetas = etiquetar_grupos(cfg, grupos, progreso, tam_lote=tam_lote, workers=workers,
                                      votos=votos, uso=uso)
+    _etapa('Clasificación (agente Haiku)' if haiku else 'Clasificación (Luna)')
+    # Auditor de tono en un hilo aparte, a la vez que el evaluador de
+    # agrupación: los dos esperan respuestas del modelo y no dependen entre sí.
+    _aud_futuro = _aud_pool = None
+    if haiku and cfg.get('auditor_tono', True) and tone_model is None \
+            and info_haiku.get('corrida') is not None:
+        import motor_haiku as _mha
+        _crit_aud = ((cfg.get('criterio_texto') or '').strip()
+                     or str(CRITERIOS_TONO.get(cfg.get('criterio') or '', '') or ''))
+        _aud_pool = ThreadPoolExecutor(max_workers=1)
+        _aud_futuro = _aud_pool.submit(
+            _mha.auditar_tono, brand, list(aliases or []), cfg.get('voceros') or [], _crit_aud,
+            corrida=info_haiku['corrida'], silencioso=True)
     # Clausifier 2026-11-08: agente evaluador de agrupación (modo Haiku).
     # Grupos candidatos por Título / Resumen / texto / Contexto analizado
     # parecidos (rapidfuzz); el agente decide agrupar o separar ANTES de las
@@ -9388,8 +9524,26 @@ def enrich_rows_with_ai(
                      'criterio_texto': '' if tone_model is not None else (
                          (cfg.get('criterio_texto') or '').strip()
                          or str(CRITERIOS_TONO.get(cfg.get('criterio') or '', '') or ''))})
-        _eval_estado = _ev.aplicar_inicial(_eval_dec, _cands, mapa, etiquetas)
         _ULTIMO_RESUMEN['evaluador_agrupacion'] = dict(_ev.ULTIMO)
+    if _aud_futuro is not None:
+        # El tono auditado entra antes de aplicar las decisiones del evaluador.
+        try:
+            _aud = _aud_futuro.result()
+        except Exception as _e:  # noqa: BLE001 - el auditor nunca tumba la corrida
+            _aud = {'candidatos': 0, 'cambios': [], 'costo_usd': 0.0, 'aplicados': {},
+                    'error': '%s: %s' % (type(_e).__name__, _e)}
+        finally:
+            _aud_pool.shutdown(wait=False)
+        _por_id = {str(g['grupo']): g['grupo'] for g in grupos}
+        for _fid, _tono in (_aud.get('aplicados') or {}).items():
+            if _fid in _por_id and _tono in TONOS:
+                etiquetas.setdefault(_por_id[_fid], {})['tono'] = _tono
+        info_haiku['auditor_tono'] = _aud
+        info_haiku['costo_usd'] = round(float(info_haiku.get('costo_usd') or 0.0)
+                                        + float(_aud.get('costo_usd') or 0.0), 6)
+    if _eval_dec:
+        _eval_estado = _ev.aplicar_inicial(_eval_dec, _cands, mapa, etiquetas)
+    _etapa('Evaluador de agrupación y auditor de tono' if haiku else 'Preparación')
     # v4.74: subtema que el etiquetador le dio a cada grupo, antes de las
     # unificaciones (la coherencia por texto lo usa para devolverle a cada
     # noticia su rótulo propio cuando una unificación la forzó).
@@ -9437,6 +9591,7 @@ def enrich_rows_with_ai(
     # de todas las unificaciones por rótulo y antes de los subtemas fijos,
     # del voto de tono y de los temas: separa notas que no tienen que ver
     # con el subtema que recibieron y une las que son la misma noticia.
+    _etapa('Unificación de subtemas')
     progreso(92, 'Verificando subtemas contra el texto de cada noticia…')
     coh = coherencia_subtemas_por_texto(
         grupos, etiquetas, subtemas_originales, brand=brand, aliases=aliases,
@@ -9731,6 +9886,7 @@ def enrich_rows_with_ai(
     # inicial, sin «sujeto + verbo», sin copia del titular).
     ajustes_fieles = sanear_subtemas_finales(rows, mapa, etiquetas, ajustes_fieles, km)
 
+    _etapa('Reglas de tono, temas y fidelidad')
     volcar_analisis_en_filas(
         rows, mapa, etiquetas, temas,
         preservar_tema=(theme_model is not None) and incluir_tema,
@@ -9762,6 +9918,11 @@ def enrich_rows_with_ai(
         _ULTIMO_RESUMEN['subtemas_forma_final'] = guarda_final_forma_subtema(
             rows, km, {i: subtemas_originales.get(g) or '' for i, g in mapa.items() if g})
 
+    _etapa('Pase final por noticia')
+    if haiku:
+        _para_revisar_y_memoria(rows, grupos, km, cfg, brand, aliases, info_haiku, incluir_tema,
+                                theme_model, _mem, _mem_huella, extra)
+    _ULTIMO_RESUMEN['tiempos'] = dict(_tiempos)
     temas_lote: List[str] = []
     vistos = set()
     for t in temas.values():
@@ -9821,7 +9982,7 @@ def enrich_rows_with_ai(
         _ULTIMO_RESUMEN['haiku'] = {k: info_haiku.get(k) for k in (
             'costo_usd', 'turnos', 'filas', 'faltan', 'cambios_revision',
             'grupos_revision', 'subtype', 'error', 'rechazos', 'marcados',
-            'auditor_tono', 'roles')}
+            'auditor_tono', 'roles', 'agentes', 'reutilizadas')}
         _ref = _ULTIMO_RESUMEN.get('haiku_reformulacion') or {}
         _ULTIMO_RESUMEN['costo_aprox_usd'] = round(
             _ULTIMO_RESUMEN['costo_aprox_usd'] + float(_ref.get('costo_usd') or 0.0), 4)

@@ -59,12 +59,18 @@ ROLES = {
     "equilibrada": "Neutro",     # señalamiento con respuesta o descargo del cliente
     "referencial": "Neutro",     # mención de paso: dato, fuente, antecedente, contexto
 }
+PARALELO_DEFECTO = 4      # agentes clasificadores en paralelo (dossiers grandes)
+MIN_PAGINAS_PARALELO = 4  # con menos páginas clasifica un solo agente
 LOTE_AUDITOR = 20         # filas por llamada del auditor de tono
 MAX_AUDITOR = 160         # tope de filas auditadas por corrida
 TOPE_CTX_AUDITOR = 700
 
 # Progreso para la app (las tools corren en este mismo proceso).
 PROGRESO: Dict[str, Any] = {}
+
+# query() inyectable para las llamadas que lanza el código fuera de
+# clasificar_con_haiku (tests $0); None = el SDK real.
+QUERY_FN = None
 
 # Estado de UNA corrida. `_CANDADO` serializa corridas concurrentes del mismo proceso.
 _ESTADO: Dict[str, Any] = {}
@@ -220,6 +226,36 @@ def empieza_con_verbo(subtema: str) -> bool:
     return False
 
 
+def pares_similares(textos: Sequence[str], umbral: float, minimo: int = 1,
+                    scorer: str = "ratio") -> set:
+    """Pares (a, b), a < b, de textos con similitud >= `umbral` (0-1). Solo
+    cuentan los textos de largo >= `minimo`. Usa una matriz de rapidfuzz
+    (C, varios hilos) por bloques; sin rapidfuzz cae al cálculo par por par."""
+    idx = [i for i, t in enumerate(textos) if t and len(t) >= minimo]
+    pares: set = set()
+    if len(idx) < 2:
+        return pares
+    try:
+        import numpy as np
+        from rapidfuzz import fuzz, process
+    except ImportError:  # pragma: no cover - respaldo sin dependencia
+        for x, a in enumerate(idx):
+            for b in idx[x + 1:]:
+                if _similitud(textos[a], textos[b]) >= umbral:
+                    pares.add((a, b))
+        return pares
+    vals = [textos[i] for i in idx]
+    fn = getattr(fuzz, scorer)
+    for ini in range(0, len(vals), 256):
+        m = process.cdist(vals[ini:ini + 256], vals, scorer=fn, score_cutoff=umbral * 100,
+                          workers=-1)
+        for x, y in zip(*np.nonzero(m)):
+            a, b = idx[ini + int(x)], idx[int(y)]
+            if a < b:
+                pares.add((a, b))
+    return pares
+
+
 def _toks(s: str) -> List[str]:
     return _simple(s).split()
 
@@ -297,6 +333,9 @@ def _avisar(pct: int, msg: str) -> None:
             pass
 
 
+_N_CORRIDA = 0
+
+
 def terminos_cliente(brand: str = "", aliases: Sequence[str] = (),
                      voceros: Sequence[str] = ()) -> List[str]:
     """Marca, alias y voceros normalizados (sin tildes ni mayúsculas)."""
@@ -333,11 +372,14 @@ def preparar_estado(items: Sequence[dict], incluir_tema: bool,
     hereda: Dict[str, str] = {}
     explicitos = set()
     por_titulo: Dict[str, str] = {}
+    previas_in: Dict[str, dict] = {}
     for it in items:
         fid = str(it["id"])
         orden.append(fid)
         titulo = str(it.get("titulo") or "")
         datos[fid] = {"id": fid, "titulo": titulo, "contexto": str(it.get("contexto") or "")}
+        if isinstance(it.get("previa"), dict):
+            previas_in[fid] = it["previa"]
         dup = it.get("duplicado_de")
         if dup not in (None, "") and str(dup) != fid:
             hereda[fid] = str(dup)
@@ -349,13 +391,33 @@ def preparar_estado(items: Sequence[dict], incluir_tema: bool,
         elif clave:
             por_titulo[clave] = fid
     tax = [str(t).strip() for t in (taxonomia or []) if str(t).strip()]
+    tax_n = {_simple(t): t for t in tax}
+    # Clasificaciones reutilizadas de corridas anteriores (memoria del
+    # cliente): entran ya resueltas y no se envían al agente.
+    res: Dict[str, dict] = {}
+    previas = set()
+    for fid, pv in previas_in.items():
+        sub = str(pv.get("subtema") or "").strip()
+        tema = str(pv.get("tema") or "").strip()
+        if fid in hereda or pv.get("tono") not in TONOS or not sub:
+            continue
+        if incluir_tema and (not tema or (tax_n and _simple(tema) not in tax_n)):
+            continue
+        res[fid] = {"tono": pv["tono"], "subtema": sub}
+        if incluir_tema:
+            res[fid]["tema"] = tax_n.get(_simple(tema), tema)
+        previas.add(fid)
+    global _N_CORRIDA
+    _N_CORRIDA += 1
     _ESTADO.clear()
-    _ESTADO.update(orden=orden, datos=datos, hereda=hereda, explicitos=explicitos, res={},
+    _ESTADO.update(orden=orden, datos=datos, hereda=hereda, explicitos=explicitos, res=res,
+                   previas=previas, corrida=_N_CORRIDA, leidos=set(),
                    incluir_tema=bool(incluir_tema), taxonomia=tax,
                    tax_norm={_simple(t): t for t in tax}, progreso_cb=progreso_cb,
                    terminos=list(terminos or []), tono_pkl=bool(tono_pkl))
     PROGRESO.clear()
-    PROGRESO.update(paso="Clasificando", total=len(orden) - len(hereda), leidas=0,
+    PROGRESO.update(paso="Clasificando", total=len(orden) - len(hereda) - len(previas),
+                    reutilizadas=len(previas), leidas=0,
                     guardadas=0, faltan=None, revisado=False, cambios_revision=0, grupos=0)
 
 
@@ -375,11 +437,11 @@ def _propagar() -> None:
             res[fid] = dict(o)
 
 
-def _faltantes() -> List[str]:
+def _faltantes(solo: Optional[set] = None) -> List[str]:
     res, incluir = _ESTADO["res"], _ESTADO["incluir_tema"]
     out = []
     for fid in _ESTADO["orden"]:
-        if fid in _ESTADO["hereda"]:
+        if fid in _ESTADO["hereda"] or (solo is not None and fid not in solo):
             continue
         r = res.get(fid) or {}
         if not r.get("tono") or not r.get("subtema") or (incluir and not r.get("tema")):
@@ -389,13 +451,18 @@ def _faltantes() -> List[str]:
 
 # ─── las herramientas (lógica pura, probada sin el SDK) ────────────────────
 
-async def _leer_noticias(args: Dict[str, Any]) -> Dict[str, Any]:
+def _lista_envio() -> List[dict]:
+    """Registros que se envían al agente, en orden. No van los duplicados
+    explícitos ni las noticias resueltas con la memoria del cliente."""
     salida = []
+    previas = _ESTADO.get("previas") or set()
     for fid in _ESTADO["orden"]:
         d = _ESTADO["datos"][fid]
         dup = _ESTADO["hereda"].get(fid)
-        if fid in _ESTADO["explicitos"]:
-            continue                    # duplicado explícito: ni se envía
+        if fid in _ESTADO["explicitos"] or fid in previas:
+            continue                    # duplicado explícito o ya resuelta: ni se envía
+        if dup is not None and _raiz(fid) in previas:
+            continue                    # hereda de una noticia ya resuelta
         # Clausifier 2026-11-08: el campo principal es el Contexto analizado
         # completo (título + resumen + extracto de marca/alias/vocero, >=403
         # caracteres); el título va solo como etiqueta corta para agrupar.
@@ -407,18 +474,46 @@ async def _leer_noticias(args: Dict[str, Any]) -> Dict[str, Any]:
             if not menciona_cliente(d["titulo"] + " " + d["contexto"]):
                 reg["sin_mencion_literal"] = True
         salida.append(reg)
-    desde = max(0, int(args.get("desde") or 0))
-    pagina = salida[desde:desde + POR_PAGINA]
-    siguiente = desde + POR_PAGINA if desde + POR_PAGINA < len(salida) else None
+    return salida
+
+
+def _ids_tramo(tramo) -> Optional[set]:
+    """Ids que debe clasificar el agente de un tramo (None = todos)."""
+    if not tramo:
+        return None
+    return {r["id"] for r in _lista_envio()[tramo[0]:tramo[1]] if "igual_a" not in r}
+
+
+async def _leer_noticias(args: Dict[str, Any], tramo=None, pendientes: bool = False) -> Dict[str, Any]:
+    """`tramo` = (a, b): el agente solo ve ese rango (clasificación en
+    paralelo). `pendientes`: solo las noticias aún sin clasificar (agente de
+    cierre); la lista se acorta al guardar, así que siempre se pide desde 0."""
+    salida = _lista_envio()
     omitidos = len(_ESTADO["orden"]) - len(salida)
-    PROGRESO.update(leidas=max(PROGRESO.get("leidas", 0), desde + len(pagina)))
-    _avisar(76, "Haiku leyendo noticias %d-%d de %d…" % (desde + 1, desde + len(pagina), len(salida)))
-    return _texto(json.dumps({"total": len(salida), "desde": desde, "siguiente": siguiente,
+    desde = max(0, int(args.get("desde") or 0))
+    if pendientes:
+        falta = set(_faltantes())
+        salida = [r for r in salida if r["id"] in falta]
+        pagina = salida[:POR_PAGINA]
+        desde, siguiente = 0, (0 if len(salida) > POR_PAGINA else None)
+        total = len(salida)
+    else:
+        a, b = tramo if tramo else (0, len(salida))
+        b = min(b, len(salida))
+        desde = min(max(desde, a), b)
+        pagina = salida[desde:min(desde + POR_PAGINA, b)]
+        siguiente = desde + POR_PAGINA if desde + POR_PAGINA < b else None
+        total = b - a
+    _ESTADO.setdefault("leidos", set()).update(r["id"] for r in pagina)
+    PROGRESO.update(leidas=len(_ESTADO["leidos"]))
+    _avisar(76, "Haiku leyendo noticias: %d de %d…" % (len(_ESTADO["leidos"]),
+                                                       len(_lista_envio())))
+    return _texto(json.dumps({"total": total, "desde": desde, "siguiente": siguiente,
                               "duplicados_omitidos": omitidos, "noticias": pagina},
                              ensure_ascii=False, separators=(",", ":")))
 
 
-async def _guardar_clasificacion(args: Dict[str, Any]) -> Dict[str, Any]:
+async def _guardar_clasificacion(args: Dict[str, Any], tramo=None) -> Dict[str, Any]:
     try:
         nuevas = json.loads(args["filas_json"])
         if isinstance(nuevas, dict):
@@ -499,13 +594,16 @@ async def _guardar_clasificacion(args: Dict[str, Any]) -> Dict[str, Any]:
         cambios += bool(antes.get("subtema")) and any(antes.get(k) != v for k, v in ahora.items())
         res[fid] = ahora
     _propagar()
-    faltan = _faltantes()
-    PROGRESO.update(guardadas=PROGRESO.get("guardadas", 0) + len(nuevas), faltan=len(faltan))
+    faltan_todas = _faltantes()
+    # En paralelo, cada agente solo responde por su tramo.
+    faltan = _faltantes(_ids_tramo(tramo)) if tramo else faltan_todas
+    PROGRESO.update(guardadas=PROGRESO.get("guardadas", 0) + len(nuevas),
+                    faltan=len(faltan_todas))
     if PROGRESO.get("revisado"):
         PROGRESO["cambios_revision"] = PROGRESO.get("cambios_revision", 0) + cambios
     total = max(1, PROGRESO.get("total") or 1)
-    _avisar(76 + int(12 * (total - len(faltan)) / total),
-            "Haiku clasificó %d de %d noticias" % (total - len(faltan), total))
+    hechas = max(0, total - len(faltan_todas))
+    _avisar(76 + int(12 * hechas / total), "Haiku clasificó %d de %d noticias" % (hechas, total))
     if rechazadas:
         det = "; ".join("id %s: %s" % (i, ", ".join(m)) for i, m in list(rechazadas.items())[:40])
         return _texto("FILAS CON SUBTEMAS RECHAZADOS o rol/tono incoherente (no se guardaron): %s. "
@@ -541,27 +639,32 @@ def construir_candidatos() -> List[dict]:
             x = padre[x]
         return x
 
+    # Pares parecidos por matriz (rapidfuzz.process.cdist, en C y con varios
+    # hilos) en lugar de comparar par por par en Python: mismo resultado.
+    # Prioridad del motivo: título > contexto > subtema.
     motivos: Dict[tuple, str] = {}
+    for par in pares_similares([r["_s"] for r in regs], UMBRAL_SUBTEMA):
+        if regs[par[0]]["_s"] != regs[par[1]]["_s"]:
+            motivos[par] = "subtema con redacción casi idéntica"
+    for par in pares_similares([r["_c"] for r in regs], UMBRAL_CONTEXTO, minimo=MIN_CTX):
+        motivos[par] = "contexto casi igual"
+    for par in pares_similares([r["_t"] for r in regs], UMBRAL_TITULO):
+        motivos[par] = "título casi igual"
+    for a, b in motivos:
+        padre[raiz(a)] = raiz(b)
     sobre: List[tuple] = []
-    for a in range(len(regs)):
-        for b in range(a + 1, len(regs)):
-            ra, rb = regs[a], regs[b]
-            motivo = None
-            if ra["_t"] and rb["_t"] and _similitud(ra["_t"], rb["_t"]) >= UMBRAL_TITULO:
-                motivo = "título casi igual"
-            elif min(len(ra["_c"]), len(rb["_c"])) >= MIN_CTX and \
-                    _similitud(ra["_c"], rb["_c"]) >= UMBRAL_CONTEXTO:
-                motivo = "contexto casi igual"
-            elif ra["_s"] and rb["_s"] and ra["_s"] != rb["_s"] and \
-                    _similitud(ra["_s"], rb["_s"]) >= UMBRAL_SUBTEMA:
-                motivo = "subtema con redacción casi idéntica"
-            if motivo:
-                motivos[(a, b)] = motivo
-                padre[raiz(a)] = raiz(b)
-            elif ra["_s"] and ra["_s"] == rb["_s"] and min(len(ra["_c"]), len(rb["_c"])) >= MIN_CTX:
-                sim = _similitud(ra["_c"], rb["_c"])
-                if sim < UMBRAL_SOBRE:
-                    sobre.append((a, b, sim))
+    mismo_sub: Dict[str, List[int]] = {}
+    for i, r in enumerate(regs):
+        if r["_s"] and len(r["_c"]) >= MIN_CTX:
+            mismo_sub.setdefault(r["_s"], []).append(i)
+    for idxs in mismo_sub.values():
+        for x, a in enumerate(idxs):
+            for b in idxs[x + 1:]:
+                if (a, b) not in motivos:
+                    sim = _similitud(regs[a]["_c"], regs[b]["_c"])
+                    if sim < UMBRAL_SOBRE:
+                        sobre.append((a, b, sim))
+    sobre.sort()
 
     def fila(i: int) -> dict:
         r = regs[i]
@@ -812,7 +915,13 @@ def _sdk():
     return sdk
 
 
-def _servidor(sdk):
+def _servidor(sdk, tramo=None, pendientes: bool = False):
+    async def _leer(args):
+        return await _leer_noticias(args, tramo=tramo, pendientes=pendientes)
+
+    async def _guardar(args):
+        return await _guardar_clasificacion(args, tramo=tramo)
+
     leer = sdk.tool(
         "leer_noticias",
         "Devuelve PÁGINAS de %d noticias con id, 'titulo_solo_para_agrupar' (etiqueta corta) y "
@@ -820,7 +929,7 @@ def _servidor(sdk):
         "vez y luego 'siguiente' hasta null. Las filas con 'igual_a' repiten el título de otra fila "
         "y heredan su clasificación. 'sin_mencion_literal' = el texto no nombra al cliente, sus "
         "alias ni sus voceros." % POR_PAGINA,
-        {"desde": int})(_leer_noticias)
+        {"desde": int})(_leer)
     guardar = sdk.tool(
         "guardar_clasificacion",
         "Guarda subtema, rol del cliente, tono (Positivo|Neutro|Negativo) y tema (si se pidió). "
@@ -828,26 +937,42 @@ def _servidor(sdk):
         '[{"id":"1","subtema":"...","rol":"referencial","tono":"Neutro","tema":"..."}]. '
         "Rechaza subtemas mal formados y filas cuyo rol no corresponde al tono. Se puede llamar por "
         "tandas. Devuelve cuántas filas faltan.",
-        {"filas_json": str})(_guardar_clasificacion)
+        {"filas_json": str})(_guardar)
     candidatos = sdk.tool(
         "candidatos_consistencia",
         "Revisión de consistencia (sin IA), después de guardar todo: grupos de filas que PODRÍAN ser "
         "el mismo hecho con distinto tono/subtema y pares con el mismo subtema y contextos muy "
         "distintos. 'desde': 0 y luego 'siguiente' (%d grupos por llamada)." % GRUPOS_POR_PAGINA,
         {"desde": int})(_candidatos_consistencia)
-    return sdk.create_sdk_mcp_server(name="medios", version="1.0.0",
-                                     tools=[leer, guardar, candidatos])
+    return sdk.create_sdk_mcp_server(
+        name="medios", version="1.0.0",
+        tools=[leer, guardar] if tramo else [leer, guardar, candidatos])
 
 
 def construir_opciones(sdk, cwd: str, max_turns: int, max_budget_usd: float, modelo: str,
-                       contexto_cliente: str = ""):
-    return sdk.ClaudeAgentOptions(
+                       contexto_cliente: str = "", tramo=None, pendientes: bool = False):
+    """Opciones del agente. `tramo` = (a, b): agente clasificador de un tramo
+    (solo lee y guarda su rango, sin revisión). `pendientes`: agente de
+    cierre (clasifica lo que falte y hace la revisión de consistencia)."""
+    no = ["Bash", "Edit", "Read", "Grep", "Glob", "Write", "WebSearch", "WebFetch"]
+    comunes = dict(
         model=modelo,
         system_prompt=SYSTEM_PROMPT,
+        mcp_servers={"medios": _servidor(sdk, tramo=tramo, pendientes=pendientes)},
+        setting_sources=[],              # sin CLAUDE.md, ~/.claude ni skills del proyecto
+        permission_mode="default",
+        cwd=cwd,
+        max_turns=max_turns,
+        max_budget_usd=max_budget_usd,
+        stderr=lambda linea: None,
+    )
+    if tramo:
+        return sdk.ClaudeAgentOptions(
+            allowed_tools=["mcp__medios__leer_noticias", "mcp__medios__guardar_clasificacion"],
+            disallowed_tools=no + ["Agent"], **comunes)
+    return sdk.ClaudeAgentOptions(
         allowed_tools=["mcp__medios__leer_noticias", "mcp__medios__guardar_clasificacion",
                        "mcp__medios__candidatos_consistencia", "Agent"],
-        mcp_servers={"medios": _servidor(sdk)},
-        setting_sources=[],              # sin CLAUDE.md, ~/.claude ni skills del proyecto
         agents={
             "revisor-subtemas": sdk.AgentDefinition(
                 description=("Revisa la consistencia de tono y subtema: decide si cada grupo candidato "
@@ -860,13 +985,37 @@ def construir_opciones(sdk, cwd: str, max_turns: int, max_budget_usd: float, mod
                 maxTurns=6,
             ),
         },
-        permission_mode="default",
-        disallowed_tools=["Bash", "Edit", "Read", "Grep", "Glob", "Write", "WebSearch", "WebFetch"],
-        cwd=cwd,
-        max_turns=max_turns,
-        max_budget_usd=max_budget_usd,
-        stderr=lambda linea: None,
-    )
+        disallowed_tools=no, **comunes)
+
+
+PROMPT_TRAMO = (
+    "TRAMO %d-%d: clasifica SOLO las noticias de tu tramo. Empieza con leer_noticias desde=%d y "
+    "sigue con \"siguiente\" hasta que sea null. Otros agentes clasifican el resto en paralelo. "
+    "Cuando guardar_clasificacion diga \"Faltan por clasificar: 0\", terminas: OMITE el paso 3 "
+    "(no tienes candidatos_consistencia ni ayudante)."
+)
+PROMPT_CIERRE = (
+    "CIERRE: las noticias ya fueron clasificadas por tramos en paralelo. Llama leer_noticias con "
+    "desde=0: solo devuelve las que quedaron sin clasificar. Si trae noticias, clasifícalas y "
+    "guárdalas, y repite mientras \"siguiente\" no sea null. Después (o de inmediato si no trae "
+    "ninguna) haz el paso 3 completo: cada tramo trabajó sin ver a los otros, así que aquí se "
+    "unifican los subtemas y tonos de las notas que cuentan el mismo hecho."
+)
+
+
+def planear_tramos(enviables: int, paralelo: int) -> List[tuple]:
+    """Rangos (a, b) por agente, alineados a páginas. [] = un solo agente."""
+    paginas = -(-enviables // POR_PAGINA)
+    k = min(int(paralelo or 1), paginas // 2)
+    if k < 2 or paginas < MIN_PAGINAS_PARALELO:
+        return []
+    base, resto = divmod(paginas, k)
+    tramos, a = [], 0
+    for i in range(k):
+        b = min(enviables, a + (base + (1 if i < resto else 0)) * POR_PAGINA)
+        tramos.append((a, b))
+        a = b
+    return tramos
 
 
 def _preparar_credencial() -> None:
@@ -1002,8 +1151,9 @@ def candidatos_tono() -> List[dict]:
     out = []
     for fid in _ESTADO["orden"]:
         r = res.get(fid) or {}
-        if fid in _ESTADO["hereda"] or r.get("tono") not in TONOS:
-            continue
+        if fid in _ESTADO["hereda"] or r.get("tono") not in TONOS \
+                or fid in (_ESTADO.get("previas") or ()):
+            continue                    # las reutilizadas ya pasaron por la auditoría
         d = datos[fid]
         motivos, peso = [], 0
         if fid in dudosos:
@@ -1039,7 +1189,38 @@ def candidatos_tono() -> List[dict]:
 
 def auditar_tono(brand: str, aliases: Sequence[str] = (), voceros: Sequence[str] = (),
                  criterio_texto: str = "", modelo: str = MODELO_HAIKU, query_fn=None,
-                 lote: int = LOTE_AUDITOR) -> Dict[str, Any]:
+                 lote: int = LOTE_AUDITOR, corrida: Optional[int] = None,
+                 silencioso: bool = False) -> Dict[str, Any]:
+    """Auditor de tono sobre el estado que dejó `clasificar_con_haiku`.
+
+    Para lanzarlo aparte (el analizador lo corre a la vez que el evaluador de
+    agrupación): `corrida` = el número que devolvió la clasificación; si el
+    estado ya es de otra corrida no hace nada. `silencioso` evita llamar al
+    callback de progreso (necesario desde un hilo que no es el de la app).
+    Devuelve además "aplicados": {id: tono} con las filas que cambiaron y
+    las que heredan de ellas.
+    """
+    with _CANDADO:
+        if corrida is not None and _ESTADO.get("corrida") != corrida:
+            return {"candidatos": 0, "lotes": 0, "costo_usd": 0.0, "cambios": [],
+                    "confirmados": 0, "aplicados": {}, "error": "el estado es de otra corrida"}
+        cb = _ESTADO.get("progreso_cb")
+        if silencioso:
+            _ESTADO["progreso_cb"] = None
+        try:
+            aud = _auditar_tono(brand, aliases, voceros, criterio_texto, modelo=modelo,
+                                query_fn=query_fn or QUERY_FN, lote=lote)
+        finally:
+            _ESTADO["progreso_cb"] = cb
+        cambiados = {c["id"] for c in aud.get("cambios") or []}
+        aud["aplicados"] = {fid: r["tono"] for fid, r in _ESTADO["res"].items()
+                            if _raiz(fid) in cambiados and r.get("tono")}
+        return aud
+
+
+def _auditar_tono(brand: str, aliases: Sequence[str] = (), voceros: Sequence[str] = (),
+                  criterio_texto: str = "", modelo: str = MODELO_HAIKU, query_fn=None,
+                  lote: int = LOTE_AUDITOR) -> Dict[str, Any]:
     """Audita el tono de `candidatos_tono()` y aplica los cambios en el estado.
 
     Una llamada `query()` por lote (max_turns=1, sin herramientas), lotes en
@@ -1140,7 +1321,8 @@ def clasificar_con_haiku(items: Sequence[dict], brand: str, aliases: Sequence[st
                          max_turns: int = 0, max_budget_usd: float = 0.0,
                          query_fn=None, tono_pkl: bool = False,
                          rotulos_permitidos: Sequence[str] = (),
-                         auditor_tono: bool = True) -> Dict[str, Any]:
+                         auditor_tono: bool = True,
+                         paralelo: int = PARALELO_DEFECTO) -> Dict[str, Any]:
     """Clasifica `items` ({id, titulo, contexto, duplicado_de?}) con el agente Haiku.
 
     Devuelve {"etiquetas": {id: {"tono","subtema"[, "tema"]}}, "costo_usd", "turnos",
@@ -1167,19 +1349,57 @@ def clasificar_con_haiku(items: Sequence[dict], brand: str, aliases: Sequence[st
         prompt = armar_prompt(brand, list(aliases or []), list(voceros or []), criterio_texto,
                               incluir_tema, _ESTADO["taxonomia"], guia_subtema,
                               tono_pkl=tono_pkl)
+        ctx_cliente = bloque_cliente(brand, list(aliases or []), list(voceros or []),
+                                     "" if tono_pkl else criterio_texto)
+        enviables = len(_lista_envio())
+        tramos = planear_tramos(enviables, paralelo)
         with tempfile.TemporaryDirectory(prefix="motor_haiku_") as cwd:
-            opciones = construir_opciones(
-                sdk, cwd, max_turns, max_budget_usd, modelo,
-                contexto_cliente=bloque_cliente(brand, list(aliases or []), list(voceros or []),
-                                                "" if tono_pkl else criterio_texto))
-            _avisar(75, "Clasificando con Claude Haiku (agente + revisor)…")
-            final = _ejecutar(_correr(sdk, prompt, opciones, query_fn))
+            if not enviables:
+                # Todo llegó resuelto (memoria del cliente o duplicados).
+                final = {"costo_usd": 0.0, "turnos": 0, "subtype": "sin_noticias_nuevas",
+                         "error": None}
+            elif not tramos:
+                opciones = construir_opciones(sdk, cwd, max_turns, max_budget_usd, modelo,
+                                              contexto_cliente=ctx_cliente)
+                _avisar(75, "Clasificando con Claude Haiku (agente + revisor)…")
+                final = _ejecutar(_correr(sdk, prompt, opciones, query_fn))
+            else:
+                # Dossier grande: varios agentes clasifican tramos en paralelo
+                # y un agente de cierre recoge lo que falte y revisa la
+                # consistencia entre tramos.
+                _avisar(75, "Clasificando con %d agentes Haiku en paralelo…" % len(tramos))
+
+                async def _en_paralelo():
+                    tareas = []
+                    for a, b in tramos:
+                        pags = -(-(b - a) // POR_PAGINA)
+                        op = construir_opciones(
+                            sdk, cwd, 2 * pags + 10, round(min(5.0, 0.10 + 0.004 * (b - a)), 2),
+                            modelo, tramo=(a, b))
+                        tareas.append(_correr(sdk, prompt + "\n" + PROMPT_TRAMO % (a, b, a),
+                                              op, query_fn))
+                    partes = list(await asyncio.gather(*tareas))
+                    op = construir_opciones(sdk, cwd, 24, round(min(2.0, 0.10 + 0.002 * n), 2),
+                                            modelo, contexto_cliente=ctx_cliente, pendientes=True)
+                    partes.append(await _correr(sdk, prompt + "\n" + PROMPT_CIERRE, op, query_fn))
+                    return partes
+
+                partes = _ejecutar(_en_paralelo())
+                errores = [p["error"] for p in partes if p.get("error")]
+                final = {"costo_usd": sum(float(p.get("costo_usd") or 0.0) for p in partes),
+                         "turnos": sum(int(p.get("turnos") or 0) for p in partes),
+                         "subtype": partes[-1].get("subtype"),
+                         "is_error": any(p.get("is_error") for p in partes),
+                         "error": " | ".join(errores) if errores else None}
+        final["agentes"] = len(tramos) or (1 if enviables else 0)
+        final["reutilizadas"] = len(_ESTADO.get("previas") or ())
+        final["corrida"] = _ESTADO["corrida"]
         _propagar()
         # Auditor de tono: con PKL de tono no corre (el tono lo pone el PKL).
         final["auditor_tono"] = None
         if auditor_tono and not tono_pkl and _ESTADO["res"]:
-            aud = auditar_tono(brand, aliases, voceros, criterio_texto, modelo=modelo,
-                               query_fn=query_fn)
+            aud = _auditar_tono(brand, aliases, voceros, criterio_texto, modelo=modelo,
+                                query_fn=query_fn)
             final["auditor_tono"] = aud
             final["costo_usd"] = round(float(final.get("costo_usd") or 0.0)
                                        + float(aud.get("costo_usd") or 0.0), 6)

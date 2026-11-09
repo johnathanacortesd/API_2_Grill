@@ -42,6 +42,38 @@ El acceso a la interfaz de producción está resguardado mediante autenticación
 
 ## 🚀 Funcionalidades
 
+### Agilidad, medición por etapa y pantalla de resultados
+
+**Agilidad (modo Claude Haiku)**
+
+- **Clasificación en paralelo.** Con 4 o más páginas de noticias (100+),
+  hasta 4 agentes clasifican tramos a la vez (`motor_haiku.planear_tramos`);
+  cada uno solo lee y guarda su tramo. Un agente de cierre clasifica lo que
+  haya quedado pendiente y hace la revisión de consistencia entre tramos.
+  `paralelo: 1` en `ai_config` vuelve a un solo agente.
+- **Auditor de tono y evaluador de agrupación a la vez**, en lugar de uno
+  después del otro.
+- **Memoria del cliente** (`memoria_cliente.py`). Una noticia ya clasificada
+  para el mismo cliente con la misma configuración hereda su tono, subtema y
+  tema sin volver al modelo. Vive junto al historial
+  (`memoria_<cliente>.json`), caduca a los 45 días y se descarta sola si
+  cambia la marca, los alias, voceros, criterio, guía, temas, PKL o las
+  instrucciones del motor. Se apaga con la casilla «Reutilizar
+  clasificaciones previas» o `memoria: false`.
+- **Candidatos por matriz.** El revisor y el evaluador buscan notas parecidas
+  con `rapidfuzz.process.cdist` en lugar de comparar par por par en Python
+  (mismo resultado, verificado contra el código anterior).
+
+**Medición por etapa.** `process_dossier` devuelve `tiempos`: lectura y
+limpieza, análisis (con sus sub-etapas: contexto, agrupación, clasificación,
+evaluador y auditor, unificación, reglas, pase final) y generación del Excel.
+
+**Pantalla de resultados.** Distribución de tono, tabla de subtemas con su
+reparto por tono, noticias clasificadas con filtro y búsqueda, pestaña «Para
+revisar» (tonos que corrigió el auditor con su razón, clasificaciones
+aceptadas con observaciones, notas sin mención literal de la marca) y tiempo
+por etapa. El historial del cliente se muestra como tabla.
+
 ### Tono del cliente por rol y agentes con tareas precisas (modo Claude Haiku)
 
 El tono mide cómo la noticia evalúa al cliente (marca, alias o voceros), no

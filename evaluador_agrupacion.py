@@ -92,7 +92,6 @@ def construir_candidatos(rows: List[dict], mapa: Dict[int, int], km: dict,
     las notas del mismo grupo determinista y las de grupos distintos con
     Título, Resumen - Aclaración, texto o Contexto analizado parecidos
     (rapidfuzz token_set_ratio con los umbrales del repo menos `margen`)."""
-    from rapidfuzz import fuzz
     km = km or {}
     tit_col = km.get("titulo", "Título")
     res_col = km.get("resumen", "Resumen - Aclaracion")
@@ -126,19 +125,21 @@ def construir_candidatos(rows: List[dict], mapa: Dict[int, int], km: dict,
         return u
 
     ut, uc = umbral_titulo - margen, umbral_cuerpo - margen
-    for a_i, a in enumerate(us):
-        A = rep[a]
-        for b in us[a_i + 1:]:
-            B = rep[b]
-            ok = A["g"] == B["g"]
-            ok = ok or bool(A["t"] and B["t"] and fuzz.token_set_ratio(A["t"], B["t"]) >= ut)
-            for k in ("r", "x", "c"):
-                if ok:
-                    break
-                if A[k] and B[k] and len(A[k]) > 40 and len(B[k]) > 40:
-                    ok = fuzz.token_set_ratio(A[k], B[k]) >= uc
-            if ok:
-                padre[raiz(a)] = raiz(b)
+    # Mismo grupo determinista: se enlazan sin comparar textos.
+    por_grupo: Dict[Any, int] = {}
+    for u in us:
+        g = rep[u]["g"]
+        if g in por_grupo:
+            padre[raiz(u)] = raiz(por_grupo[g])
+        else:
+            por_grupo[g] = u
+    # Textos parecidos: matriz de rapidfuzz (C, varios hilos) en lugar de
+    # comparar par por par en Python. Mismo resultado.
+    import motor_haiku as mh
+    for campo, umbral, minimo in (("t", ut, 1), ("r", uc, 41), ("x", uc, 41), ("c", uc, 41)):
+        for i, j in mh.pares_similares([rep[u][campo] for u in us], umbral / 100.0,
+                                       minimo=minimo, scorer="token_set_ratio"):
+            padre[raiz(us[i])] = raiz(us[j])
     comp: Dict[int, List[int]] = defaultdict(list)
     for u in us:
         comp[raiz(u)].append(u)
