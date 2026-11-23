@@ -56,14 +56,16 @@ El acceso a la interfaz de producción está resguardado mediante autenticación
   lleva Subtema_IA; el subtema se usa por dentro para que la misma noticia
   tenga el mismo tono) o «Solo Subtema» (Haiku no analiza el tono: más rápido y
   más barato; el xlsx no lleva Tono_IA).
-- **Modo competidores** (p. ej. GSK, Moderna, AstraZeneca y Sanofi): una marca
-  por línea, `Marca: alias1, alias2 | vocero1, vocero2`. Cada fila se clasifica
-  hacia la marca de su «Menciones - Empresa» (el dossier ya trae una fila por
-  marca mencionada); si esa columna viene vacía, hacia la marca de la lista que
-  nombra la nota, primero el titular. El motor corre una vez por marca, así que
-  una nota con GSK y Sanofi da dos filas, cada una con su propio tono. El xlsx
-  agrega «Marca analizada» antes del tono; las filas sin ninguna marca de la
-  lista salen con «Sin marca de la lista» y tono «-».
+- **Tono por la marca de cada fila:** el dossier ya trae una fila por marca
+  mencionada, en «Menciones - Empresa» (radio, TV y web) o «Empresa rel.»
+  (prensa). Si la marca de la fila es el cliente (o viene vacía), el tono se
+  mide hacia la marca, alias y voceros escritos en la app. Si es otra marca
+  (p. ej. un competidor: GSK, Moderna, AstraZeneca, Sanofi), el tono de esa fila
+  se mide hacia esa marca, en una pasada aparte del motor. El xlsx agrega
+  «Marca analizada» antes del tono solo cuando hubo filas de otras marcas. Si en
+  todo el dossier hay una sola marca escrita distinto («UNAL» / «Universidad
+  Nacional de Colombia»), se toma como el cliente. Una marca que falla no tumba
+  las demás: sus filas salen en «Para revisar».
 
 ### Motor de Defensoría, versión general (v4.74)
 
