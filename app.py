@@ -59,6 +59,7 @@ from catalogo_tono_tema import CRITERIOS_TONO
 from perfil_cliente import cargar_perfil, guardar_perfil, listar_perfiles, perfil_a_resumen, slugify
 from pipeline import (process_dossier, leer_columnas_xlsx, sugerir_columna,
                       renombrar_columnas_xlsx, construir_ai_config_custom,
+                      parsear_competidores,
                       LimiteFilasError, ErrorSheetsAnalizadas,
                       cargar_ids_analizados_desde_sheets, cargar_hoja_analizadas)
 
@@ -79,6 +80,30 @@ OPCIONES_COLUMNAS_IA = {
 AYUDA_COLUMNAS_IA = ("«Solo Tono»: el xlsx no lleva Subtema_IA (el subtema se usa por dentro "
                      "para que la misma noticia tenga el mismo tono). «Solo Subtema»: Claude "
                      "Haiku no analiza el tono (más rápido y más barato) y el xlsx no lleva Tono_IA.")
+
+# v4.74: modo competidores.
+AYUDA_COMPETIDORES = (
+    "Una marca por línea: «Marca: alias1, alias2 | vocero1, vocero2» (alias y voceros "
+    "opcionales). Cada fila se clasifica hacia la marca de su columna «Menciones - Empresa» "
+    "(el dossier ya trae una fila por marca mencionada); si esa columna viene vacía, hacia la "
+    "marca de la lista que nombra la nota (primero el titular). El análisis corre una vez por "
+    "marca, así que tarda y cuesta más. El xlsx agrega la columna «Marca analizada».")
+EJEMPLO_COMPETIDORES = ("GSK: GlaxoSmithKline, GSK Colombia\nModerna\n"
+                        "AstraZeneca: AZ\nSanofi: Sanofi Pasteur")
+
+
+def _ui_competidores(sufijo: str = ""):
+    """Casilla + lista de marcas. Devuelve (activo, lista parseada)."""
+    with st.expander("🏁 Modo competidores (tono por marca de cada fila)"):
+        activo = st.checkbox("Medir el tono de cada fila hacia su propia marca",
+                             value=False, key="competidores_chk" + sufijo,
+                             help=AYUDA_COMPETIDORES)
+        txt = st.text_area("Marcas a analizar", height=110, key="competidores_txt" + sufijo,
+                           placeholder=EJEMPLO_COMPETIDORES, help=AYUDA_COMPETIDORES)
+        st.caption("Con este modo, «Marca o Cliente Principal», alias y voceros de arriba no se usan "
+                   "para el tono: cada marca usa los suyos de esta lista.")
+    return bool(activo), (parsear_competidores(txt) if activo else [])
+
 
 # Ajustes generales (los de Defensoría sin lo propio de ese cliente).
 GUIA_SUBTEMA_GENERAL = (
@@ -993,10 +1018,14 @@ def main():
                                  "el criterio seleccionado arriba.",
                         )
 
+                    comp_activo, competidores = _ui_competidores()
+
                     if st.form_submit_button("▶ Iniciar Limpieza y Análisis", use_container_width=True, type="primary"):
                         if not f1:
                             st.error("Por favor, sube un archivo Excel.")
-                        elif enable_ai and not brand_input.strip():
+                        elif enable_ai and comp_activo and not competidores:
+                            st.error("Modo competidores: escribe al menos una marca (una por línea).")
+                        elif enable_ai and not comp_activo and not brand_input.strip():
                             st.error("Por favor indica la Marca o Cliente Principal para realizar el análisis enfocado.")
                         else:
                             api_key = st.secrets.get("OPENAI_API_KEY")
@@ -1115,6 +1144,7 @@ def main():
                                     "incluir_tema": modo_tema_input == _OPCIONES_TEMA[1],
                                     "incluir_prominencia": bool(prominencia_chk),
                                     "columnas_ia": OPCIONES_COLUMNAS_IA.get(columnas_ia_sel, "ambas"),
+                                    "competidores": competidores if comp_activo else [],
                                     "memoria": bool(memoria_chk),
                                     "excluir_analizados": bool(excluir_analizados_chk),
                                     "referencias_sheets": bool(referencias_sheets_chk),
@@ -1274,6 +1304,8 @@ def main():
                              "$0.10 por 1M tokens de entrada; ideal para dossiers de alto volumen).",
                     )
 
+                comp_activo_c, competidores_c = _ui_competidores("_custom")
+
                 if st.button("▶ Iniciar Limpieza y Análisis", use_container_width=True,
                              type="primary", key="btn_custom"):
                     if f2 is None:
@@ -1282,7 +1314,9 @@ def main():
                         st.error("No se pudieron leer las columnas del archivo.")
                     elif sel_titulo == sel_cuerpo:
                         st.error("La columna de título y la de cuerpo deben ser diferentes.")
-                    elif enable_ai_c and not (brand_c or "").strip():
+                    elif enable_ai_c and comp_activo_c and not competidores_c:
+                        st.error("Modo competidores: escribe al menos una marca (una por línea).")
+                    elif enable_ai_c and not comp_activo_c and not (brand_c or "").strip():
                         st.error("Por favor indica la Marca o Cliente Principal para realizar el análisis enfocado.")
                     else:
                         api_key = st.secrets.get("OPENAI_API_KEY")
@@ -1357,6 +1391,8 @@ def main():
                             referencias_sheets_c)
                         st.session_state["pending_ai_config"]["columnas_ia"] = \
                             OPCIONES_COLUMNAS_IA.get(columnas_ia_c, "ambas")
+                        st.session_state["pending_ai_config"]["competidores"] = \
+                            competidores_c if comp_activo_c else []
                         st.session_state["procesando"] = True
                         st.session_state["processing_complete"] = False
                         st.rerun()

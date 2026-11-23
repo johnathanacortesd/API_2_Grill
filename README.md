@@ -42,6 +42,29 @@ El acceso a la interfaz de producción está resguardado mediante autenticación
 
 ## 🚀 Funcionalidades
 
+### Agilidad, avance explicado, columnas y competidores (v4.74)
+
+- **Más rápido sin perder precisión:** la normalización de texto que el motor
+  repetía millones de veces ahora se guarda en memoria. Dossier de prueba de
+  200 notas: 78 s → 4 s fuera de las llamadas a la API, con tono y subtema
+  idénticos fila por fila.
+- **Avance explicado:** el panel muestra los 5 pasos del análisis IA (contexto
+  de la marca, agrupación, Haiku, revisión, repaso final) y cada mensaje dice
+  qué hace y cuántas notas lleva; la agrupación informa cuántas notas quedaron
+  en cuántas noticias distintas.
+- **Qué entregar:** «Tono y Subtema» (por defecto), «Solo Tono» (el xlsx no
+  lleva Subtema_IA; el subtema se usa por dentro para que la misma noticia
+  tenga el mismo tono) o «Solo Subtema» (Haiku no analiza el tono: más rápido y
+  más barato; el xlsx no lleva Tono_IA).
+- **Modo competidores** (p. ej. GSK, Moderna, AstraZeneca y Sanofi): una marca
+  por línea, `Marca: alias1, alias2 | vocero1, vocero2`. Cada fila se clasifica
+  hacia la marca de su «Menciones - Empresa» (el dossier ya trae una fila por
+  marca mencionada); si esa columna viene vacía, hacia la marca de la lista que
+  nombra la nota, primero el titular. El motor corre una vez por marca, así que
+  una nota con GSK y Sanofi da dos filas, cada una con su propio tono. El xlsx
+  agrega «Marca analizada» antes del tono; las filas sin ninguna marca de la
+  lista salen con «Sin marca de la lista» y tono «-».
+
 ### Motor de Defensoría, versión general (v4.74)
 
 Grill corre el mismo motor que la app de Defensoría del Pueblo (v1.33): la misma

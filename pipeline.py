@@ -1757,6 +1757,133 @@ def _ai_extra_con_pkl(ai_config: Optional[dict], theme_model) -> dict:
 
 
 # ======================================
+# v4.74: modo competidores (tono por marca de la fila)
+# ======================================
+# Una línea por marca: «Marca: alias1, alias2 | vocero1, vocero2». Cada fila
+# del dossier se clasifica hacia la marca de su «Menciones - Empresa» (el
+# dossier ya trae una fila por marca mencionada); si esa columna viene vacía,
+# hacia la marca de la lista que nombra la nota (primero el titular). El
+# motor corre una vez por marca, con sus alias y voceros: el tono de GSK no
+# se mezcla con el de Sanofi aunque sea la misma noticia.
+COL_MARCA_ANALIZADA = "Marca analizada"
+SIN_MARCA_LISTADA = "Sin marca de la lista"
+
+
+def parsear_competidores(texto: str) -> List[dict]:
+    out, vistos = [], set()
+    for linea in str(texto or "").splitlines():
+        linea = linea.strip().strip("-•*").strip()
+        if not linea:
+            continue
+        partes = linea.split("|", 1)
+        cab, voc = partes[0], (partes[1] if len(partes) > 1 else "")
+        if ":" in cab:
+            marca, als = cab.split(":", 1)
+        else:
+            marca, als = cab, ""
+        marca = marca.strip().strip(",;").strip()
+        if not marca or norm_key(marca) in vistos:
+            continue
+        vistos.add(norm_key(marca))
+        out.append({
+            "brand": marca,
+            "aliases": [a.strip() for a in re.split(r"[,;]", als) if a.strip()],
+            "voceros": [v.strip() for v in re.split(r"[,;]", voc) if v.strip()],
+        })
+    return out
+
+
+def _terminos_competidor(c: dict) -> List[str]:
+    from analyzer_tono_tema import nz
+    ts = {nz(x) for x in [c.get("brand")] + list(c.get("aliases") or []) if nz(x)}
+    return sorted(ts, key=len, reverse=True)
+
+
+def _posicion_termino(texto_nz: str, terminos: List[str]) -> int:
+    mejor = -1
+    for t in terminos:
+        m = re.search(r"(?<![a-z0-9ñ])" + re.escape(t) + r"(?![a-z0-9ñ])", texto_nz)
+        if m and (mejor < 0 or m.start() < mejor):
+            mejor = m.start()
+    return mejor
+
+
+def asignar_marca_competidor(row: dict, competidores: List[dict], km: dict) -> Optional[str]:
+    """Marca de la lista hacia la que se mide el tono de esta fila."""
+    from analyzer_tono_tema import nz
+    terms = [(c["brand"], _terminos_competidor(c)) for c in competidores]
+    mencion = nz(row.get(km.get("menciones", "Menciones - Empresa")) or "")
+    if mencion:
+        mejor = None
+        for marca, ts in terms:
+            largo = max((len(t) for t in ts if _posicion_termino(mencion, [t]) >= 0), default=0)
+            if largo and (mejor is None or largo > mejor[1]):
+                mejor = (marca, largo)
+        if mejor:
+            return mejor[0]
+    for campo in (km.get("titulo", "Título"), None):
+        if campo:
+            txt = nz(row.get(campo) or "")
+        else:
+            txt = nz(" ".join(str(row.get(k) or "") for k in (
+                km.get("resumen", "Resumen - Aclaracion"), "CuerpoEs", "Resumen - Aclaracion")))
+        pos = [(p, marca) for marca, ts in terms for p in [_posicion_termino(txt, ts)] if p >= 0]
+        if pos:
+            return min(pos)[1]
+    return None
+
+
+def enrich_por_competidor(rows: List[dict], km: dict, ai_config: dict, ai_extra: dict,
+                          competidores: List[dict], progress: ProgressCb = None):
+    """Corre el análisis una vez por marca. Devuelve (rows, analisis)."""
+    por_marca: Dict[str, List[dict]] = {c["brand"]: [] for c in competidores}
+    sin_marca: List[dict] = []
+    for r in rows:
+        m = asignar_marca_competidor(r, competidores, km)
+        r[COL_MARCA_ANALIZADA] = m or SIN_MARCA_LISTADA
+        (por_marca[m] if m else sin_marca).append(r)
+    activos = [c for c in competidores if por_marca[c["brand"]]]
+    resumenes: Dict[str, dict] = {}
+    salida: List[dict] = []
+    for k, c in enumerate(activos, 1):
+        sub = por_marca[c["brand"]]
+        lo, hi = 70 + int(23 * (k - 1) / len(activos)), 70 + int(23 * k / len(activos))
+
+        def _prog(pct, msg, _c=c, _k=k, _lo=lo, _hi=hi):
+            pct_local = max(0.0, min(1.0, (float(pct) - 70) / 23.0))
+            emit_progress(progress, int(_lo + (_hi - _lo) * pct_local),
+                          "Marca %d de %d · %s (%d filas) · %s"
+                          % (_k, len(activos), _c["brand"], len(por_marca[_c["brand"]]), msg))
+        extra_c = dict(ai_extra, brand=c["brand"], aliases=c["aliases"], voceros=c["voceros"])
+        sub = enrich_rows_with_ai(
+            rows=sub, km=km, brand=c["brand"], aliases=c["aliases"],
+            api_key=ai_config.get("api_key") or "",
+            model=ai_config.get("model", "gpt-6-luna"),
+            progress_callback=_prog, tone_model=None, theme_model=None, extra=extra_c)
+        for r in sub:
+            r[COL_MARCA_ANALIZADA] = c["brand"]
+        resumenes[c["brand"]] = ultimo_resumen()
+        salida.extend(sub)
+    for r in sin_marca:
+        # Ninguna marca de la lista aparece: no hay a quién medirle el tono.
+        r.setdefault("Contexto analizado", "-")
+        r["Tono_IA"] = "-"
+        r["Subtema_IA"] = "-"
+        salida.append(r)
+    analisis = dict(resumenes[activos[-1]["brand"]]) if activos else {}
+    analisis["competidores"] = {
+        m: {"filas": len(por_marca[m]),
+            "costo_aprox_usd": float((resumenes.get(m) or {}).get("costo_aprox_usd") or 0)}
+        for m in por_marca}
+    analisis["competidores_sin_marca"] = len(sin_marca)
+    analisis["costo_aprox_usd"] = round(sum(
+        float((r or {}).get("costo_aprox_usd") or 0) for r in resumenes.values()), 4)
+    analisis["para_revisar"] = [dict(x, marca=m) for m, r in resumenes.items()
+                                for x in ((r or {}).get("para_revisar") or [])]
+    return salida, analisis
+
+
+# ======================================
 # Proceso Principal
 # ======================================
 MAX_VISTA = 5000
@@ -1784,6 +1911,8 @@ def vista_resultado(rows, km, columnas_ia: str = "ambas") -> List[dict]:
     cols = (("ID", km.get("idnoticia", "ID Noticia")), ("Título", km.get("titulo", "Título")),
             ("Medio", km.get("medio", "Medio")), ("Tono", "Tono_IA"), ("Tema", "Tema_IA"),
             ("Subtema", "Subtema_IA"))
+    if any(r.get(COL_MARCA_ANALIZADA) for r in rows[:50]):
+        cols = cols[:3] + (("Marca", COL_MARCA_ANALIZADA),) + cols[3:]
     cols = tuple((n, c) for n, c in cols if c in quitar_columnas_ia([c], columnas_ia))
     out = []
     for r in rows:
@@ -1914,6 +2043,12 @@ def process_dossier(
         # (sin llamadas LLM ni demora), así que siempre se aplica aunque el
         # checkbox "Generar columna Tema_IA" venga desmarcado.
         emit_progress(progress, 70, "Iniciando análisis de Tono, Tema y Sub-tema…")
+        _competidores = [c for c in (ai_config.get("competidores") or [])
+                         if isinstance(c, dict) and str(c.get("brand") or "").strip()]
+    if has_ai and _competidores:
+        rows, analisis = enrich_por_competidor(rows, KEY_MAP, ai_config, ai_extra,
+                                               _competidores, progress=progress)
+    elif has_ai:
         rows = enrich_rows_with_ai(
             rows=rows,
             km=KEY_MAP,
@@ -2027,6 +2162,12 @@ def process_dossier(
 
     # v4.74: solo tono, solo subtema o ambas columnas del análisis.
     cols_to_export = quitar_columnas_ia(cols_to_export, columnas_ia_de(ai_config))
+    # v4.74: modo competidores: la marca hacia la que se midió cada fila,
+    # justo antes del tono (o del subtema, si no se entrega tono).
+    if has_ai and (ai_config or {}).get("competidores") and COL_MARCA_ANALIZADA not in cols_to_export:
+        _ancla = next((c for c in ("Tono_IA", "Subtema_IA") if c in cols_to_export), None)
+        _pos = cols_to_export.index(_ancla) if _ancla else len(cols_to_export)
+        cols_to_export = cols_to_export[:_pos] + [COL_MARCA_ANALIZADA] + cols_to_export[_pos:]
 
     emit_progress(progress, 94, "✓ Estructuración finalizada. Generando archivo Excel…")
 
