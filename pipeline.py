@@ -21,8 +21,7 @@ from openpyxl import load_workbook
 from openpyxl.utils.cell import column_index_from_string, coordinate_from_string, range_boundaries
 from unidecode import unidecode
 
-from analyzer_tono_tema import enrich_rows_with_ai, ultimo_resumen, aplicar_prominencia
-from coherencia_texto import texto_sin_titulo
+from analyzer_tono_tema import enrich_rows_with_ai, ultimo_resumen, aplicar_prominencia, _quitar_nombre_la_opinion
 from pkl_classifier import (
     apply_pkl_classifiers,
     fill_classification_context,
@@ -62,6 +61,78 @@ AI_COLUMNS_AFTER_AUDIENCIA = ["Tono_IA", "Tema_IA", "Subtema_IA"]
 CONTEXTO_ANALIZADO_COL = "Contexto analizado"
 
 
+
+TEXTO_MIN_PALABRAS = 16  # v1.30: "más de 15 palabras"
+
+
+def _oraciones(texto: str):
+    return [o.strip() for o in re.split(r"(?<=[.!?…])\s+", " ".join(str(texto or "").split())) if o.strip()]
+
+
+def texto_con_minimo(texto: str, resumen: str, titulo: str = "",
+                     minimo: int = TEXTO_MIN_PALABRAS) -> str:
+    """Columna «texto» con más de 15 palabras (v1.30, pedido del usuario).
+
+    Si el texto derivado de Contexto analizado tiene menos de `minimo`
+    palabras, se completa con oraciones COMPLETAS y LITERALES del
+    «Resumen - Aclaracion» de la misma fila, sin agregar palabras que no
+    estén ahí: primero las oraciones que siguen al texto dentro del
+    resumen (si el texto aparece en él); si no aparece, las primeras
+    oraciones del resumen que no estén ya incluidas. Se omite el titular
+    (igual que en el cálculo original). Si el resumen no alcanza, queda
+    lo que haya: nunca se rellena con texto inventado.
+    """
+    texto = " ".join(str(texto or "").split())
+    if len(texto.split()) >= minimo:
+        return texto
+    res = " ".join(str(resumen or "").split())
+    titulo = " ".join(str(titulo or "").split())
+    if titulo:
+        res = " ".join(res.replace(titulo, " ").split())
+    if not res:
+        return texto
+    oraciones = _oraciones(res)
+    if not texto:
+        inicio, partes = 0, []
+    else:
+        partes = [texto]
+        inicio = None
+        pos = res.find(texto)
+        if pos >= 0:
+            fin = pos + len(texto)
+            acum = 0
+            for k, o in enumerate(oraciones):
+                acum = res.find(o, acum)
+                if acum >= fin or acum + len(o) > fin:
+                    inicio = k if acum >= fin else k + 1
+                    break
+                acum += len(o)
+            if inicio is None:
+                inicio = len(oraciones)
+        else:
+            inicio = 0
+    for o in oraciones[inicio:]:
+        if len(" ".join(partes).split()) >= minimo:
+            break
+        if o in " ".join(partes):
+            continue
+        partes.append(o)
+    # v1.33: si el texto está al FINAL del resumen (p. ej. el crédito
+    # «Fuente: Alcaldía de Bogotá.»), no hay oraciones después: se toman
+    # las oraciones inmediatamente ANTERIORES, literales y en su orden.
+    if len(" ".join(partes).split()) < minimo and texto and res.find(texto) >= 0:
+        fin_previas = max(0, (inicio or 0) - 1)
+        previas = []
+        for o in reversed(oraciones[:fin_previas]):
+            if len(" ".join(previas + partes).split()) >= minimo:
+                break
+            if o in " ".join(partes):
+                continue
+            previas.insert(0, o)
+        partes = previas + partes
+    return " ".join(" ".join(partes).split())
+
+
 def _audiencia_antes_de_tier(cols) -> List[str]:
     """v4.52: mueve "Audiencia" justo antes de "Tier" (si ambas están).
 
@@ -87,6 +158,7 @@ def _es_perfil_fenavi(ai_config) -> bool:
 def output_columns_for_export(include_ai: bool = False, include_tema: bool = True,
                               include_prominencia: bool = False,
                               include_subtema: bool = True,
+                              include_tipo_genero: bool = False,
                               audiencia_antes_de_tier: bool = True) -> List[str]:
     """Columnas del xlsx de salida.
 
@@ -132,6 +204,22 @@ def output_columns_for_export(include_ai: bool = False, include_tema: bool = Tru
         cols.remove("Tema_IA")
     if not include_subtema and "Subtema_IA" in cols:
         cols.remove("Subtema_IA")
+    # v1.6: TIPO y GÉNERO justo antes de "Link Nota" (solo con IA y flag).
+    if include_ai and include_tipo_genero:
+        if "Link Nota" in cols:
+            _idx_link = cols.index("Link Nota")
+            for _off, _col in enumerate(("TIPO", "GÉNERO")):
+                if _col not in cols:
+                    cols.insert(_idx_link + _off, _col)
+        elif "Subtema_IA" in cols:
+            _idx_sub = cols.index("Subtema_IA")
+            for _off, _col in enumerate(("TIPO", "GÉNERO")):
+                if _col not in cols:
+                    cols.insert(_idx_sub + 1 + _off, _col)
+        else:
+            for _col in ("TIPO", "GÉNERO"):
+                if _col not in cols:
+                    cols.append(_col)
     if CONTEXTO_ANALIZADO_COL in cols:
         cols = [c for c in cols if c != CONTEXTO_ANALIZADO_COL]
     cols.append(CONTEXTO_ANALIZADO_COL)
@@ -154,6 +242,7 @@ def _columnas_preservadas(columnas_entrada, include_ai: bool = False,
                           include_tema: bool = True,
                           include_subtema: bool = True,
                           include_prominencia: bool = False,
+                          include_tipo_genero: bool = False,
                           audiencia_antes_de_tier: bool = True) -> List[str]:
     """Columnas de salida para la pestaña "Columnas personalizadas" (v4.33).
 
@@ -177,6 +266,18 @@ def _columnas_preservadas(columnas_entrada, include_ai: bool = False,
         if CONTEXTO_ANALIZADO_COL not in vistos:
             cols.append(CONTEXTO_ANALIZADO_COL)
             vistos.add(CONTEXTO_ANALIZADO_COL)
+    # v1.6: TIPO y GÉNERO justo antes de "Link Nota" (solo con IA y flag);
+    # sin Link Nota, quedan tras las columnas de IA (antes de texto/Audio).
+    if include_ai and include_tipo_genero:
+        if "Link Nota" in cols:
+            _idx_link = cols.index("Link Nota")
+            for _off, _col in enumerate(("TIPO", "GÉNERO")):
+                if _col not in cols:
+                    cols.insert(_idx_link + _off, _col)
+        else:
+            for _col in ("TIPO", "GÉNERO"):
+                if _col not in cols:
+                    cols.append(_col)
     if include_prominencia and "Prominencia" not in vistos:
         cols.append("Prominencia")
     # v4.56: "texto" y "Audio" siempre al final, en ese orden (aunque el
@@ -222,6 +323,7 @@ CURRENCY_COLS = {"CPE"}
 NUMERIC_COLS = {"ID Noticia", "ID duplicada"} | THOUSANDS_COLS | CURRENCY_COLS
 # Display "Link" as black, non-underlined text while keeping the hyperlink.
 PLAIN_HYPERLINK_COLUMNS = frozenset({"Link Nota", "Link (Streaming - Imagen)"})
+PLAIN_HYPERLINK_COLUMNS_NORM = frozenset(c.strip().lower() for c in PLAIN_HYPERLINK_COLUMNS)
 
 REL_NS = "{http://schemas.openxmlformats.org/officeDocument/2006/relationships}"
 HYPERLINK_TAIL_BYTES = 4 * 1024 * 1024
@@ -232,8 +334,245 @@ HYPERLINK_TAIL_BYTES = 4 * 1024 * 1024
 MAX_FILAS_POR_DOSSIER = 1000
 
 
+
+# v1.9 (por perfil "formato_boletin"): orden exacto del
+# xlsx final para el boletín, más dos columnas nuevas. FECHA INFORME es
+# la fecha de procesamiento (Bogotá), NO la Fecha de la nota; HORA B es
+# la hora del boletín según el horario del perfil y la hora de Bogotá
+# en que se corre. En la pestaña estándar
+# la salida es EXACTAMENTE las columnas del boletín; en la personalizada van
+# estas primero y después cualquier columna personalizada extra (para
+# no perder datos propios de esa pestaña). Tema_IA no está en la lista
+# y por tanto no se exporta en este formato, aunque se haya calculado.
+BOLETIN_COLUMNAS = [
+    "ID Noticia", "Fecha", "Medio", "Región", "Tipo de Medio",
+    "Sección - Programa", "Título", "Duración - Nro. Caracteres",
+    "CPE", "Audiencia", "Tier", "Tono_IA", "Subtema_IA", "TIPO", "GÉNERO",
+    "Link Nota", "texto", "Link (Streaming - Imagen)", "Link Ext",
+    # v4.74 (versión general): sin «HORA B» (hora del boletín de Defensoría).
+    "FECHA INFORME",
+    "ID duplicada", "Contexto analizado", "Resumen - Aclaracion", "Audio",
+    "Web Ext"
+]
+
+
+def columnas_boletin(include_tipo_genero=True):
+    # Lista del boletín: completa para Secretaría (con TIPO y GÉNERO) y
+    # sin esas dos para Defensoría (que no las clasifica). v1.11: "Link
+    # (Streaming - Imagen)" en vez de "Web Ext" (corrección del usuario
+    # 2026-10-31: el xlsx final lleva el enlace de streaming, no la web
+    # externa).
+    if include_tipo_genero:
+        return list(BOLETIN_COLUMNAS)
+    return [c for c in BOLETIN_COLUMNAS if c not in ("TIPO", "GÉNERO")]
+
+
+def _zona_bogota():
+    """Zona horaria America/Bogota; si no hay tzdata, UTC-5 fijo
+    (Bogotá no tiene horario de verano, así que es equivalente)."""
+    try:
+        from zoneinfo import ZoneInfo
+        return ZoneInfo("America/Bogota")
+    except Exception:
+        return datetime.timezone(datetime.timedelta(hours=-5))
+
+
+def hora_boletin_bogota(ahora=None, corte_manana=13, corte_tarde=18,
+                        manana="1:00 p.m.", tarde="6:00 p.m."):
+    """Hora del boletín según la hora de Bogotá y el horario del perfil.
+
+    Dos boletines al día: el de la mañana (`manana`) y el de la tarde
+    (`tarde`). La etiqueta es la del PRÓXIMO boletín: desde
+    `corte_manana` y antes de `corte_tarde` -> `tarde`; resto del día
+    (madrugada y después de `corte_tarde`) -> `manana`. Límites
+    inclusivos en los cortes, igual que antes.
+    Secretaría (por defecto): mañana "1:00 p.m." (corte 13), tarde
+    "6:00 p.m." (corte 18). Defensoría: mañana "8:00 a.m." (corte 8),
+    tarde "4:00 p.m." (corte 16). Si `ahora` viene sin zona se asume
+    Bogotá; con zona se convierte a Bogotá (la app corre en un
+    servidor en UTC, no en hora local). Corte inválido -> su defecto.
+    """
+    zona = _zona_bogota()
+    if ahora is None:
+        ahora = datetime.datetime.now(zona)
+    elif ahora.tzinfo is None:
+        ahora = ahora.replace(tzinfo=zona)
+    else:
+        ahora = ahora.astimezone(zona)
+    _cm = corte_manana if (isinstance(corte_manana, int) and not isinstance(corte_manana, bool)
+                           and 0 <= corte_manana <= 23) else 13
+    _ct = corte_tarde if (isinstance(corte_tarde, int) and not isinstance(corte_tarde, bool)
+                         and 0 <= corte_tarde <= 23) else 18
+    _man = (str(manana or "1:00 p.m.").strip() or "1:00 p.m.")
+    _tar = (str(tarde or "6:00 p.m.").strip() or "6:00 p.m.")
+    return _tar if (_cm <= ahora.hour < _ct) else _man
+
 class LimiteFilasError(ValueError):
     """El dossier supera MAX_FILAS_POR_DOSSIER filas leídas."""
+
+# v1.7 (Defensoría): notas ya analizadas en Google Sheets. La app
+# compara el ID del dossier (columna "NoticiaId", normalizada a
+# "ID Noticia") con la columna "ID" de la hoja de notas analizadas
+# de Defensoría (primera hoja) y solo procesa las notas que NO están
+# en la hoja. La hoja se lee en cada corrida vía exportación CSV
+# pública (sin inicio de sesión), igual que los mapas de región/
+# internet. Si la hoja no se puede leer y el filtro está activado,
+# la app se detiene con un mensaje claro en vez de reprocesar en
+# silencio (el usuario puede desactivar el filtro y procesar todo).
+SHEETS_ANALIZADAS_CSV_URL = (
+    "https://docs.google.com/spreadsheets/d/"
+    "1lJkddJkGcJYqZ3byHRcwy2Iku2udFgDhUTayu_ykw3E/export?format=csv"
+)
+
+
+class ErrorSheetsAnalizadas(ValueError):
+    """No se pudo leer la hoja de notas ya analizadas (o no trae columna ID)."""
+
+
+def normalizar_id(v):
+    """ID normalizado para comparar dossier vs Sheets; None si no hay ID.
+
+    Acepta int/float/str: 11714750, 11714750.0 y " 11714750 " comparan
+    igual. Un ID vacío, NaN o "nan"/"None" no se puede emparejar, así
+    que devuelve None y la fila se procesa (no se omite por duda).
+    """
+    if v is None:
+        return None
+    try:
+        import math
+        if isinstance(v, float) and math.isnan(v):
+            return None
+    except Exception:
+        pass
+    if isinstance(v, float) and v.is_integer():
+        return str(int(v))
+    s = str(v).strip()
+    if not s or s.lower() in ("nan", "none", "nat"):
+        return None
+    if s.endswith(".0") and s[:-2].isdigit():
+        s = s[:-2]
+    return s
+
+
+def _columna_id_dossier(df):
+    """Nombre de la columna de ID del dossier, o None si no la trae.
+
+    Acepta "NoticiaId" y "ID Noticia" (exactos) y, como respaldo,
+    cualquier columna cuyo nombre normalizado (sin espacios, en
+    minúsculas) sea "noticiaid" o "idnoticia".
+    """
+    for cand in ("NoticiaId", "ID Noticia"):
+        if cand in df.columns:
+            return cand
+    for c in df.columns:
+        k = str(c).replace(" ", "").replace("_", "").lower()
+        if k in ("noticiaid", "idnoticia"):
+            return c
+    return None
+
+
+def cargar_ids_analizados_desde_sheets(url=None):
+    """Lee la columna ID de la hoja de notas ya analizadas y devuelve
+    el conjunto de IDs normalizados. Sin caché: cada corrida lee la
+    hoja actual (el usuario puede agregar notas analizadas entre
+    corridas). Lanza ErrorSheetsAnalizadas si no se puede leer o si
+    no trae columna ID."""
+    url = url or SHEETS_ANALIZADAS_CSV_URL
+    # v1.8-rendimiento: la hoja trae 32 mil filas y 21 columnas, pero solo
+    # hace falta la columna ID. Se pide solo esa columna (usecols) para
+    # no parsear ni cargar en memoria títulos y resúmenes de 32 mil
+    # notas; la descarga en sí es la misma (Google no permite descargar
+    # una sola columna), pero el parseo pasa de 21 columnas a 1. Si la
+    # columna no se llama exactamente "ID", se hace la lectura completa
+    # y la búsqueda tolerante de antes.
+    try:
+        try:
+            df = pd.read_csv(url, dtype=str, usecols=["ID"])
+            id_col = "ID"
+        except ValueError:
+            df = pd.read_csv(url, dtype=str)
+            id_col = None
+            for c in df.columns:
+                _k = str(c).replace(" ", "").replace("_", "").lower()
+                if _k in ("id", "idnoticia", "noticiaid"):
+                    id_col = c
+                    break
+            if id_col is None:
+                raise ErrorSheetsAnalizadas(
+                    "La hoja de notas ya analizadas no trae una columna 'ID'."
+                )
+    except ErrorSheetsAnalizadas:
+        raise
+    except Exception as exc:
+        raise ErrorSheetsAnalizadas(
+            "No se pudo leer la hoja de notas ya analizadas en Google Sheets. "
+            "Revisa que esté compartida como 'Cualquier persona con el enlace "
+            "puede ver' o desactiva el filtro para procesar todas las notas."
+        ) from exc
+    ids = set()
+    for v in df[id_col]:
+        n = normalizar_id(v)
+        if n is not None:
+            ids.add(n)
+    return ids
+
+
+def cargar_hoja_analizadas(url=None, con_referencias=True):
+    """v1.30: una sola lectura de la hoja de notas ya analizadas para dos
+    usos: los IDs ya analizados (filtro) y la referencia de subtemas ya
+    publicados (TÍTULO, RESUMEN y TEMA de las notas recientes), que la
+    corrida usa para que la misma noticia retome el TEMA de la hoja.
+    Devuelve (ids, referencias). Lanza ErrorSheetsAnalizadas si no se puede
+    leer o no trae columna ID."""
+    if not con_referencias:
+        return cargar_ids_analizados_desde_sheets(url), []
+    url = url or SHEETS_ANALIZADAS_CSV_URL
+    try:
+        df = pd.read_csv(url, dtype=str, keep_default_na=False)
+    except Exception as exc:
+        raise ErrorSheetsAnalizadas(
+            "No se pudo leer la hoja de notas ya analizadas en Google Sheets. "
+            "Revisa que esté compartida como 'Cualquier persona con el enlace "
+            "puede ver' o desactiva el filtro para procesar todas las notas."
+        ) from exc
+    id_col = None
+    for c in df.columns:
+        if str(c).replace(" ", "").replace("_", "").lower() in ("id", "idnoticia", "noticiaid"):
+            id_col = c
+            break
+    if id_col is None:
+        raise ErrorSheetsAnalizadas("La hoja de notas ya analizadas no trae una columna 'ID'.")
+    ids = {n for n in (normalizar_id(v) for v in df[id_col]) if n is not None}
+    referencias = []
+    try:
+        import memoria_cliente
+        # Solo las últimas filas (las notas recientes); además se filtra por fecha.
+        cola = df.tail(8000)
+        referencias = memoria_cliente.referencias_de_tabla(
+            list(cola.columns), cola.itertuples(index=False, name=None))
+    except Exception:
+        logging.getLogger(__name__).exception(
+            "No se pudieron leer los subtemas de la hoja; se sigue sin ellos.")
+    return ids, referencias
+
+
+def filtrar_ids_analizados(df, ids_set):
+    """Quita del dossier las filas cuyo ID ya está analizado.
+
+    Devuelve (df_filtrado, n_omitidas, aplicado, tiene_col_id). Si el
+    dossier no trae columna de ID, no se omite nada (aplicado=False)
+    y se procesa todo: sin ID no se puede probar que una nota ya
+    esté analizada. Las filas sin ID tampoco se omiten nunca."""
+    col = _columna_id_dossier(df)
+    if col is None:
+        return df, 0, False, False
+    normas = df[col].map(normalizar_id)
+    mask = normas.map(lambda x: x is not None and x in ids_set)
+    n_omit = int(mask.sum())
+    if n_omit:
+        df = df[~mask].reset_index(drop=True)
+    return df, n_omit, True, True
+
 
 
 def _fmt_miles(n: int) -> str:
@@ -582,6 +921,69 @@ def _url_link_ext(row) -> str:
     return ""
 
 
+_EDITORIAL_URL_STEMS = ('editorial',)
+_REPORTAJE_URL_STEMS = ('reportaje', 'especial', 'investigacion')
+_OPINION_URL_STEMS = ('opinion', 'columna')
+
+
+def aplicar_genero_por_url(rows) -> int:
+    """GÉNERO por la URL web (v1.13/v1.9, 2026-10-31): si la Web Ext de la
+    nota (URL Nota, solo Internet, el mismo valor que se exporta) trae
+    /editorial/, /reportaje/, /especial/, /investigacion/, /opinion/ o
+    /columna(s)/ y el grupo quedó como Noticia, la fila pasa a
+    Editorial, Reportaje u Opinión en ese orden (v1.20). Solo sube Noticia a Opinión: nunca sobrescribe
+    una Entrevista, una Opinión ya asignada ni una duplicada ('-'). Es el
+    mismo criterio del rescate por Sección, pero con la evidencia de la
+    URL (una columna de opinión como la de elpilon.com.co/opinion/...
+    ya no queda como Noticia). Solo tiene efecto donde se clasifica
+    género (Secretaría); donde GÉNERO no se clasifica queda vacío y no
+    hace nada. Devuelve nº de filas cambiadas."""
+    cambios = 0
+    for row in rows:
+        if row.get('is_duplicate'):
+            continue
+        if (row.get('GÉNERO') or '') != 'Noticia':
+            continue
+        # v1.19: el nombre del diario La Opinión no cuenta como Opinión
+        # (su dominio contiene "opinion" pero no es una columna de opinión).
+        url = _quitar_nombre_la_opinion((_url_web_ext(row) or '').lower())
+        # v1.20: orden Editorial -> Reportaje -> Opinión; solo desde
+        # Noticia (las demás guardas no cambian).
+        if any(s in url for s in _EDITORIAL_URL_STEMS):
+            row['GÉNERO'] = 'Editorial'
+            cambios += 1
+        elif any(s in url for s in _REPORTAJE_URL_STEMS):
+            row['GÉNERO'] = 'Reportaje'
+            cambios += 1
+        elif any(s in url for s in _OPINION_URL_STEMS):
+            row['GÉNERO'] = 'Opinión'
+            cambios += 1
+    return cambios
+
+
+def aplicar_genero_por_frase_entrevista(rows) -> int:
+    """GÉNERO por la frase "En entrevista con" (v1.19, orden del usuario):
+    si la noticia dice "En entrevista con" (en el título o en el cuerpo)
+    y quedó como Noticia, pasa a Entrevista. Solo sube Noticia a
+    Entrevista: nunca sobrescribe una Opinión, una Entrevista ya
+    asignada ni una duplicada, y donde GÉNERO no se clasifica (vacío)
+    no hace nada, igual que el rescate por URL. Devuelve nº de filas
+    cambiadas."""
+    cambios = 0
+    for row in rows:
+        if row.get('is_duplicate'):
+            continue
+        if (row.get('GÉNERO') or '') != 'Noticia':
+            continue
+        texto = ' '.join(str(row.get(k) or '') for k in
+                         ('Título', 'CuerpoEs', 'Resumen - Aclaracion'))
+        texto = re.sub(r'\s+', ' ', texto).lower()
+        if 'en entrevista con' in texto:
+            row['GÉNERO'] = 'Entrevista'
+            cambios += 1
+    return cambios
+
+
 def _url_web_ext(row) -> str:
     """Enlace para la columna "Web Ext" (v4.58): solo Online/Internet
     (normalizado a "Internet") y tomado de la columna "URL Nota" (el enlace
@@ -614,34 +1016,6 @@ def _normalizar_hora(val) -> str:
         if 0 <= h < 24 and 0 <= mi < 60 and 0 <= se < 60:
             return f"{h:02d}:{mi:02d}:{se:02d}"
     return s
-
-
-def resumen_duplicadas(rows, km, tope: int = 1000) -> list:
-    """Clausifier: lista para la tabla «ID duplicada → ID original» de la app.
-
-    Solo lee las filas (no cambia el xlsx). `km["idduplicada"]` guarda el ID
-    del original de cada fila duplicada.
-    """
-    salida = []
-    for i, r in enumerate(rows):
-        if not r.get("is_duplicate"):
-            continue
-        tipo = normalizar_tipo_medio(str(r.get(km["tipodemedio"], "")))
-        motivo = ("mismo medio + hora + mención (radio/TV)" if tipo in TIPOS_AV
-                  else "misma URL + mención")
-        salida.append({
-            "ID duplicada": str(r.get(km["idnoticia"], "") or ""),
-            "ID original": str(r.get(km["idduplicada"], "") or ""),
-            "Título": str(r.get(km["titulo"], "") or "")[:160],
-            "Medio": str(r.get(km["medio"], "") or ""),
-            "Tipo de Medio": str(r.get(km["tipodemedio"], "") or ""),
-            "Motivo": motivo,
-            "Mención": str(r.get(km["menciones"], "") or ""),
-            "Fila salida": i + 2,
-        })
-        if len(salida) >= tope:
-            break
-    return salida
 
 
 def detectar_duplicados_avanzado(rows, km):
@@ -876,10 +1250,21 @@ def construir_ai_config_custom(brand, alias_txt, voceros_txt, criterio,
                                api_key, typesafe_api_key, historial_dir,
                                tone_pkl_bytes, theme_pkl_bytes,
                                model="gpt-6-luna",
-                               criterio_texto="", taxonomia=None,
+                               criterio_texto="", taxonomia=None, guia_subtema="",
+                               subtemas_fijos=None,
+                               clasificar_tipo_genero=False,
+                               tono_distrito_positivo=False,
+                               agrupacion_estricta=False,
+                               tono_alertas_tempranas=False,
+                               tono_labor_positiva=False,
+                               formato_boletin=False,
+                               hora_boletin_corte_manana=13,
+                               hora_boletin_corte_tarde=18,
+                               hora_boletin_manana="1:00 p.m.",
+                               hora_boletin_tarde="6:00 p.m.",
+                               excluir_analizados=True,
                                cubos_objetivo=16, votos=2, tam_lote=10,
-                               workers=8, umbral_titulo=92, umbral_cuerpo=85,
-                               motor="openai"):
+                               workers=8, umbral_titulo=92, umbral_cuerpo=85):
     """ai_config de la pestaña "Columnas personalizadas" (v4.27/v4.28).
 
     Misma forma que el de la pestaña estándar. Devuelve None si no hay
@@ -898,6 +1283,21 @@ def construir_ai_config_custom(brand, alias_txt, voceros_txt, criterio,
         "voceros": [v.strip() for v in re.split(r"[,;]", voceros_txt or "") if v.strip()],
         "criterio": criterio,
         "criterio_texto": (criterio_texto or "").strip(),
+        "guia_subtema": (guia_subtema or "").strip(),
+        "subtemas_fijos": list(subtemas_fijos or []),
+        "clasificar_tipo_genero": bool(clasificar_tipo_genero),
+        "tono_distrito_positivo": bool(tono_distrito_positivo),
+        "agrupacion_estricta": bool(agrupacion_estricta),
+        "tono_alertas_tempranas": bool(tono_alertas_tempranas),
+        "tono_labor_positiva": bool(tono_labor_positiva),
+        "formato_boletin": bool(formato_boletin),
+        "hora_boletin_corte_manana": hora_boletin_corte_manana if (isinstance(hora_boletin_corte_manana, int)
+            and not isinstance(hora_boletin_corte_manana, bool) and 0 <= hora_boletin_corte_manana <= 23) else 13,
+        "hora_boletin_corte_tarde": hora_boletin_corte_tarde if (isinstance(hora_boletin_corte_tarde, int)
+            and not isinstance(hora_boletin_corte_tarde, bool) and 0 <= hora_boletin_corte_tarde <= 23) else 18,
+        "hora_boletin_manana": (str(hora_boletin_manana or "1:00 p.m.").strip() or "1:00 p.m."),
+        "hora_boletin_tarde": (str(hora_boletin_tarde or "6:00 p.m.").strip() or "6:00 p.m."),
+        "excluir_analizados": bool(excluir_analizados),
         "taxonomia": taxonomia if taxonomia is not None
                      else "Automática según el archivo (recomendada)",
         "cubos_objetivo": int(cubos_objetivo),
@@ -920,8 +1320,6 @@ def construir_ai_config_custom(brand, alias_txt, voceros_txt, criterio,
         # está (todas las columnas originales en su orden) y agrega al final
         # las columnas del análisis, en vez del esquema fijo de la estándar.
         "preservar_columnas": True,
-        # Clausifier: "haiku" (agente Claude Haiku) u "openai" (Luna).
-        "motor": str(motor or "openai"),
     }
 
 
@@ -988,7 +1386,11 @@ def normalize_dossier_dataframe(df, region_map, internet_map, progress: Progress
     df["Duración - Nro. Caracteres"] = df.get("Duración - Nro. Caracteres", pd.Series(dtype=str))
 
     df.loc[is_av, "Dimensión"] = df.loc[is_av, "Duración - Nro. Caracteres"]
-    df.loc[is_av, "Duración - Nro. Caracteres"] = 0
+    # Sec v1.24 / Def v1.21 (orden del usuario): para aire, cable, AM, FM,
+    # Televisión y Radio (todos caen en TIPOS_AV vía TIPO_MEDIO_MAP), el
+    # valor de Duración - Nro. Caracteres TAMBIÉN queda en su propia
+    # columna. Antes se ponía en 0 y solo vivía en Dimensión. Dimensión
+    # sigue recibiendo el mismo valor, como antes; no se quita nada.
 
     cpe_input = get_column_robust(df, "CPE")
     valor_nota_input = get_column_robust(df, "Valor de Nota")
@@ -1096,9 +1498,7 @@ def generate_output_excel(rows, km, progress: ProgressCb = None, columns_to_use:
     fmt_header = wb.add_format({"bold": True})
     fmt_link = wb.add_format({"font_color": "#0563C1", "underline": 1, "align": "left"})
     fmt_plain_hlink = wb.add_format({"font_color": "#000000", "underline": False, "align": "left"})
-    # v4.70: texto plano sin formato de enlace (columna "Link Ext").
-    fmt_texto_plano = wb.add_format({"font_color": "#000000", "underline": 0, "align": "left"})
-    fmt_date = wb.add_format({"num_format": "DD/MM/YYYY"})
+    fmt_date = wb.add_format({"num_format": "dd/mm/yyyy", "align": "center"})
     fmt_currency = wb.add_format({"num_format": "$#,##0"})
     fmt_thousands = wb.add_format({"num_format": "#,##0"})
     # Formato entero plano sin puntos de miles ni decimales para IDs
@@ -1123,7 +1523,6 @@ def generate_output_excel(rows, km, progress: ProgressCb = None, columns_to_use:
         _write_xlsx_rows(
             ws, rows, km, n, step, progress,
             fmt_link, fmt_plain_hlink, fmt_date, fmt_currency, fmt_thousands, fmt_plain_id, cols,
-            fmt_texto_plano,
         )
         emit_progress(progress, 100, "Guardando archivo Excel…")
     finally:
@@ -1131,8 +1530,7 @@ def generate_output_excel(rows, km, progress: ProgressCb = None, columns_to_use:
     return buf.getvalue()
 
 
-def _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_plain_hlink, fmt_date, fmt_currency, fmt_thousands, fmt_plain_id, cols,
-                     fmt_texto_plano=None):
+def _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_plain_hlink, fmt_date, fmt_currency, fmt_thousands, fmt_plain_id, cols):
     for i, row in enumerate(rows):
         tk = km.get("titulo")
         if tk and tk in row:
@@ -1147,7 +1545,7 @@ def _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_plain_hlink,
         if "CuerpoEs" in row and isinstance(row.get("CuerpoEs"), str) and row["CuerpoEs"].strip():
             row["CuerpoEs"] = corregir_texto(row["CuerpoEs"])
 
-        # v4.69: decodificar entidades HTML en Contexto analizado y en
+        # v1.19/v1.15: decodificar entidades HTML en Contexto analizado y en
         # Resumen - Aclaracion, además de la limpieza que ya reciben
         # Título, Resumen y CuerpoEs. Solo se decodifica: no se cambia
         # ninguna palabra, no se recorta nada y no se usa API. Sin esto,
@@ -1165,24 +1563,47 @@ def _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_plain_hlink,
 
         excel_row = i + 1
         for cidx, h in enumerate(cols):
+            # v1.17/v1.13: columna "ENLACE" como TEXTO PLANO (por pedido
+            # del usuario, para ambos repos): el enlace se escribe tal
+            # cual, sin hipervínculo. Aplica a cualquier capitalización
+            # ("ENLACE", "Enlace", "enlace"). Se usa write_string a
+            # propósito: write() convertiría la URL en hipervínculo
+            # automáticamente. No toca Link Nota, Link Ext, Web Ext ni
+            # Audio, que siguen como hipervínculos.
+            # v1.18/v1.14: además con formato explícito negro sin
+            # subrayado, para que ningún visor lo pinte como enlace.
+            if isinstance(h, str) and h.strip().lower() == "enlace":
+                _v = row.get(h)
+                if isinstance(_v, dict):
+                    _t = _v.get("url") or _v.get("value") or ""
+                else:
+                    _t = _v
+                if _t is None or str(_t).strip() in ("", "nan", "None", "-"):
+                    ws.write_blank(excel_row, cidx, None)
+                else:
+                    ws.write_string(excel_row, cidx, str(_t), fmt_plain_hlink)
+                continue
             # v4.57: "Link Ext" y "Web Ext" con el enlace completo a la
             # noticia, mostrado completo y clicable (como "Audio").
-            # v4.70: "Link Ext" va como TEXTO PLANO (solo la URL, sin
-            # hipervínculo, sin azul ni subrayado) por pedido del usuario.
-            # Encabezado normalizado (como en Secretaría): en la pestaña
-            # personalizada el dossier puede traer "LINK EXT" o "Link Ext ".
+            # Link Ext / Web Ext por encabezado NORMALIZADO (sin espacios
+            # ni mayúsculas, igual que ENLACE): en personalizada los
+            # encabezados del dossier se preservan tal cual, y una variante
+            # ("Link Ext ", "LINK EXT") no coincidía con la comparación
+            # exacta, caía en la rama genérica y salía azul con
+            # hipervínculo aunque el código desplegado fuera correcto.
             _h_norm = h.strip().lower() if isinstance(h, str) else ""
-            if _h_norm == "link ext":
-                url_ext = _url_link_ext(row)
+            if _h_norm in ("link ext", "web ext"):
+                url_ext = _url_link_ext(row) if _h_norm == "link ext" else _url_web_ext(row)
                 if url_ext:
-                    ws.write_string(excel_row, cidx, url_ext, fmt_texto_plano)
-                else:
-                    ws.write_blank(excel_row, cidx, None)
-                continue
-            if _h_norm == "web ext":
-                url_ext = _url_web_ext(row)
-                if url_ext:
-                    ws.write_url(excel_row, cidx, url_ext, fmt_link, string=url_ext)
+                    # Link Ext SIEMPRE como TEXTO PLANO (orden del usuario,
+                    # Secretaría y Defensoría): color negro NORMAL, sin
+                    # negrilla, sin subrayado, sin hipervínculo (la
+                    # negrilla es solo para Link Nota / Streaming, no para
+                    # Link Ext). Web Ext sigue clicable, como antes.
+                    if _h_norm == "link ext":
+                        ws.write_string(excel_row, cidx, url_ext, fmt_plain_hlink)
+                    else:
+                        ws.write_url(excel_row, cidx, url_ext, fmt_link, string=url_ext)
                 else:
                     ws.write_blank(excel_row, cidx, None)
                 continue
@@ -1193,17 +1614,16 @@ def _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_plain_hlink,
             # Sin "Contexto analizado" (modo sin IA) queda vacía.
             if h == "texto":
                 if "Título" in cols and CONTEXTO_ANALIZADO_COL in cols:
-                    # v4.70: el título se quita aunque difiera en forma
-                    # (comillas, espacios, entidades, limpieza del título
-                    # de salida); antes solo se quitaba la copia exacta y
-                    # «texto» podía salir con el título adelante.
                     ctx_v = row.get(CONTEXTO_ANALIZADO_COL) or ""
                     tit_v = row.get("Título") or ""
-                    base = texto_sin_titulo(str(ctx_v), str(tit_v))
-                    if base:
-                        ws.write_string(excel_row, cidx, base)
-                    else:
-                        ws.write_blank(excel_row, cidx, None)
+                    base = str(ctx_v).replace(str(tit_v), "") if str(tit_v) else str(ctx_v)
+                    # v1.27 (igual que Secretaría v1.30): más de 15 palabras,
+                    # completando con oraciones LITERALES del Resumen -
+                    # Aclaracion (sin inventar).
+                    base = texto_con_minimo(" ".join(base.split()),
+                                            row.get("Resumen - Aclaracion") or "",
+                                            str(tit_v or ""))
+                    ws.write(excel_row, cidx, base)
                 else:
                     ws.write_blank(excel_row, cidx, None)
                 continue
@@ -1211,7 +1631,7 @@ def _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_plain_hlink,
             cv = None
             url = None
 
-            if h == "Fecha" and val is not None and not isinstance(val, dict) and pd.notna(val):
+            if h in ("Fecha", "FECHA INFORME") and val is not None and not isinstance(val, dict) and pd.notna(val):
                 if isinstance(val, pd.Timestamp):
                     cv = val.to_pydatetime()
                 elif isinstance(val, (datetime.datetime, datetime.date)):
@@ -1248,9 +1668,10 @@ def _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_plain_hlink,
                     cv = "Link"
                     url = val
                 elif isinstance(val, (int, float)) and not isinstance(val, bool):
-                    # Defensoría v1.42: un número de entrada (p. ej. la columna
-                    # «ID» de la pestaña personalizada, que pandas lee como
-                    # 61142010.0) sale como número y sin «.0».
+                    # v1.42: un número de entrada (p. ej. la columna «ID» de la
+                    # pestaña personalizada, que pandas lee como 61142010.0)
+                    # sale como número y sin «.0», no como el texto
+                    # «61142010.0».
                     if isinstance(val, float) and math.isfinite(val) and val.is_integer():
                         cv = int(val)
                     else:
@@ -1260,16 +1681,16 @@ def _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_plain_hlink,
 
             if url:
                 display = str(cv or "Link")
-                url_fmt = fmt_plain_hlink if h in PLAIN_HYPERLINK_COLUMNS else fmt_link
+                url_fmt = fmt_plain_hlink if _h_norm in PLAIN_HYPERLINK_COLUMNS_NORM else fmt_link
                 try:
                     ws.write_url(excel_row, cidx, str(url), url_fmt, string=display)
                 except Exception:
                     ws.write(excel_row, cidx, display, url_fmt)
             elif h in ("ID Noticia", "ID duplicada") and isinstance(cv, int):
                 ws.write_number(excel_row, cidx, cv, fmt_plain_id)
-            elif h == "Fecha" and isinstance(cv, datetime.datetime):
+            elif h in ("Fecha", "FECHA INFORME") and isinstance(cv, datetime.datetime):
                 ws.write_datetime(excel_row, cidx, cv, fmt_date)
-            elif h == "Fecha" and isinstance(cv, datetime.date):
+            elif h in ("Fecha", "FECHA INFORME") and isinstance(cv, datetime.date):
                 ws.write_datetime(
                     excel_row,
                     cidx,
@@ -1336,17 +1757,163 @@ def _ai_extra_con_pkl(ai_config: Optional[dict], theme_model) -> dict:
 
 
 # ======================================
+# v4.74: modo competidores (tono por marca de la fila)
+# ======================================
+# Una línea por marca: «Marca: alias1, alias2 | vocero1, vocero2». Cada fila
+# del dossier se clasifica hacia la marca de su «Menciones - Empresa» (el
+# dossier ya trae una fila por marca mencionada); si esa columna viene vacía,
+# hacia la marca de la lista que nombra la nota (primero el titular). El
+# motor corre una vez por marca, con sus alias y voceros: el tono de GSK no
+# se mezcla con el de Sanofi aunque sea la misma noticia.
+COL_MARCA_ANALIZADA = "Marca analizada"
+SIN_MARCA_LISTADA = "Sin marca de la lista"
+
+
+def parsear_competidores(texto: str) -> List[dict]:
+    out, vistos = [], set()
+    for linea in str(texto or "").splitlines():
+        linea = linea.strip().strip("-•*").strip()
+        if not linea:
+            continue
+        partes = linea.split("|", 1)
+        cab, voc = partes[0], (partes[1] if len(partes) > 1 else "")
+        if ":" in cab:
+            marca, als = cab.split(":", 1)
+        else:
+            marca, als = cab, ""
+        marca = marca.strip().strip(",;").strip()
+        if not marca or norm_key(marca) in vistos:
+            continue
+        vistos.add(norm_key(marca))
+        out.append({
+            "brand": marca,
+            "aliases": [a.strip() for a in re.split(r"[,;]", als) if a.strip()],
+            "voceros": [v.strip() for v in re.split(r"[,;]", voc) if v.strip()],
+        })
+    return out
+
+
+def _terminos_competidor(c: dict) -> List[str]:
+    from analyzer_tono_tema import nz
+    ts = {nz(x) for x in [c.get("brand")] + list(c.get("aliases") or []) if nz(x)}
+    return sorted(ts, key=len, reverse=True)
+
+
+def _posicion_termino(texto_nz: str, terminos: List[str]) -> int:
+    mejor = -1
+    for t in terminos:
+        m = re.search(r"(?<![a-z0-9ñ])" + re.escape(t) + r"(?![a-z0-9ñ])", texto_nz)
+        if m and (mejor < 0 or m.start() < mejor):
+            mejor = m.start()
+    return mejor
+
+
+def asignar_marca_competidor(row: dict, competidores: List[dict], km: dict) -> Optional[str]:
+    """Marca de la lista hacia la que se mide el tono de esta fila."""
+    from analyzer_tono_tema import nz
+    terms = [(c["brand"], _terminos_competidor(c)) for c in competidores]
+    mencion = nz(row.get(km.get("menciones", "Menciones - Empresa")) or "")
+    if mencion:
+        mejor = None
+        for marca, ts in terms:
+            largo = max((len(t) for t in ts if _posicion_termino(mencion, [t]) >= 0), default=0)
+            if largo and (mejor is None or largo > mejor[1]):
+                mejor = (marca, largo)
+        if mejor:
+            return mejor[0]
+    for campo in (km.get("titulo", "Título"), None):
+        if campo:
+            txt = nz(row.get(campo) or "")
+        else:
+            txt = nz(" ".join(str(row.get(k) or "") for k in (
+                km.get("resumen", "Resumen - Aclaracion"), "CuerpoEs", "Resumen - Aclaracion")))
+        pos = [(p, marca) for marca, ts in terms for p in [_posicion_termino(txt, ts)] if p >= 0]
+        if pos:
+            return min(pos)[1]
+    return None
+
+
+def enrich_por_competidor(rows: List[dict], km: dict, ai_config: dict, ai_extra: dict,
+                          competidores: List[dict], progress: ProgressCb = None):
+    """Corre el análisis una vez por marca. Devuelve (rows, analisis)."""
+    por_marca: Dict[str, List[dict]] = {c["brand"]: [] for c in competidores}
+    sin_marca: List[dict] = []
+    for r in rows:
+        m = asignar_marca_competidor(r, competidores, km)
+        r[COL_MARCA_ANALIZADA] = m or SIN_MARCA_LISTADA
+        (por_marca[m] if m else sin_marca).append(r)
+    activos = [c for c in competidores if por_marca[c["brand"]]]
+    resumenes: Dict[str, dict] = {}
+    salida: List[dict] = []
+    for k, c in enumerate(activos, 1):
+        sub = por_marca[c["brand"]]
+        lo, hi = 70 + int(23 * (k - 1) / len(activos)), 70 + int(23 * k / len(activos))
+
+        def _prog(pct, msg, _c=c, _k=k, _lo=lo, _hi=hi):
+            pct_local = max(0.0, min(1.0, (float(pct) - 70) / 23.0))
+            emit_progress(progress, int(_lo + (_hi - _lo) * pct_local),
+                          "Marca %d de %d · %s (%d filas) · %s"
+                          % (_k, len(activos), _c["brand"], len(por_marca[_c["brand"]]), msg))
+        extra_c = dict(ai_extra, brand=c["brand"], aliases=c["aliases"], voceros=c["voceros"])
+        sub = enrich_rows_with_ai(
+            rows=sub, km=km, brand=c["brand"], aliases=c["aliases"],
+            api_key=ai_config.get("api_key") or "",
+            model=ai_config.get("model", "gpt-6-luna"),
+            progress_callback=_prog, tone_model=None, theme_model=None, extra=extra_c)
+        for r in sub:
+            r[COL_MARCA_ANALIZADA] = c["brand"]
+        resumenes[c["brand"]] = ultimo_resumen()
+        salida.extend(sub)
+    for r in sin_marca:
+        # Ninguna marca de la lista aparece: no hay a quién medirle el tono.
+        r.setdefault("Contexto analizado", "-")
+        r["Tono_IA"] = "-"
+        r["Subtema_IA"] = "-"
+        salida.append(r)
+    analisis = dict(resumenes[activos[-1]["brand"]]) if activos else {}
+    analisis["competidores"] = {
+        m: {"filas": len(por_marca[m]),
+            "costo_aprox_usd": float((resumenes.get(m) or {}).get("costo_aprox_usd") or 0)}
+        for m in por_marca}
+    analisis["competidores_sin_marca"] = len(sin_marca)
+    analisis["costo_aprox_usd"] = round(sum(
+        float((r or {}).get("costo_aprox_usd") or 0) for r in resumenes.values()), 4)
+    analisis["para_revisar"] = [dict(x, marca=m) for m, r in resumenes.items()
+                                for x in ((r or {}).get("para_revisar") or [])]
+    return salida, analisis
+
+
+# ======================================
 # Proceso Principal
 # ======================================
 MAX_VISTA = 5000
 
 
-def vista_resultado(rows, km) -> List[dict]:
+# v4.74: columnas del análisis que se entregan: tono y subtema (por
+# defecto), solo tono o solo subtema.
+COLUMNAS_IA = ("ambas", "tono", "subtema")
+
+
+def columnas_ia_de(ai_config) -> str:
+    v = str((ai_config or {}).get("columnas_ia") or "ambas").strip().lower()
+    return v if v in COLUMNAS_IA else "ambas"
+
+
+def quitar_columnas_ia(cols: List[str], columnas_ia: str) -> List[str]:
+    """«tono»: sin Subtema_IA; «subtema»: sin Tono_IA; «ambas»: igual."""
+    fuera = {"tono": {"Subtema_IA"}, "subtema": {"Tono_IA"}}.get(columnas_ia, set())
+    return [c for c in cols if c not in fuera]
+
+
+def vista_resultado(rows, km, columnas_ia: str = "ambas") -> List[dict]:
     """Filas únicas ya clasificadas, solo con lo que muestra la pantalla de
     resultados (la interfaz no vuelve a leer el xlsx)."""
     cols = (("ID", km.get("idnoticia", "ID Noticia")), ("Título", km.get("titulo", "Título")),
             ("Medio", km.get("medio", "Medio")), ("Tono", "Tono_IA"), ("Tema", "Tema_IA"),
             ("Subtema", "Subtema_IA"))
+    if any(r.get(COL_MARCA_ANALIZADA) for r in rows[:50]):
+        cols = cols[:3] + (("Marca", COL_MARCA_ANALIZADA),) + cols[3:]
+    cols = tuple((n, c) for n, c in cols if c in quitar_columnas_ia([c], columnas_ia))
     out = []
     for r in rows:
         if r.get("is_duplicate"):
@@ -1378,11 +1945,14 @@ def process_dossier(
     tiempos: List[dict] = []
     _reloj = [t0]
 
-    def _etapa(nombre: str, sub: Optional[dict] = None) -> None:
+    def _etapa(nombre: str, sub: Optional[dict] = None, siempre: bool = False) -> None:
+        # v1.33: las etapas principales se registran siempre (aunque duren
+        # menos de 0,01 s con un dossier pequeño); las menores, solo si
+        # tardan algo, para no llenar la tabla de ceros.
         ahora = time.time()
         seg = round(ahora - _reloj[0], 2)
         _reloj[0] = ahora
-        if seg >= 0.01 or sub:
+        if seg >= 0.01 or sub or siempre:
             tiempos.append({"etapa": nombre, "segundos": seg})
             for k, v in (sub or {}).items():
                 tiempos.append({"etapa": k, "segundos": round(float(v), 2), "sub": True})
@@ -1394,6 +1964,28 @@ def process_dossier(
 
     df_normalized = load_dossier_dataframe(file_bytes, progress=progress)
     del file_bytes
+
+    # v1.8: filtro de notas ya analizadas (Google Sheets), ANTES del
+    # límite: el límite aplica a las notas NUEVAS, no al total del
+    # archivo (las omitidas no consumen llamadas a la API).
+    omitidas_analizadas = 0
+    omitidas_aplicado = False
+    omitidas_tiene_col_id = False
+    if ai_config and ai_config.get("excluir_analizados") \
+            and ai_config.get("ids_analizados") is not None:
+        df_normalized, omitidas_analizadas, omitidas_aplicado, \
+            omitidas_tiene_col_id = filtrar_ids_analizados(
+                df_normalized, set(ai_config.get("ids_analizados") or set()))
+        if omitidas_aplicado:
+            emit_progress(
+                progress, 2,
+                f"Notas ya analizadas omitidas (Google Sheets): "
+                f"{_fmt_miles(omitidas_analizadas)}; se procesan las nuevas.")
+        elif not omitidas_tiene_col_id:
+            emit_progress(
+                progress, 2,
+                "Sin columna de ID en el dossier: no se pudo aplicar el "
+                "filtro de notas ya analizadas; se procesa todo el archivo.")
 
     # v4.45: límite de seguridad, antes de cualquier procesamiento o
     # análisis. Si el XLSX trae más filas de las permitidas, se detiene con
@@ -1428,9 +2020,16 @@ def process_dossier(
     emit_progress(progress, 62, "Detectando duplicados…")
     rows = detectar_duplicados_avanzado(rows_expanded, KEY_MAP)
 
-    _etapa("Lectura, limpieza y duplicados")
+    _etapa("Lectura, limpieza y duplicados", siempre=True)
     has_ai = bool(ai_config and ai_config.get("enabled"))
-    tone_model, theme_model = _load_optional_pkl_models(ai_config)
+    # Motor de clasificación: "openai" (actual, por defecto) o "haiku"
+    # (agente Claude Haiku, motor_haiku.py). En modo haiku no se cargan PKL
+    # ni se usa Jev: el agente hace Tono/Subtema/Tema.
+    motor = str((ai_config or {}).get("motor") or "openai").strip().lower()
+    if motor == "haiku" and has_ai:
+        tone_model, theme_model = None, None
+    else:
+        tone_model, theme_model = _load_optional_pkl_models(ai_config)
     has_pkl = tone_model is not None or theme_model is not None
     analisis = {}
     # v4.32: el forzado de incluir_tema por PKL de tema (_ai_extra_con_pkl)
@@ -1444,13 +2043,17 @@ def process_dossier(
         # (sin llamadas LLM ni demora), así que siempre se aplica aunque el
         # checkbox "Generar columna Tema_IA" venga desmarcado.
         emit_progress(progress, 70, "Iniciando análisis de Tono, Tema y Sub-tema…")
+        _competidores = [c for c in (ai_config.get("competidores") or [])
+                         if isinstance(c, dict) and str(c.get("brand") or "").strip()]
+    if has_ai and _competidores:
+        rows, analisis = enrich_por_competidor(rows, KEY_MAP, ai_config, ai_extra,
+                                               _competidores, progress=progress)
+    elif has_ai:
         rows = enrich_rows_with_ai(
             rows=rows,
             km=KEY_MAP,
             brand=ai_config["brand"],
             aliases=ai_config.get("aliases", []),
-            # Clausifier: en motor "haiku" no hay clave de OpenAI; los PKL
-            # de tono/tema se cargan igual y mandan sobre el agente.
             api_key=ai_config.get("api_key") or "",
             model=ai_config.get("model", "gpt-6-luna"),
             progress_callback=progress,
@@ -1504,6 +2107,22 @@ def process_dossier(
     rows.sort(key=lambda r: (norm_key(r.get(KEY_MAP.get("titulo", "Título"), "")),
                              str(r.get(KEY_MAP.get("idnoticia", "ID Noticia"), ""))))
 
+    # v1.16/v1.12: formato boletín (solo si el perfil lo trae). FECHA
+    # INFORME es la fecha de procesamiento (Bogotá, mismo instante que
+    # HORA B), NO la Fecha de la nota: todas las filas llevan la misma
+    # fecha, la del día en que se corrió. HORA B es la del boletín según
+    # el horario del perfil y la hora de Bogotá en que se corre; ambas
+    # se fijan aquí, cuando las filas ya están finales y ordenadas,
+    # justo antes de exportar.
+    # Fecha de procesamiento (Bogotá) única para toda la corrida: la usa
+    # el boletín y la corrección incondicional de FECHA INFORME abajo.
+    _ahora_bogota = datetime.datetime.now(_zona_bogota())
+    _fecha_informe = _ahora_bogota.replace(tzinfo=None, hour=0, minute=0,
+                                           second=0, microsecond=0)
+    if ai_extra.get("formato_boletin"):
+        for _r in rows:
+            _r["FECHA INFORME"] = _fecha_informe
+
     cols_to_export = output_columns_for_export(
         include_ai=has_ai or has_pkl,
         include_tema=ai_extra.get("incluir_tema", True),
@@ -1511,6 +2130,8 @@ def process_dossier(
         # v4.32: sin IA no hay subtema (ningún PKL lo genera); la columna
         # saldría vacía ("-"), así que no se exporta en modo solo-PKL.
         include_subtema=has_ai,
+        # v1.6: TIPO/GÉNERO solo con IA (sin IA no hay quien los clasifique).
+        include_tipo_genero=has_ai and bool(ai_extra.get("clasificar_tipo_genero")),
         # v4.52: Audiencia antes de Tier para todos, salvo el perfil Fenavi.
         audiencia_antes_de_tier=not _es_perfil_fenavi(ai_config),
     )
@@ -1524,8 +2145,29 @@ def process_dossier(
             include_tema=ai_extra.get("incluir_tema", True),
             include_subtema=has_ai,
             include_prominencia=_incluir_prominencia,
+            include_tipo_genero=has_ai and bool(ai_extra.get("clasificar_tipo_genero")),
             audiencia_antes_de_tier=not _es_perfil_fenavi(ai_config),
         )
+    # v1.9: en formato boletín, la salida estándar es exactamente las 25
+    # columnas; en la personalizada van las 25 primero y después las
+    # columnas personalizadas extra que no estén en la lista.
+    if ai_extra.get("formato_boletin"):
+        _cols_boletin = columnas_boletin(
+            bool(ai_extra.get("clasificar_tipo_genero")))
+        if (ai_config or {}).get("preservar_columnas"):
+            _extras = [c for c in cols_to_export if c not in _cols_boletin]
+            cols_to_export = list(_cols_boletin) + _extras
+        else:
+            cols_to_export = list(_cols_boletin)
+
+    # v4.74: solo tono, solo subtema o ambas columnas del análisis.
+    cols_to_export = quitar_columnas_ia(cols_to_export, columnas_ia_de(ai_config))
+    # v4.74: modo competidores: la marca hacia la que se midió cada fila,
+    # justo antes del tono (o del subtema, si no se entrega tono).
+    if has_ai and (ai_config or {}).get("competidores") and COL_MARCA_ANALIZADA not in cols_to_export:
+        _ancla = next((c for c in ("Tono_IA", "Subtema_IA") if c in cols_to_export), None)
+        _pos = cols_to_export.index(_ancla) if _ancla else len(cols_to_export)
+        cols_to_export = cols_to_export[:_pos] + [COL_MARCA_ANALIZADA] + cols_to_export[_pos:]
 
     emit_progress(progress, 94, "✓ Estructuración finalizada. Generando archivo Excel…")
 
@@ -1536,12 +2178,30 @@ def process_dossier(
         overall = 94 + int(pct * 0.06)
         emit_progress(progress, overall, msg)
 
+    # v1.13/v1.9 (2026-10-31): género por URL web (ver
+    # aplicar_genero_por_url). Corre antes de exportar para que el xlsx
+    # ya lleve la Opinión; no afecta a filas sin género clasificado.
+    aplicar_genero_por_url(rows)
+
+    # v1.19 (orden del usuario): si la noticia dice "En entrevista con",
+    # pasa a Entrevista. Corre después del rescate por URL y con la misma
+    # guarda (solo sube Noticia); lo demás no cambia.
+    aplicar_genero_por_frase_entrevista(rows)
+
+    # v1.18/v1.14: FECHA INFORME siempre es la fecha de procesamiento
+    # (Bogotá), en cualquier camino que la exporte — no solo en formato
+    # boletín. Sin esto, una corrida personalizada sobre un xlsx ya
+    # procesado arrastraba la FECHA INFORME vieja (en v1.13 se vio con
+    # valores de la columna FECHA, de antes de v1.12).
+    if "FECHA INFORME" in cols_to_export:
+        for _r in rows:
+            _r["FECHA INFORME"] = _fecha_informe
+
     _etapa("Prominencia y orden")
     output_data = generate_output_excel(rows, KEY_MAP, progress=export_progress, columns_to_use=cols_to_export)
-    _etapa("Generación del Excel")
+    _etapa("Generación del Excel", siempre=True)
     _conteo_tonos = _contar_tonos(rows)
-    _vista = vista_resultado(rows, KEY_MAP) if (has_ai or has_pkl) else []
-    _duplicadas = resumen_duplicadas(rows, KEY_MAP)
+    _vista = vista_resultado(rows, KEY_MAP, columnas_ia_de(ai_config)) if (has_ai or has_pkl) else []
     del rows, rows_expanded
     gc.collect()
     duration = time.time() - t0
@@ -1565,12 +2225,12 @@ def process_dossier(
         "total_rows": total_rows,
         "unique_rows": unique_rows,
         "duplicates": total_rows - unique_rows,
+        "omitidas_analizadas": omitidas_analizadas,
+        "omitidas_analizadas_aplicado": omitidas_aplicado,
         "process_duration": f"{duration:.2f}s",
         "medios_sin_mapear": medios_sin_region,
         "analisis": analisis,
         "_filas": _conteo_tonos,
-        # Clausifier: tabla de duplicadas para la interfaz (no va al xlsx).
-        "duplicadas": _duplicadas,
         # Tiempo por etapa y filas clasificadas para la pantalla de resultados.
         "tiempos": tiempos,
         "vista": _vista,

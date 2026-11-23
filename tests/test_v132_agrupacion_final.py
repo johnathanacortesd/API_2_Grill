@@ -1,4 +1,4 @@
-"""Portado de Defensoría v1.32: casos del resultado real del 2026-11-21 (variantes del mismo hecho, subtemas fijos y rótulos de entidad)."""
+"""v1.32: casos del resultado real del 2026-11-21 (dossier de las 4:00 p.m.)."""
 import os, sys, types
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 _s = types.ModuleType('openai'); _s.OpenAI = object; sys.modules.setdefault('openai', _s)

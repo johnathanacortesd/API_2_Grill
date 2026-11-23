@@ -190,7 +190,7 @@ class TestEnrichHonraPkl(unittest.TestCase):
         # reparación de etiquetas ajenas la devuelve a su propio titular.
         self.assertEqual(rows[0]["Subtema_IA"], LOTE_SUB)
         self.assertEqual(rows[1]["Subtema_IA"],
-                         # v4.71 (Sec v1.34): nunca «sujeto + verbo».
+                         # v1.29: nunca «sujeto + verbo» (regla del usuario).
                          "Concurso nacional de robótica")
         resumen = ultimo_resumen()
         self.assertEqual(resumen.get("modo_taxonomia"), "pkl")

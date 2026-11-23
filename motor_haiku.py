@@ -294,7 +294,7 @@ def es_copia(subtema: str, titulo: str, contexto: str = "") -> Optional[str]:
     return None
 
 
-# Portado de Defensoría v1.32 (guía del cliente: «Nunca la entidad o la persona como tema»):
+# v1.32 (guía del cliente: «Nunca la entidad o la persona como tema»):
 # palabras que, junto al nombre de la entidad o su vocera, no dicen de qué
 # trata la nota («Datos Defensoría del Pueblo», «Gestión de la Defensoría»,
 # «Declaraciones de Iris Marín»).
@@ -643,7 +643,7 @@ async def _guardar_clasificacion(args: Dict[str, Any], tramo=None) -> Dict[str, 
         PROGRESO["cambios_revision"] = PROGRESO.get("cambios_revision", 0) + cambios
     total = max(1, PROGRESO.get("total") or 1)
     hechas = max(0, total - len(faltan_todas))
-    _avisar(76 + int(12 * hechas / total), "Haiku clasificó %d de %d noticias" % (hechas, total))
+    _avisar(76 + int(12 * hechas / total), "Paso 3 de 5 · Haiku clasificó %d de %d noticias" % (hechas, total))
     if rechazadas:
         det = "; ".join("id %s: %s" % (i, ", ".join(m)) for i, m in list(rechazadas.items())[:40])
         return _texto("FILAS CON SUBTEMAS RECHAZADOS o rol/tono incoherente (no se guardaron): %s. "
@@ -741,7 +741,7 @@ async def _candidatos_consistencia(args: Dict[str, Any]) -> Dict[str, Any]:
     pagina = grupos[desde:desde + GRUPOS_POR_PAGINA]
     siguiente = desde + GRUPOS_POR_PAGINA if desde + GRUPOS_POR_PAGINA < len(grupos) else None
     PROGRESO.update(paso="Revisando consistencia", revisado=True, grupos=len(grupos))
-    _avisar(89, "Revisor de subtemas: %d grupos candidatos" % len(grupos))
+    _avisar(89, "Revisor de subtemas: comparando %d grupos de subtemas parecidos para unir los del mismo hecho" % len(grupos))
     return _texto(json.dumps({"total": len(grupos), "desde": desde, "siguiente": siguiente,
                               "grupos": pagina}, ensure_ascii=False, separators=(",", ":")))
 
@@ -801,7 +801,7 @@ Ejemplos:
 - MAL "Anuncia nuevas medidas" (verbo) -> BIEN "Nuevas medidas de protección a líderes sociales"
 - MAL "Realizando jornada" (gerundio y genérico) -> BIEN "Jornada de atención a víctimas en Tumaco"
 - MAL "Denunció amenazas contra líderes en el Cauca" (verbo y extracto) -> BIEN "Amenazas a líderes sociales del Cauca"
-- MAL "La Defensoría del Pueblo emitió una alerta temprana" (copia y verbo) -> BIEN "Alerta temprana por reclutamiento de menores"
+- MAL "La entidad emitió una alerta por reclutamiento de menores" (copia y verbo) -> BIEN "Alerta por reclutamiento de menores"
 - MAL "Jornada de salud" (le sirve a cualquier jornada) -> BIEN "Jornada de vacunación infantil en Soacha"
 - BIEN "Bienestar de la población migrante", "Taller de liderazgo juvenil"
 
@@ -815,6 +815,7 @@ Ejemplos (cliente: una alcaldía):
 - "Denuncian sobrecostos; la Alcaldía respondió que el contrato cumple la ley" -> rol equilibrada, Neutro.
 - "Homicidios aumentaron 12 %, según cifras de la Alcaldía" -> rol referencial, Neutro (asunto grave, pero la nota no evalúa a la Alcaldía).
 - "Empresa privada ganó premio; al acto asistió un delegado de la Alcaldía" -> rol referencial, Neutro.
+- Que la noticia trate de un hecho malo (atentado, amenaza, violencia, crisis) NO la hace Negativa: Negativo es solo si se critica, denuncia o afecta al cliente mismo. Si el cliente o su vocero rechaza, alerta, se pronuncia o expresa preocupación por ese hecho, el tono es Neutro. Ej.: "La entidad rechazó las amenazas contra la prensa" -> Neutro.
 guardar_clasificacion RECHAZA la fila si el rol y el tono no coinciden.
 Si el pedido trae un bloque <criterio_tono>, ese criterio del cliente MANDA en los casos que nombre: usa el tono que indique y el rol que corresponde a ese tono.
 
@@ -872,6 +873,8 @@ PROMPT_REVISOR = (
     "TAREA 3, tono del grupo. Solo cuando las filas del mismo hecho traen tonos distintos, elige "
     "el que sostiene el contexto con esta regla (un auditor de tono aparte revisa el resto, no "
     "cambies tonos de filas que no son del mismo hecho):\n" + RUBRICA_TONO + "\n"
+    "Un hecho malo (atentado, amenaza, violencia) que el cliente rechaza o sobre el que alerta "
+    "no es Negativo; Negativo solo si se critica o afecta al cliente.\n"
     "Responde SOLO con JSON compacto, sin texto alrededor: "
     '{"correcciones":[{"id":"...","subtema":"...","tono":"..."}],'
     '"grupos":[{"grupo":0,"mismo_hecho":true,"razon":"una línea"}]}. '
@@ -923,19 +926,17 @@ def bloque_cliente(brand: str, aliases: Sequence[str] = (), voceros: Sequence[st
 def armar_prompt(brand: str, aliases: Sequence[str], voceros: Sequence[str],
                  criterio_texto: str, incluir_tema: bool,
                  taxonomia: Optional[Sequence[str]] = None, guia_subtema: str = "",
-                 tono_pkl: bool = False) -> str:
+                 sin_tono: bool = False) -> str:
     partes = ["CLIENTE: %s" % brand]
-    if tono_pkl:
-        # Clausifier: con PKL de tono el modelo del cliente pone el TONO; el
-        # agente no lo analiza (envía Neutro) y se concentra en el SUBTEMA.
-        partes.append('TONO POR MODELO DEL CLIENTE: no analices el tono ni el rol; envía siempre '
-                      '"tono":"Neutro", sin "rol", y dedica el trabajo al SUBTEMA.')
-        criterio_texto = ""
     if aliases:
         partes.append("ALIAS: %s" % ", ".join(aliases))
     if voceros:
         partes.append("VOCEROS: %s" % ", ".join(voceros))
     partes.append("INCLUIR TEMA" if incluir_tema else "SIN TEMA")
+    if sin_tono:
+        # v4.74 («solo subtema»): el tono no se entrega; no se analiza.
+        partes.append("SIN TONO: no analices el tono; escribe \"tono\": \"Neutro\" en todas las "
+                      "filas y dedica el trabajo solo al subtema.")
     if incluir_tema and taxonomia:
         partes.append("<lista_temas>\n%s\n</lista_temas>" % "\n".join("- %s" % t for t in taxonomia))
     if (criterio_texto or "").strip():
@@ -1282,7 +1283,7 @@ def _auditar_tono(brand: str, aliases: Sequence[str] = (), voceros: Sequence[str
     except Exception as e:  # noqa: BLE001
         AUDITORIA["error"] = str(e)
         return dict(AUDITORIA)
-    _avisar(89, "Auditor de tono: %d filas de riesgo" % len(cands))
+    _avisar(89, "Auditor de tono: segunda lectura de %d noticias con tono dudoso" % len(cands))
     PROGRESO.update(paso="Auditando tono", auditoria_tono=len(cands))
     lotes = [cands[i:i + lote] for i in range(0, len(cands), lote)]
     AUDITORIA["lotes"] = len(lotes)
@@ -1387,9 +1388,10 @@ def clasificar_con_haiku(items: Sequence[dict], brand: str, aliases: Sequence[st
         if not items:
             return {"etiquetas": {}, "costo_usd": 0.0, "turnos": 0, "filas": 0, "faltan": 0,
                     "cambios_revision": 0, "grupos_revision": 0, "subtype": None, "error": None}
-        prompt = armar_prompt(brand, list(aliases or []), list(voceros or []), criterio_texto,
+        prompt = armar_prompt(brand, list(aliases or []), list(voceros or []),
+                              "" if tono_pkl else criterio_texto,
                               incluir_tema, _ESTADO["taxonomia"], guia_subtema,
-                              tono_pkl=tono_pkl)
+                              sin_tono=bool(tono_pkl))
         ctx_cliente = bloque_cliente(brand, list(aliases or []), list(voceros or []),
                                      "" if tono_pkl else criterio_texto)
         enviables = len(_lista_envio())
@@ -1402,13 +1404,13 @@ def clasificar_con_haiku(items: Sequence[dict], brand: str, aliases: Sequence[st
             elif not tramos:
                 opciones = construir_opciones(sdk, cwd, max_turns, max_budget_usd, modelo,
                                               contexto_cliente=ctx_cliente)
-                _avisar(75, "Clasificando con Claude Haiku (agente + revisor)…")
+                _avisar(75, "Paso 3 de 5 · Claude Haiku lee cada noticia y decide su tono hacia el cliente y su subtema…")
                 final = _ejecutar(_correr(sdk, prompt, opciones, query_fn))
             else:
                 # Dossier grande: varios agentes clasifican tramos en paralelo
                 # y un agente de cierre recoge lo que falte y revisa la
                 # consistencia entre tramos.
-                _avisar(75, "Clasificando con %d agentes Haiku en paralelo…" % len(tramos))
+                _avisar(75, "Paso 3 de 5 · %d agentes Claude Haiku en paralelo leen las noticias y deciden tono y subtema…" % len(tramos))
 
                 async def _en_paralelo():
                     tareas = []

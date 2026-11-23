@@ -2,3 +2,7 @@ __pycache__/
 *.pyc
 # Memoria de clasificaciones por cliente (se genera al correr)
 historial/memoria_*.json
+.pytest_cache/
+# Historial que generan las corridas y las pruebas
+historial/*.jsonl
+!historial/colpensiones.jsonl

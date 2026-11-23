@@ -236,3 +236,15 @@ def test_evaluador_recibe_cliente_y_criterio():
     assert visto['pedido']['cliente'] == {'marca': MARCA, 'alias': ALIAS, 'voceros': VOCEROS}
     assert visto['pedido']['criterio_tono'] == 'Regla X'
     assert 'referencial' in visto['system'] and '__RUBRICAS__' not in visto['system']
+
+
+def test_se_conservan_las_reglas_propias_de_esta_app():
+    """Las mejoras de tono/subtema no pisan lo que esta app ya tenía."""
+    assert 'referencial' in mh.SYSTEM_PROMPT and 'Prueba de precisión' in mh.SYSTEM_PROMPT
+    if hasattr(mh, 'system_prompt'):                      # Secretaría: TIPO y GÉNERO
+        p = mh.system_prompt(True)
+        assert '<tipo_y_genero>' in p and '"genero":"Noticia|' in p and '"rol":"gestion|' in p
+        assert '<tipo_y_genero>' not in mh.system_prompt(False)
+    else:                                                 # Defensoría: hecho malo no es Negativo
+        assert 'Que la noticia trate de un hecho malo' in mh.SYSTEM_PROMPT
+        assert 'Un hecho malo' in mh.PROMPT_REVISOR

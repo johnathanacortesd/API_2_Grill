@@ -108,12 +108,13 @@ class TestJevEnParalelo(unittest.TestCase):
         self.assertEqual(et[1]['tono'], 'Positivo')
 
 
-class TestDefaultGrill(unittest.TestCase):
-    def test_estricta_es_default_en_grill(self):
-        # v4.71 (Grill): sin flag en el perfil, la agrupación es estricta.
-        import inspect
-        src = inspect.getsource(az.enrich_rows_with_ai)
-        self.assertIn("extra.get('agrupacion_estricta', True)", src)
+class TestPerfil(unittest.TestCase):
+    def test_perfil_estricto(self):
+        import perfil_cliente
+        d = perfil_cliente.cargar_perfil('defensoria_del_pueblo')
+        self.assertTrue(d['agrupacion_estricta'])
+        self.assertIn('NO fuerces', d['guia_subtema'])
+        self.assertEqual(perfil_cliente.validar_perfil(d), [])
 
 
 class TestPositivoGestion(unittest.TestCase):
