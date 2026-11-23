@@ -643,7 +643,7 @@ async def _guardar_clasificacion(args: Dict[str, Any], tramo=None) -> Dict[str, 
         PROGRESO["cambios_revision"] = PROGRESO.get("cambios_revision", 0) + cambios
     total = max(1, PROGRESO.get("total") or 1)
     hechas = max(0, total - len(faltan_todas))
-    _avisar(76 + int(12 * hechas / total), "Haiku clasificó %d de %d noticias" % (hechas, total))
+    _avisar(76 + int(12 * hechas / total), "Paso 3 de 5 · Haiku clasificó %d de %d noticias" % (hechas, total))
     if rechazadas:
         det = "; ".join("id %s: %s" % (i, ", ".join(m)) for i, m in list(rechazadas.items())[:40])
         return _texto("FILAS CON SUBTEMAS RECHAZADOS o rol/tono incoherente (no se guardaron): %s. "
@@ -741,7 +741,7 @@ async def _candidatos_consistencia(args: Dict[str, Any]) -> Dict[str, Any]:
     pagina = grupos[desde:desde + GRUPOS_POR_PAGINA]
     siguiente = desde + GRUPOS_POR_PAGINA if desde + GRUPOS_POR_PAGINA < len(grupos) else None
     PROGRESO.update(paso="Revisando consistencia", revisado=True, grupos=len(grupos))
-    _avisar(89, "Revisor de subtemas: %d grupos candidatos" % len(grupos))
+    _avisar(89, "Revisor de subtemas: comparando %d grupos de subtemas parecidos para unir los del mismo hecho" % len(grupos))
     return _texto(json.dumps({"total": len(grupos), "desde": desde, "siguiente": siguiente,
                               "grupos": pagina}, ensure_ascii=False, separators=(",", ":")))
 
@@ -925,13 +925,18 @@ def bloque_cliente(brand: str, aliases: Sequence[str] = (), voceros: Sequence[st
 
 def armar_prompt(brand: str, aliases: Sequence[str], voceros: Sequence[str],
                  criterio_texto: str, incluir_tema: bool,
-                 taxonomia: Optional[Sequence[str]] = None, guia_subtema: str = "") -> str:
+                 taxonomia: Optional[Sequence[str]] = None, guia_subtema: str = "",
+                 sin_tono: bool = False) -> str:
     partes = ["CLIENTE: %s" % brand]
     if aliases:
         partes.append("ALIAS: %s" % ", ".join(aliases))
     if voceros:
         partes.append("VOCEROS: %s" % ", ".join(voceros))
     partes.append("INCLUIR TEMA" if incluir_tema else "SIN TEMA")
+    if sin_tono:
+        # v4.74 («solo subtema»): el tono no se entrega; no se analiza.
+        partes.append("SIN TONO: no analices el tono; escribe \"tono\": \"Neutro\" en todas las "
+                      "filas y dedica el trabajo solo al subtema.")
     if incluir_tema and taxonomia:
         partes.append("<lista_temas>\n%s\n</lista_temas>" % "\n".join("- %s" % t for t in taxonomia))
     if (criterio_texto or "").strip():
@@ -1278,7 +1283,7 @@ def _auditar_tono(brand: str, aliases: Sequence[str] = (), voceros: Sequence[str
     except Exception as e:  # noqa: BLE001
         AUDITORIA["error"] = str(e)
         return dict(AUDITORIA)
-    _avisar(89, "Auditor de tono: %d filas de riesgo" % len(cands))
+    _avisar(89, "Auditor de tono: segunda lectura de %d noticias con tono dudoso" % len(cands))
     PROGRESO.update(paso="Auditando tono", auditoria_tono=len(cands))
     lotes = [cands[i:i + lote] for i in range(0, len(cands), lote)]
     AUDITORIA["lotes"] = len(lotes)
@@ -1383,8 +1388,10 @@ def clasificar_con_haiku(items: Sequence[dict], brand: str, aliases: Sequence[st
         if not items:
             return {"etiquetas": {}, "costo_usd": 0.0, "turnos": 0, "filas": 0, "faltan": 0,
                     "cambios_revision": 0, "grupos_revision": 0, "subtype": None, "error": None}
-        prompt = armar_prompt(brand, list(aliases or []), list(voceros or []), criterio_texto,
-                              incluir_tema, _ESTADO["taxonomia"], guia_subtema)
+        prompt = armar_prompt(brand, list(aliases or []), list(voceros or []),
+                              "" if tono_pkl else criterio_texto,
+                              incluir_tema, _ESTADO["taxonomia"], guia_subtema,
+                              sin_tono=bool(tono_pkl))
         ctx_cliente = bloque_cliente(brand, list(aliases or []), list(voceros or []),
                                      "" if tono_pkl else criterio_texto)
         enviables = len(_lista_envio())
@@ -1397,13 +1404,13 @@ def clasificar_con_haiku(items: Sequence[dict], brand: str, aliases: Sequence[st
             elif not tramos:
                 opciones = construir_opciones(sdk, cwd, max_turns, max_budget_usd, modelo,
                                               contexto_cliente=ctx_cliente)
-                _avisar(75, "Clasificando con Claude Haiku (agente + revisor)…")
+                _avisar(75, "Paso 3 de 5 · Claude Haiku lee cada noticia y decide su tono hacia el cliente y su subtema…")
                 final = _ejecutar(_correr(sdk, prompt, opciones, query_fn))
             else:
                 # Dossier grande: varios agentes clasifican tramos en paralelo
                 # y un agente de cierre recoge lo que falte y revisa la
                 # consistencia entre tramos.
-                _avisar(75, "Clasificando con %d agentes Haiku en paralelo…" % len(tramos))
+                _avisar(75, "Paso 3 de 5 · %d agentes Claude Haiku en paralelo leen las noticias y deciden tono y subtema…" % len(tramos))
 
                 async def _en_paralelo():
                     tareas = []

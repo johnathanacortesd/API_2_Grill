@@ -1762,12 +1762,29 @@ def _ai_extra_con_pkl(ai_config: Optional[dict], theme_model) -> dict:
 MAX_VISTA = 5000
 
 
-def vista_resultado(rows, km) -> List[dict]:
+# v4.74: columnas del análisis que se entregan: tono y subtema (por
+# defecto), solo tono o solo subtema.
+COLUMNAS_IA = ("ambas", "tono", "subtema")
+
+
+def columnas_ia_de(ai_config) -> str:
+    v = str((ai_config or {}).get("columnas_ia") or "ambas").strip().lower()
+    return v if v in COLUMNAS_IA else "ambas"
+
+
+def quitar_columnas_ia(cols: List[str], columnas_ia: str) -> List[str]:
+    """«tono»: sin Subtema_IA; «subtema»: sin Tono_IA; «ambas»: igual."""
+    fuera = {"tono": {"Subtema_IA"}, "subtema": {"Tono_IA"}}.get(columnas_ia, set())
+    return [c for c in cols if c not in fuera]
+
+
+def vista_resultado(rows, km, columnas_ia: str = "ambas") -> List[dict]:
     """Filas únicas ya clasificadas, solo con lo que muestra la pantalla de
     resultados (la interfaz no vuelve a leer el xlsx)."""
     cols = (("ID", km.get("idnoticia", "ID Noticia")), ("Título", km.get("titulo", "Título")),
             ("Medio", km.get("medio", "Medio")), ("Tono", "Tono_IA"), ("Tema", "Tema_IA"),
             ("Subtema", "Subtema_IA"))
+    cols = tuple((n, c) for n, c in cols if c in quitar_columnas_ia([c], columnas_ia))
     out = []
     for r in rows:
         if r.get("is_duplicate"):
@@ -2008,6 +2025,9 @@ def process_dossier(
         else:
             cols_to_export = list(_cols_boletin)
 
+    # v4.74: solo tono, solo subtema o ambas columnas del análisis.
+    cols_to_export = quitar_columnas_ia(cols_to_export, columnas_ia_de(ai_config))
+
     emit_progress(progress, 94, "✓ Estructuración finalizada. Generando archivo Excel…")
 
     unique_rows = sum(1 for r in rows if not r.get("is_duplicate"))
@@ -2040,7 +2060,7 @@ def process_dossier(
     output_data = generate_output_excel(rows, KEY_MAP, progress=export_progress, columns_to_use=cols_to_export)
     _etapa("Generación del Excel", siempre=True)
     _conteo_tonos = _contar_tonos(rows)
-    _vista = vista_resultado(rows, KEY_MAP) if (has_ai or has_pkl) else []
+    _vista = vista_resultado(rows, KEY_MAP, columnas_ia_de(ai_config)) if (has_ai or has_pkl) else []
     del rows, rows_expanded
     gc.collect()
     duration = time.time() - t0

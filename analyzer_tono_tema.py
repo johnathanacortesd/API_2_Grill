@@ -558,29 +558,65 @@ def ctrl(s) -> str:
     return ''.join(ch for ch in str(s or '') if (ch >= ' ' or ch in '\n\t') and ch not in '\ufffe\uffff')
 
 
-def nz(s) -> str:
+# v4.74 (agilidad): nz/words/raiz son funciones puras que el motor llama
+# millones de veces con los mismos textos (una corrida de 200 notas pasaba
+# 281 de 308 s normalizando). Se memorizan: el resultado es idéntico.
+_RX_NO_ALNUM = re.compile(r'[^a-z0-9ñ ]+')
+_RX_ESPACIOS = re.compile(r'\s+')
+_RX_PALABRA = re.compile(r'[a-z0-9ñ]+')
+
+
+_CACHE_TXT_MAX = 600   # solo textos cortos (palabras, titulares, rótulos): RAM acotada
+
+
+def _nz_calc(s: str) -> str:
     s = unicodedata.normalize('NFKD', ctrl(s))
     s = ''.join(c for c in s if not unicodedata.combining(c)).lower()
-    return re.sub(r'\s+', ' ', re.sub(r'[^a-z0-9ñ ]+', ' ', s)).strip()
+    return _RX_ESPACIOS.sub(' ', _RX_NO_ALNUM.sub(' ', s)).strip()
+
+
+_nz_corto = lru_cache(maxsize=120000)(_nz_calc)
+# Textos largos (cuerpo, contexto): pocos y muy repetidos por los pases
+# finales; un caché pequeño (≈ 3000 textos) basta.
+_nz_largo = lru_cache(maxsize=3000)(_nz_calc)
+
+
+def nz(s) -> str:
+    s = s if isinstance(s, str) else str(s or '')
+    return _nz_corto(s) if len(s) <= _CACHE_TXT_MAX else _nz_largo(s)
+
+
+def _words_calc(s: str) -> tuple:
+    s = unicodedata.normalize('NFKD', ctrl(s))
+    s = ''.join(c for c in s if not unicodedata.combining(c)).lower()
+    return tuple(_RX_PALABRA.findall(s))
+
+
+_words_corto = lru_cache(maxsize=60000)(_words_calc)
+_words_largo = lru_cache(maxsize=3000)(_words_calc)
 
 
 def words(s) -> List[str]:
-    s = unicodedata.normalize('NFKD', ctrl(s))
-    s = ''.join(c for c in s if not unicodedata.combining(c)).lower()
-    return re.findall(r'[a-z0-9ñ]+', s)
+    s = s if isinstance(s, str) else str(s or '')
+    return list(_words_corto(s) if len(s) <= _CACHE_TXT_MAX else _words_largo(s))
 
 
 def grams(w: List[str], k: int) -> set:
     return set(tuple(w[i:i + k]) for i in range(max(0, len(w) - k + 1)))
 
 
-def raiz(t: str) -> str:
+@lru_cache(maxsize=60000)
+def _raiz_str(t: str) -> str:
     t = nz(t)
     if len(t) > 4 and t.endswith('es'):
         return t[:-2]
     if len(t) > 3 and t.endswith('s'):
         return t[:-1]
     return t
+
+
+def raiz(t) -> str:
+    return _raiz_str(t if isinstance(t, str) else str(t or ''))
 
 
 def sq(s) -> str:
@@ -1511,8 +1547,13 @@ GEOGRAFIA_GENERICA = {
 }
 
 
+_GEOGRAFIA_NZ = frozenset(nz(x) for x in GEOGRAFIA_GENERICA)
+
+
 def _es_geografia(token: str) -> bool:
-    return nz(token) in {nz(x) for x in GEOGRAFIA_GENERICA}
+    # v4.74 (agilidad): el conjunto se normaliza una sola vez (antes en cada
+    # llamada: 554 mil veces en una corrida de 200 notas).
+    return nz(token) in _GEOGRAFIA_NZ
 
 
 def tema_de(sub_tema: str, titulo: str, tax: dict):
@@ -2719,7 +2760,16 @@ def etiquetar_grupos(cfg: dict, grupos: List[dict], progress: Optional[Callable]
     return etiquetas
 
 
-def _contenido_discriminante(s: str) -> set:
+def _contenido_discriminante(s) -> set:
+    """v4.74 (agilidad): memorizado; devuelve una copia (el llamador puede
+    modificarla). Ver _contenido_discriminante_calc."""
+    s = s if isinstance(s, str) else str(s or '')
+    if len(s) > _CACHE_TXT_MAX:
+        return set(_contenido_discriminante_calc(s))
+    return set(_contenido_discriminante_corto(s))
+
+
+def _contenido_discriminante_calc(s: str) -> frozenset:
     """Tokens de contenido (sin nexos, relleno ni geografía genérica).
 
     v4.20: los tokens se normalizan por clase de evento («hospitalización»,
@@ -2744,7 +2794,10 @@ def _contenido_discriminante(s: str) -> set:
         if k in usados:
             continue
         sal.add(_CLASE_DE.get(t, _EQUIV_STEMS.get(t, t)))
-    return sal
+    return frozenset(sal)
+
+
+_contenido_discriminante_corto = lru_cache(maxsize=60000)(_contenido_discriminante_calc)
 
 
 # Familias morfológicas que el stemmer simple no une y sí comparten asunto.
@@ -7869,6 +7922,8 @@ def _etiquetar_con_haiku(cfg: dict, grupos: List[dict], candidatos_tax: Sequence
         criterio_texto=criterio_texto, incluir_tema=incluir_tema,
         taxonomia=list(candidatos_tax or []) or None, progreso_cb=progreso,
         guia_subtema=cfg.get('guia_subtema') or '',
+        # v4.74: «solo subtema»: el agente no analiza el tono (más rápido).
+        tono_pkl=cfg.get('columnas_ia') == 'subtema',
         auditor_tono=False, paralelo=int(cfg.get('paralelo') or 0),
         rotulos_permitidos=[str((r or {}).get('subtema') or '')
                             for r in (cfg.get('subtemas_fijos') or []) if isinstance(r, dict)])
@@ -8688,7 +8743,10 @@ def enrich_rows_with_ai(
         'tono_distrito_positivo': bool(extra.get('tono_distrito_positivo')),
         'agrupacion_estricta': bool(extra.get('agrupacion_estricta')),
         # Modo Haiku: auditor de tono (se puede apagar desde ai_config).
-        'auditor_tono': bool(extra.get('auditor_tono', True)),
+        # v4.74: con «solo subtema» no se analiza el tono (ni se audita).
+        'columnas_ia': str(extra.get('columnas_ia') or 'ambas').strip().lower(),
+        'auditor_tono': bool(extra.get('auditor_tono', True))
+        and str(extra.get('columnas_ia') or 'ambas').strip().lower() != 'subtema',
         # Agilidad: agentes clasificadores en paralelo (0/1 = uno solo) y
         # memoria de clasificaciones previas del cliente.
         'paralelo': int(extra.get('paralelo', 4) or 0),
@@ -8752,7 +8810,11 @@ def enrich_rows_with_ai(
         _tiempos[nombre] = round(_tiempos.get(nombre, 0.0) + ahora - _reloj[0], 2)
         _reloj[0] = ahora
 
-    progreso(71, 'Extrayendo contexto de la marca y sus variantes…')
+    _n_vivas = sum(1 for r in rows if not r.get('is_duplicate'))
+    _n_dup = len(rows) - _n_vivas
+    progreso(71, 'Paso 1 de 5 · Contexto de la marca: buscando en %d notas los pasajes donde '
+                 'aparecen «%s», sus alias y voceros (sobre ese pasaje se mide el tono)…'
+             % (_n_vivas, brand))
     CONTEXTO_CUERPO_CORTO['filas'] = 0
     for row in rows:
         if row.get('is_duplicate'):
@@ -8773,13 +8835,21 @@ def enrich_rows_with_ai(
 
     _etapa('Contexto de la marca')
     # --- agrupacion ---
-    progreso(73, 'Agrupando notas equivalentes…')
+    progreso(73, 'Paso 2 de 5 · Agrupando notas equivalentes: se comparan titulares, textos y '
+                 'pasajes de las %d notas para unir solo las que son la MISMA noticia '
+                 '(republicaciones, impreso y web, la misma nota en otro medio)%s…'
+             % (_n_vivas, ('; %d duplicadas exactas ya heredan de su original' % _n_dup)
+                if _n_dup else ''))
     grupos, mapa = construir_grupos(rows, km, umbral_titulo, umbral_cuerpo,
                                     estricta=bool(cfg.get('agrupacion_estricta')))
     for g in grupos:
         contexto = [str(rows[i].get('Contexto analizado') or '') for i in g.get('idxs', [])]
         g['contexto_marca'] = '\n\n'.join(dict.fromkeys(x for x in contexto if x and x != '-'))[:12000]
-    progreso(75, '%d grupos (notas equivalentes comparten etiqueta)' % len(grupos))
+    _multi = [g for g in grupos if len(g.get('idxs') or []) > 1]
+    _en_multi = sum(len(g['idxs']) for g in _multi)
+    progreso(75, 'Agrupación lista: %d notas → %d noticias distintas (%d grupos reúnen %d notas '
+                 'iguales o muy parecidas; %d notas van solas). Cada noticia se clasifica una vez.'
+             % (_n_vivas, len(grupos), len(_multi), _en_multi, len(grupos) - len(_multi)))
     _etapa('Agrupación de notas equivalentes')
 
     # --- memoria del cliente (modo Haiku) ---
@@ -8845,7 +8915,8 @@ def enrich_rows_with_ai(
     _ULTIMO_RESUMEN.pop('evaluador_agrupacion', None)
     if haiku and cfg.get('evaluador_agrupacion', True):
         import evaluador_agrupacion as _ev
-        progreso(76, 'Evaluador de agrupación: revisando grupos candidatos…')
+        progreso(76, 'Paso 4 de 5 · Evaluador de agrupación: revisando si las noticias parecidas '
+                     'son de verdad la misma (si no, se separan) y auditando el tono…')
         _cands = _ev.construir_candidatos(rows, mapa, km, umbral_titulo, umbral_cuerpo)
         _eval_dec = _ev.evaluar(
             _cands, rows, mapa, etiquetas, km,
@@ -9188,7 +9259,8 @@ def enrich_rows_with_ai(
     # Garantía FINAL sobre las filas ya volcadas (portado de API_2_Grill
     # v4.72): la misma noticia (mismo grupo, titular, CuerpoEs o texto muy
     # similar) lleva un solo subtema, un solo tono y un solo tema.
-    progreso(93, 'Unificando subtema, tono y tema por noticia…')
+    progreso(93, 'Paso 5 de 5 · Repaso final: la misma noticia lleva un solo subtema y un solo '
+                 'tono; se revisa que cada subtema diga de qué trata la nota…')
     _por_noticia = unificar_por_noticia(
         rows, mapa, etiquetas, km, originales=subtemas_originales,
         brand=brand, aliases=aliases, voceros=cfg.get('voceros') or [],

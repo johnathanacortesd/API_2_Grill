@@ -70,6 +70,16 @@ APP_VERSION = "v4.74"
 # del perfil que se elija). Sin perfil rigen los ajustes generales de abajo.
 APP_NOMBRE = "Clausifier"
 
+# v4.74: qué columnas del análisis se entregan.
+OPCIONES_COLUMNAS_IA = {
+    "Tono y Subtema": "ambas",
+    "Solo Tono": "tono",
+    "Solo Subtema": "subtema",
+}
+AYUDA_COLUMNAS_IA = ("«Solo Tono»: el xlsx no lleva Subtema_IA (el subtema se usa por dentro "
+                     "para que la misma noticia tenga el mismo tono). «Solo Subtema»: Claude "
+                     "Haiku no analiza el tono (más rápido y más barato) y el xlsx no lleva Tono_IA.")
+
 # Ajustes generales (los de Defensoría sin lo propio de ese cliente).
 GUIA_SUBTEMA_GENERAL = (
     "El sub-tema indica de qué habla ESA nota, con precisión: el asunto o hecho concreto en "
@@ -395,6 +405,49 @@ def _active_step(pct: int, msg: str) -> str:
         return "read"
     return "config"
 
+# v4.74: sub-pasos del análisis IA, para saber en qué va (el mensaje del
+# motor dice «Paso N de 5»).
+PASOS_IA = [
+    "Contexto de la marca (dónde aparece el cliente en cada nota)",
+    "Agrupación: solo notas iguales o muy parecidas van juntas",
+    "Claude Haiku decide tono y subtema de cada noticia",
+    "Revisión: evaluador de agrupación y auditor de tono",
+    "Repaso final: misma noticia = mismo subtema y tono",
+]
+
+
+def _paso_ia(msg: str, pct: int):
+    m = re.search(r"Paso (\d) de 5", str(msg or ""))
+    if m:
+        return int(m.group(1))
+    if pct >= 93:
+        return 5
+    if pct >= 89:
+        return 4
+    if pct >= 75:
+        return 3
+    if pct >= 73:
+        return 2
+    return 1 if pct >= 70 else 0
+
+
+def _render_pasos_ia(msg: str, pct: int) -> str:
+    actual = _paso_ia(msg, pct)
+    if not actual:
+        return ""
+    filas = []
+    for k, txt in enumerate(PASOS_IA, 1):
+        if k < actual:
+            cls, mark = "is-done", "✓"
+        elif k == actual:
+            cls, mark = "is-active", "●"
+        else:
+            cls, mark = "", str(k)
+        filas.append(f'<div class="step-item {cls}"><span class="dot">{mark}</span>{html.escape(txt)}</div>')
+    return ('<div class="live-hint" style="margin-top:0.6rem;font-weight:600">'
+            'Análisis IA, paso %d de 5</div><div class="step-list">%s</div>' % (actual, "".join(filas)))
+
+
 def _render_live_html(pct, msg, elapsed, file_label, active_key):
     steps_html = []
     reached_active = False
@@ -429,6 +482,7 @@ def _render_live_html(pct, msg, elapsed, file_label, active_key):
         <div class="live-metric"><div class="live-metric-val">en curso</div><div class="live-metric-lbl">Estado</div></div>
       </div>
       <div class="step-list">{''.join(steps_html)}</div>
+      {_render_pasos_ia(msg, pct) if active_key == "ai" else ""}
       <div class="live-hint">Límite de seguridad: máximo 1.000 filas por archivo. La deduplicación previa agrupa las notas idénticas antes del análisis.</div>
       <div class="live-detail">{safe_msg}</div>
     </div>
@@ -458,8 +512,9 @@ def tabla_subtemas(vista: list) -> pd.DataFrame:
     df = pd.DataFrame(filas)
     g = df.groupby("Subtema")
     out = pd.DataFrame({"Notas": g.size()})
-    for t in COLORES_TONO:
-        out[t] = g["Tono"].apply(lambda x, t=t: int((x == t).sum()))
+    if "Tono" in df.columns and df["Tono"].astype(bool).any():
+        for t in COLORES_TONO:
+            out[t] = g["Tono"].apply(lambda x, t=t: int((x == t).sum()))
     if "Tema" in df.columns and df["Tema"].astype(bool).any():
         out.insert(0, "Tema", g["Tema"].agg(lambda x: x.mode().iat[0] if len(x.mode()) else ""))
     return out.sort_values(["Notas"], ascending=False).reset_index()
@@ -468,18 +523,19 @@ def tabla_subtemas(vista: list) -> pd.DataFrame:
 def _render_resultados(vista: list, analisis: dict, tiempos: list) -> None:
     """Distribución de tono, subtemas, vista previa, filas para revisar y
     tiempo por etapa. Todo sale de datos ya calculados (no relee el xlsx)."""
-    if vista and any(f.get("Tono") for f in vista):
+    if vista and any(f.get("Tono") or f.get("Subtema") for f in vista):
         st.markdown('<div class="sec-label">Resultado de la clasificación</div>',
                     unsafe_allow_html=True)
-        tonos = resumen_tonos(vista)
+        tonos = resumen_tonos(vista) if any(f.get("Tono") for f in vista) else []
         segs = "".join(
             '<div class="tono-seg" title="%s: %d notas (%.1f%%)" style="flex:%d 1 0;background:%s"></div>'
             % (t, n, pct, n, COLORES_TONO[t]) for t, n, pct in tonos if n)
         ley = "".join(
             '<span><span class="tono-dot" style="background:%s"></span><b>%s</b> %d · %.1f%%</span>'
             % (COLORES_TONO[t], t, n, pct) for t, n, pct in tonos)
-        st.markdown('<div class="tono-barra" role="img" aria-label="Distribución de tono">%s</div>'
-                    '<div class="tono-ley">%s</div>' % (segs, ley), unsafe_allow_html=True)
+        if tonos:
+            st.markdown('<div class="tono-barra" role="img" aria-label="Distribución de tono">%s</div>'
+                        '<div class="tono-ley">%s</div>' % (segs, ley), unsafe_allow_html=True)
 
         tab_sub, tab_filas, tab_rev = st.tabs(["Subtemas", "Noticias clasificadas", "Para revisar"])
         with tab_sub:
@@ -789,6 +845,9 @@ def main():
 
                     st.markdown('<div class="sec-label">2. Configuración de Análisis IA (Tono, Tema, Subtema)</div>', unsafe_allow_html=True)
                     enable_ai = st.checkbox("Activar análisis reputacional con IA (tono, subtema y tema)", value=True)
+                    columnas_ia_sel = st.radio("Qué entregar", list(OPCIONES_COLUMNAS_IA), index=0,
+                                               horizontal=True, key="columnas_ia",
+                                               help=AYUDA_COLUMNAS_IA)
             
                     c_brand, c_alias = st.columns(2)
                     with c_brand:
@@ -1055,6 +1114,7 @@ def main():
                                     "votos": int(votos_input),
                                     "incluir_tema": modo_tema_input == _OPCIONES_TEMA[1],
                                     "incluir_prominencia": bool(prominencia_chk),
+                                    "columnas_ia": OPCIONES_COLUMNAS_IA.get(columnas_ia_sel, "ambas"),
                                     "memoria": bool(memoria_chk),
                                     "excluir_analizados": bool(excluir_analizados_chk),
                                     "referencias_sheets": bool(referencias_sheets_chk),
@@ -1116,6 +1176,9 @@ def main():
                 st.markdown('<div class="sec-label">2. Configuración del análisis (igual que la pestaña estándar)</div>', unsafe_allow_html=True)
                 enable_ai_c = st.checkbox("Activar análisis reputacional con IA (tono, subtema y tema)",
                                           value=True, key="enable_ai_custom")
+                columnas_ia_c = st.radio("Qué entregar", list(OPCIONES_COLUMNAS_IA), index=0,
+                                         horizontal=True, key="columnas_ia_custom",
+                                         help=AYUDA_COLUMNAS_IA)
                 cc_brand, cc_alias = st.columns(2)
                 with cc_brand:
                     brand_c = st.text_input(
@@ -1292,6 +1355,8 @@ def main():
                         )
                         st.session_state["pending_ai_config"]["referencias_sheets"] = bool(
                             referencias_sheets_c)
+                        st.session_state["pending_ai_config"]["columnas_ia"] = \
+                            OPCIONES_COLUMNAS_IA.get(columnas_ia_c, "ambas")
                         st.session_state["procesando"] = True
                         st.session_state["processing_complete"] = False
                         st.rerun()

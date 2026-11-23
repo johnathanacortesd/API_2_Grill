@@ -26,8 +26,12 @@ def _ok(result=None):
                          num_turns=1, session_id='fake', total_cost_usd=0.0, result=result)
 
 
+PROMPTS = []
+
+
 async def _fake_query(prompt, options):
     """Agente falso ($0, sin red): usa las tools reales del motor."""
+    PROMPTS.append((options.system_prompt or '', prompt))
     if 'auditor-tono' in (options.system_prompt or ''):
         yield _ok('{"resultados":[]}')
         return
@@ -119,3 +123,28 @@ def test_app_sin_cliente_fijo():
     assert 'st.session_state["_perfil_agrupacion_estricta"] = True' in src
     assert 'GUIA_SUBTEMA_GENERAL' in src
     assert 'Jev' not in src.split('Activar análisis reputacional')[1][:80]
+
+
+def test_solo_tono_sin_subtema_en_xlsx():
+    res, cab, datos = _correr(_cfg(formato_boletin=True, columnas_ia='tono'))
+    assert 'Tono_IA' in cab and 'Subtema_IA' not in cab
+    assert all(r['Tono_IA'] in ('Positivo', 'Neutro', 'Negativo') for r in datos)
+    assert all('Subtema' not in f for f in res['vista'])
+
+
+def test_solo_subtema_no_analiza_tono():
+    PROMPTS.clear()
+    res, cab, datos = _correr(_cfg(formato_boletin=True, columnas_ia='subtema'))
+    assert 'Subtema_IA' in cab and 'Tono_IA' not in cab
+    assert all(r['Subtema_IA'] for r in datos)
+    agente = [p for sp, p in PROMPTS if 'auditor-tono' not in sp and 'SIN TEMA' in p]
+    assert agente and all('SIN TONO' in p and '<criterio_tono>' not in p for p in agente)
+    assert not any('auditor-tono' in sp for sp, _p in PROMPTS)
+    assert all('Tono' not in f for f in res['vista'])
+
+
+def test_ambas_por_defecto():
+    PROMPTS.clear()
+    res, cab, datos = _correr(_cfg(formato_boletin=True))
+    assert 'Tono_IA' in cab and 'Subtema_IA' in cab
+    assert not any('SIN TONO' in p for _sp, p in PROMPTS)
