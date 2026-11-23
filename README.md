@@ -42,7 +42,7 @@ El acceso a la interfaz de producción está resguardado mediante autenticación
 
 ## 🚀 Funcionalidades
 
-### Agilidad, avance explicado, columnas y competidores (v4.74)
+### Agilidad, avance explicado, columnas y varias marcas (v4.75)
 
 - **Más rápido sin perder precisión:** la normalización de texto que el motor
   repetía millones de veces ahora se guarda en memoria. Dossier de prueba de
