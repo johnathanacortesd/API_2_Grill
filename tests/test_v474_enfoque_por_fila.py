@@ -103,7 +103,10 @@ def test_solo_cliente_es_la_corrida_de_siempre():
 def test_fila_de_otra_marca_lleva_su_propio_tono():
     res, cab, datos = _correr([('Mercado de vacunas', TEXTO, 'GSK; Sanofi')])
     assert sorted(CLIENTES) == ['GSK', 'Sanofi']
-    assert cab.index(pipeline.COL_MARCA_ANALIZADA) == cab.index('Tono_IA') - 1
+    # «Marca analizada» justo antes de FECHA INFORME; el resto, en el orden del boletín.
+    assert cab.index(pipeline.COL_MARCA_ANALIZADA) == cab.index('FECHA INFORME') - 1
+    assert [c for c in cab if c != pipeline.COL_MARCA_ANALIZADA] == \
+        [c for c in pipeline.columnas_boletin(False) if c in cab]
     por = {d[pipeline.COL_MARCA_ANALIZADA]: d for d in datos}
     assert por['Sanofi']['Tono_IA'] == 'Negativo'
     assert por['GSK']['Tono_IA'] == 'Positivo'

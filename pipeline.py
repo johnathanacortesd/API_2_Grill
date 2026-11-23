@@ -2277,11 +2277,13 @@ def process_dossier(
 
     # v4.74: solo tono, solo subtema o ambas columnas del análisis.
     cols_to_export = quitar_columnas_ia(cols_to_export, columnas_ia_de(ai_config))
-    # v4.74: si hubo filas de otras marcas, la marca hacia la que se midió
-    # cada fila va justo antes del tono (o del subtema, si no se entrega tono).
+    # v4.75: si hubo filas de otras marcas, la marca hacia la que se midió
+    # cada fila va justo antes de «FECHA INFORME» (pedido del usuario); el
+    # resto del orden no cambia. Sin FECHA INFORME, antes del tono/subtema.
     if has_ai and any(r.get(COL_MARCA_ANALIZADA) for r in rows) \
             and COL_MARCA_ANALIZADA not in cols_to_export:
-        _ancla = next((c for c in ("Tono_IA", "Subtema_IA") if c in cols_to_export), None)
+        _ancla = next((c for c in ("FECHA INFORME", "Tono_IA", "Subtema_IA")
+                       if c in cols_to_export), None)
         _pos = cols_to_export.index(_ancla) if _ancla else len(cols_to_export)
         cols_to_export = cols_to_export[:_pos] + [COL_MARCA_ANALIZADA] + cols_to_export[_pos:]
 
