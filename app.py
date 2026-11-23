@@ -63,7 +63,7 @@ from pipeline import (process_dossier, leer_columnas_xlsx, sugerir_columna,
                       cargar_ids_analizados_desde_sheets, cargar_hoja_analizadas)
 
 # Versión visible de la app (se muestra en el encabezado). Actualizar en cada release.
-APP_VERSION = "v4.74"
+APP_VERSION = "v4.75"
 
 # v4.74: versión general del motor de Defensoría. No hay cliente fijo: el
 # análisis depende de la marca, los alias y los voceros que se escriban (o
@@ -740,7 +740,7 @@ def main():
                 <div class="app-header-icon">◈</div>
                 <div class="app-header-text">
                     <div class="app-header-title">{APP_NOMBRE} — Limpieza y Análisis de Noticias</div>
-                    <div class="app-header-version">{APP_VERSION}</div>
+                    <div class="app-header-version">{APP_VERSION} · motor {html.escape(SELLO_ANALIZADOR)}</div>
                 </div>
                 <div class="app-header-badge">Estructurador + IA</div>
             </div>""", unsafe_allow_html=True)
