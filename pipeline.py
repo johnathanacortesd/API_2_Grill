@@ -1247,6 +1247,14 @@ def _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_plain_hlink,
                 if isinstance(val, str) and val.startswith("http"):
                     cv = "Link"
                     url = val
+                elif isinstance(val, (int, float)) and not isinstance(val, bool):
+                    # Defensoría v1.42: un número de entrada (p. ej. la columna
+                    # «ID» de la pestaña personalizada, que pandas lee como
+                    # 61142010.0) sale como número y sin «.0».
+                    if isinstance(val, float) and math.isfinite(val) and val.is_integer():
+                        cv = int(val)
+                    else:
+                        cv = val
                 else:
                     cv = str(val)
 

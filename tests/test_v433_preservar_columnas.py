@@ -79,12 +79,14 @@ class TestPreservarColumnasV433(unittest.TestCase):
             include_prominencia=True)
         self.assertEqual(cols[:6], ["ID", "FECHA", "TÍTULO", "RESUMEN", "LINK", "WEB"])
         self.assertEqual(cols[6:], ["Tono_IA", "Tema_IA", "Subtema_IA",
-                                   "Contexto analizado", "Prominencia", "Audio"])
+                                   "Contexto analizado", "Prominencia",
+                                   "texto", "Audio", "Link Ext", "Web Ext"])
 
     def test_columnas_preservadas_sin_ia(self):
         cols = _columnas_preservadas(["ID", "LINK"], include_ai=False,
                                     include_prominencia=True)
-        self.assertEqual(cols, ["ID", "LINK", "Prominencia", "Audio"])
+        self.assertEqual(cols, ["ID", "LINK", "Prominencia",
+                                "texto", "Audio", "Link Ext", "Web Ext"])
         self.assertNotIn("Contexto analizado", cols)
 
     def test_columnas_preservadas_sin_subtema(self):
@@ -105,10 +107,12 @@ class TestPreservarColumnasV433(unittest.TestCase):
         res = process_dossier(io.BytesIO(renombrado), {}, {},
                               ai_config=_cfg_custom())
         headers, ws, data = _celdas_salida(res["output_data"])
-        # Columnas originales en su orden + Prominencia y Audio al final.
+        # Columnas originales en su orden + Prominencia y las columnas fijas
+        # del final (v4.56/v4.57).
         self.assertEqual(headers, ["ID", "FECHA", "Título",
                                   "Resumen - Aclaracion", "LINK", "WEB",
-                                  "Prominencia", "Audio"])
+                                  "Prominencia", "texto", "Audio", "Link Ext",
+                                  "Web Ext"])
         # La data de la primera columna se conserva.
         ids = sorted(str(r[0].value) for r in data)
         self.assertEqual(ids, ["61142010", "61142304"])

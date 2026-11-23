@@ -36,19 +36,28 @@ class TestIdentidadTitular(unittest.TestCase):
         self.assertIn("copia_titular", pr)
 
     def test_solapamiento_parcial_valido_no_se_marca(self):
-        # v4.21 se preserva: etiqueta válida que coincide con PARTE del
-        # titular no es copia perezosa.
-        s = "Estado de salud de Yamid Amat"
-        t = "Actualización sobre el estado de salud de Yamid Amat"
-        pr = A.validar(s, "Neutro", [t, "cuerpo"])
-        self.assertNotIn("copia_titular", pr)
+        # v4.21 se preserva solo para la reformulación no contigua.
+        s = "Desafíos de la criminología con IA"
+        t = "Criminología frente a la IA: los nuevos desafíos del sector"
+        self.assertNotIn("copia_titular", A.validar(s, "Neutro", [t, "cuerpo"]))
+        # v4.67: un trozo contiguo del titular con 3+ palabras de contenido
+        # SIEMPRE es copia (ver _subtema_trozo_verbatim): «Estado de salud de
+        # Yamid Amat» dentro de «Actualización sobre el estado de salud…» ya no
+        # es un solapamiento legítimo. La excepción de v4.21 sigue solo para
+        # la reformulación NO contigua (mismo contenido, otro orden).
+        self.assertIn("copia_titular", A.validar(
+            "Estado de salud de Yamid Amat", "Neutro",
+            ["Actualización sobre el estado de salud de Yamid Amat", "cuerpo"]))
 
     def test_reparacion_identidad_titulo_largo(self):
         t = "Esto es lo que cambia con la reforma pensional: Casa Blu del 26 de septiembre"
-        nuevo = A.reparar_subtema_determinista(t, t)
-        self.assertTrue(nuevo)
-        self.assertNotEqual(A.nz(nuevo), A.nz(t))
-        self.assertNotIn("copia_titular", A.validar(nuevo, "Neutro", [t, "cuerpo"]))
+        # v4.67: lo que se deriva del titular es un trozo verbatim (copia),
+        # así que la reparación sin modelo no lo inventa y lo deja a la
+        # reformulación LLM; el respaldo final nunca es el titular idéntico.
+        self.assertEqual(A.reparar_subtema_determinista(t, t), "")
+        resp = A._subtema_especifico(t, [])
+        self.assertTrue(resp)
+        self.assertNotEqual(A.nz(resp), A.nz(t))
 
     def test_reparacion_identidad_titulo_corto_nominal_va_a_llm(self):
         # Sin reformulación honesta posible: '' → la vuelta LLM reformula.

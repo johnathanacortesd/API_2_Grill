@@ -294,11 +294,42 @@ def es_copia(subtema: str, titulo: str, contexto: str = "") -> Optional[str]:
     return None
 
 
+# Portado de Defensoría v1.32 (guía del cliente: «Nunca la entidad o la persona como tema»):
+# palabras que, junto al nombre de la entidad o su vocera, no dicen de qué
+# trata la nota («Datos Defensoría del Pueblo», «Gestión de la Defensoría»,
+# «Declaraciones de Iris Marín»).
+_GENERICAS_ENTIDAD = frozenset("""datos dato gestion labor declaraciones declaracion
+pronunciamiento pronunciamientos mencion menciones comunicado comunicados noticias noticia
+actividades actividad acciones accion trabajo papel rol presencia participacion informacion
+cifras reporte reportes informe informes balance intervencion intervenciones postura opinion
+posicion""".split())
+
+
+def es_rotulo_de_entidad(subtema: str, terminos: Optional[Sequence[str]] = None) -> bool:
+    """True si el subtema es solo la entidad (o su vocera) más palabras
+    genéricas: no nombra el asunto de la nota."""
+    terminos = _ESTADO.get("terminos") if terminos is None else terminos
+    if not terminos:
+        return False
+    propios = {w for t in terminos for w in _simple(t).split() if len(w) >= 2}
+    # «pueblo», «Colombia», «regional»… son parte del nombre pero no lo
+    # identifican: hace falta el nombre propio (Defensoría, Iris Marín…).
+    nucleo = propios - {"pueblo", "colombia", "regional", "delegada", "delegado", "nacional",
+                        "la", "el", "de", "del", "los", "las"}
+    toks = [w for w in _simple(subtema).split() if w not in _VACIAS_SUBTEMA]
+    if not toks or not any(w in nucleo for w in toks):
+        return False
+    return all(w in propios or w in _GENERICAS_ENTIDAD for w in toks)
+
+
 def problemas_subtema(subtema: str, titulo: str = "", contexto: str = "") -> List[str]:
     """Problemas de forma del subtema. Lista vacía = válido."""
     s = str(subtema or "").strip()
     if not s:
         return ["vacío"]
+    if es_rotulo_de_entidad(s):
+        return ["nombra a la entidad como tema (%s): escribe el asunto concreto de ESTA nota, "
+                "no la entidad ni su vocera" % s]
     # 2026-11-09: el nombre propio de un programa, plan, obra u operación
     # («Metro de Bogotá», «Jóvenes a la E», «Operación Kratos») es un subtema
     # válido aunque sea corto o aparezca en el titular.

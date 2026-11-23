@@ -250,18 +250,20 @@ class TestColumnaProminenciaAlFinal(unittest.TestCase):
     def test_con_ia_al_final(self):
         cols = self._cols()(include_ai=True, include_tema=True,
                             include_prominencia=True)
-        self.assertEqual(cols[-1], 'Audio')
+        # v4.56/v4.57: «texto», «Audio», «Link Ext» y «Web Ext» cierran el xlsx.
+        self.assertEqual(cols[-4:], ['texto', 'Audio', 'Link Ext', 'Web Ext'])
         self.assertLess(cols.index('Contexto analizado'),
                         cols.index('Prominencia'))
-        self.assertLess(cols.index('Prominencia'), cols.index('Audio'))
+        self.assertEqual(cols[-5], 'Prominencia')
 
     def test_sin_ia_al_final(self):
         cols = self._cols()(include_ai=False, include_prominencia=True)
-        self.assertEqual(cols[-1], 'Audio')
-        self.assertEqual(cols[-2], 'Prominencia')
+        self.assertEqual(cols[-4:], ['texto', 'Audio', 'Link Ext', 'Web Ext'])
+        self.assertIn('Prominencia', cols)
+        self.assertLess(cols.index('Prominencia'), cols.index('Audio'))
 
     def test_desactivada_no_aparece(self):
         cols = self._cols()(include_ai=True, include_prominencia=False)
         self.assertNotIn('Prominencia', cols)
-        self.assertEqual(cols[-1], 'Audio')
-        self.assertEqual(cols[-2], 'Contexto analizado')
+        self.assertEqual(cols[-4:], ['texto', 'Audio', 'Link Ext', 'Web Ext'])
+        self.assertEqual(cols[-5], 'Contexto analizado')

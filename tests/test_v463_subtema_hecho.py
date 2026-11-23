@@ -58,8 +58,8 @@ class TestSubtemaSinHecho(unittest.TestCase):
             ("Convocatoria laboral en Restrepo",
              "Comfenalco Valle de la Gente abre convocatoria laboral para "
              "ayudantes de construcción y operadores de maquinaria en Restrepo"),
-            ("Estado de salud de Yamid Amat",
-             "Actualización sobre el estado de salud de Yamid Amat en clínica"),
+            # (v4.67: «Estado de salud de Yamid Amat» salió de esta lista: es
+            # un trozo contiguo del titular y ahora cuenta como copia.)
             ("Conexión entre educación media y superior",
              "La sustancial conexión entre la educación media y la superior"),
             ("Premio Mujer Cafam",
@@ -82,13 +82,14 @@ class TestDesdeTituloSinLlamado(unittest.TestCase):
         self.assertIn('Feria', r)
         self.assertFalse(A._es_subtema_sin_hecho(r))
 
-    def test_titulo_sin_hecho_final_devuelve_vacio(self):
-        # v4.68: la función solo-titular devuelve ''; el específico con
-        # cuerpo lo da _subtema_especifico (ver test_v468).
-        r = A._subtema_desde_titulo(
-            "Jornadas de empleo de Comfenalco Valle en Restrepo, "
-            "Buenaventura y Cali")
-        self.assertEqual(r, '')
+    def test_titulo_sin_hecho_final_no_da_rotulo(self):
+        # v1.14/v1.18 (regla del usuario): nunca «Hecho informativo». Sin
+        # hecho, el titular no da rótulo ('') y el respaldo es el texto.
+        t = "Jornadas de empleo de Comfenalco Valle en Restrepo, Buenaventura y Cali"
+        self.assertEqual(A._subtema_desde_titulo(t), '')
+        r = A._subtema_especifico(t, ["Comfenalco Valle ofrece 300 vacantes en sus jornadas de empleo."])
+        self.assertTrue(r)
+        self.assertNotEqual(r, 'Hecho informativo')
 
     def test_reparacion_determinista_del_caso_reportado(self):
         r = A.reparar_subtema_determinista("Conozca cuándo será", TIT_FERIA)
@@ -156,16 +157,19 @@ class TestPromptHechoPrincipal(unittest.TestCase):
 
 
 class TestPuertaFinalSinHecho(unittest.TestCase):
-    def test_sin_api_key_la_llamada_cae_a_subtema_especifico(self):
-        # v4.68: sin API la puerta ya no cae a 'Hecho informativo'; el
-        # grupo queda con un rótulo específico derivado de su titular.
+    def test_sin_api_key_la_llamada_cae_a_rotulo_especifico(self):
         grupos = [{'grupo': 1, 'titulo': TIT_FERIA}]
         etiquetas = {1: {'sub_tema': 'Conozca cuándo será',
                          'tono': 'Positivo'}}
         rows = [{'Título': TIT_FERIA, 'Medio': 'Elpais.com.co'}]
         A.reparar_copias_finales({}, grupos, etiquetas, rows, {0: 1}, {})
-        self.assertEqual(etiquetas[1]['sub_tema'],
-                         'Disponibles en la Feria Laboral de Cali')
+        # v1.14/v1.18: nunca «Hecho informativo»; sin modelo, el respaldo es
+        # un rótulo específico con el hecho del titular (la feria), no la
+        # cola de llamado.
+        sub = etiquetas[1]['sub_tema']
+        self.assertNotEqual(sub, 'Hecho informativo')
+        self.assertNotIn('Conozca', sub)
+        self.assertFalse(A._es_subtema_sin_hecho(sub))
 
 
 if __name__ == '__main__':

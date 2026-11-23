@@ -492,7 +492,7 @@ MODELO_DEFECTO = "gpt-6-luna"
 # v4.53: sello del analizador. El encabezado de la app lo muestra junto a
 # APP_VERSION; si el despliegue muestra un sello distinto (o "sin-sello"),
 # el contenedor NO corre este archivo aunque el encabezado diga otra versión.
-ANALYZER_BUILD = "v4.72-una-noticia-un-subtema"  # v4.72: pase final por noticia (subtema/tono/tema), guarda de lugar por bloque, pasajes compartidos
+ANALYZER_BUILD = "v4.73-misma-noticia-un-grupo"  # v4.73: portado de Secretaría v1.44–v1.47 y Defensoría v1.32–v1.33 (misma noticia en un grupo, misma nota = mismo subtema, sin rótulos de entidad)
 # v4.53: solo cambia el sello (la lógica del analizador no se toca en esta versión;
 # el cambio es de interfaz).
 JEV_URL_DEFECTO = "https://api.typesafe.ai/v1/systemone"
@@ -1266,6 +1266,94 @@ def construir_grupos(
         for i in idxs:
             mapa[i] = gid
     return grupos, mapa
+
+
+SIM_FUSION_GRUPOS = 0.35   # parecido mínimo (coseno TF-IDF) entre dos grupos para unirlos
+
+
+def fusionar_grupos_por_noticia(rows: List[dict], grupos: List[dict], mapa: Dict[int, int],
+                                km: dict, brand: str = '', aliases: Sequence[str] = (),
+                                voceros: Sequence[str] = (),
+                                umbral: float = SIM_FUSION_GRUPOS
+                                ) -> Tuple[List[dict], Dict[int, int], int]:
+    """Portado de Secretaría v1.47: antes de clasificar, une los grupos que son la MISMA noticia
+    por su CuerpoEs (y título y Contexto analizado): mismo texto, texto muy
+    parecido (TF-IDF) o pasajes literales compartidos, con el veto de lugar
+    o persona distinta de `conflicto_entre_bloques`. Es la evidencia de
+    `noticias_por_evidencia`, que antes solo corría al final, cuando el
+    modelo ya había escrito un subtema distinto para cada pedazo de la misma
+    noticia (17 notas de la «Alerta Fase 1» en varios grupos con rótulos
+    distintos). Así el modelo ve la noticia completa una sola vez y le da un
+    solo subtema. Devuelve (grupos, mapa, grupos_fusionados)."""
+    if len(grupos) < 2:
+        return grupos, mapa, 0
+    noticias = noticias_por_evidencia(rows, mapa, {}, km, brand, aliases, voceros)
+    por_gid = {g['grupo']: g for g in grupos}
+    par = {g['grupo']: g['grupo'] for g in grupos}
+
+    def raiz(x):
+        while par[x] != x:
+            par[x] = par[par[x]]
+            x = par[x]
+        return x
+
+    # Dentro de cada noticia, dos grupos se unen solo si alguna nota de uno
+    # se parece de verdad (texto completo) a alguna del otro: una frase
+    # literal compartida o una cadena de parecidos no basta antes de
+    # clasificar («Embalses se alejan del 80 %» no es el plan de ahorro de
+    # la Alcaldía; el reclamo de Hollman Morris por un corte de luz no es el
+    # aviso de cortes programados de Enel).
+    import numpy as np
+    filas_n = sorted({i for n in noticias if len({mapa.get(j) for j in n}) > 1 for i in n})
+    S = pos = None
+    if filas_n:
+        S = matriz_similitud(
+            [texto_noticia(_titulo_fila(rows[i], km), _texto_fila(rows[i], km),
+                           str(rows[i].get('Contexto analizado') or '').strip(' -')) for i in filas_n],
+            excluir=tokens_marca(brand, aliases, voceros))
+        pos = {i: k for k, i in enumerate(filas_n)}
+    for n in noticias:
+        gids = list(dict.fromkeys(mapa[i] for i in n if i in mapa))
+        if len(gids) < 2:
+            continue
+        miembros = defaultdict(list)
+        for i in n:
+            if i in mapa:
+                miembros[mapa[i]].append(pos[i])
+        for x in range(len(gids)):
+            for y in range(x + 1, len(gids)):
+                a, b = raiz(gids[x]), raiz(gids[y])
+                if a == b:
+                    continue
+                if float(S[np.ix_(miembros[gids[x]], miembros[gids[y]])].max()) >= umbral:
+                    par[max(a, b)] = min(a, b)
+    bloques = defaultdict(list)
+    for g in grupos:
+        bloques[raiz(g['grupo'])].append(por_gid[g['grupo']])
+    fusionados = sum(len(v) - 1 for v in bloques.values())
+    if not fusionados:
+        return grupos, mapa, 0
+    nuevos: List[dict] = []
+    for partes in bloques.values():
+        if len(partes) == 1:
+            nuevos.append(dict(partes[0]))
+            continue
+        idxs = sorted(i for g in partes for i in g.get('idxs', []))
+        reps = Counter(sq(_titulo_fila(rows[i], km)) for i in idxs)
+        rep = reps.most_common(1)[0][0]
+        alt = [t for t, _c in reps.most_common() if t and t != rep][:5]
+        cuerpo = max((str(g.get('texto') or '') for g in partes), key=len)
+        contexto = '\n\n'.join(dict.fromkeys(
+            x.strip() for g in partes for x in str(g.get('contexto') or '').split('\n\n') if x.strip()))
+        nuevos.append({'grupo': 0, 'n': len(idxs), 'idxs': idxs, 'titulo': rep,
+                       'titulos_alt': alt, 'texto': cuerpo[:9000], 'contexto': contexto[:9000]})
+    nuevos.sort(key=lambda g: (-len(g['idxs']), min(g['idxs'])))
+    mapa_n: Dict[int, int] = {}
+    for gid, g in enumerate(nuevos, 1):
+        g['grupo'] = gid
+        for i in g['idxs']:
+            mapa_n[i] = gid
+    return nuevos, mapa_n, fusionados
 
 
 # ============================================================================
@@ -4320,7 +4408,8 @@ def aplicar_fidelidad_final_subtema(rows, mapa, etiquetas, ajustes_subtema,
         # gid=0 es un id válido (el motor real numera desde 1, pero no se
         # asume): solo None significa "sin grupo". El `if gid` de la guarda
         # original lo trataría como ausente y saltaría la fila.
-        e = etiquetas.get(gid) if gid is not None else {}
+        # Defensoría v1.42: un grupo sin etiqueta no tumba la corrida.
+        e = (etiquetas.get(gid) if gid is not None else None) or {}
         if i in ajustes and nz(ajustes[i]):
             sub = ajustes[i]
         else:
@@ -8470,9 +8559,13 @@ def reparar_copias_finales(cfg: dict, grupos: Sequence[dict],
                     _mal_d and nz(_orig) in _ROTULOS_LLM and set(_f['problemas']) == {'copia_titular'}
                     and not _es_copia_casi_identica(_orig, _f['titulo'])
                     and nz(_orig) != nz(_f['titulo'])):
-                etiquetas[_gid]['sub_tema'] = _orig
+                # Defensoría v1.42: se conserva el original, pero nunca con
+                # el nombre del medio pegado («… - CAMBIO COLOMBIA»).
+                etiquetas[_gid]['sub_tema'] = _quitar_sufijo_medio(
+                    _orig, list(medios_grupo.get(_gid, set()))) or _orig
             else:
-                etiquetas[_gid]['sub_tema'] = _deriv
+                etiquetas[_gid]['sub_tema'] = _quitar_sufijo_medio(
+                    _deriv, list(medios_grupo.get(_gid, set()))) or _deriv
             sin_reparar += 1
     for _f in fallos_fila:
         _i = _f['_fila']
@@ -8491,6 +8584,267 @@ def reparar_copias_finales(cfg: dict, grupos: Sequence[dict],
     _ULTIMO_RESUMEN['subtemas_copia_final_reparados'] = reparados_ok
     _ULTIMO_RESUMEN['subtemas_copia_final_sin_reparar'] = sin_reparar
     return ajustes
+
+
+def _frase_contigua(frase: str, texto: str) -> bool:
+    """True si las palabras de `frase` aparecen seguidas en `texto`
+    (tolerante a singular/plural y mayúsculas/acentos)."""
+    f = [raiz(w) for w in words(frase)]
+    t = [raiz(w) for w in words(texto)]
+    n = len(f)
+    return bool(n) and any(t[i:i + n] == f for i in range(len(t) - n + 1))
+
+
+def _texto_fijo_fila(row: dict, km: dict) -> str:
+    rk = km.get('resumen', 'Resumen - Aclaracion')
+    partes = [_titulo_fila(row, km), row.get(rk), row.get('Resumen - Aclaracion'),
+              row.get('CuerpoEs'), row.get('Contexto analizado')]
+    return ' '.join(str(p) for p in partes if p and str(p).strip() not in ('', '-'))
+
+
+def garantizar_subtemas_fijos_filas(rows: List[dict], km: dict, reglas,
+                                    mapa: Optional[dict] = None) -> int:
+    """Portado de Defensoría v1.32: garantía ÚLTIMA de los subtemas fijos del
+    perfil («alerta temprana» => «Alertas Defensoría del Pueblo»), sobre las
+    filas ya volcadas y después de la unificación por noticia, el evaluador
+    y la guarda de forma, que podían dejar variantes como «Alerta temprana
+    sobre Rovira, San Antonio y Roncesvalles». Aplica si la frase va seguida
+    en el titular, el Resumen, el CuerpoEs, el Contexto analizado o en el
+    propio Subtema_IA, y a las filas de la MISMA noticia (mismo grupo o mismo
+    titular). Devuelve cuántas filas cambiaron."""
+    limpias = [(str(r.get('contiene') or '').strip(), str(r.get('subtema') or '').strip())
+               for r in (reglas or []) if isinstance(r, dict)]
+    limpias = [(c, s_) for c, s_ in limpias if c and s_]
+    if not limpias:
+        return 0
+    destino: Dict[int, str] = {}
+    for i, row in enumerate(rows):
+        if row.get('is_duplicate'):
+            continue
+        texto = _texto_fijo_fila(row, km)
+        actual = str(row.get('Subtema_IA') or '')
+        for contiene, subtema in limpias:
+            if _frase_contigua(contiene, texto) or _frase_contigua(contiene, actual):
+                destino[i] = subtema
+                break
+    if not destino:
+        return 0
+    # Misma noticia: mismo grupo o mismo titular.
+    por_clave: Dict[str, str] = {}
+    for i, sub in destino.items():
+        gid = (mapa or {}).get(i)
+        if gid is not None:
+            por_clave.setdefault('g:%s' % gid, sub)
+        por_clave.setdefault('t:' + nz(_titulo_fila(rows[i], km)), sub)
+    cambios = 0
+    for i, row in enumerate(rows):
+        if row.get('is_duplicate'):
+            continue
+        gid = (mapa or {}).get(i)
+        sub = destino.get(i) or (por_clave.get('g:%s' % gid) if gid is not None else None) \
+            or por_clave.get('t:' + nz(_titulo_fila(row, km)))
+        if sub and str(row.get('Subtema_IA') or '') != sub:
+            row['Subtema_IA'] = sub
+            cambios += 1
+    return cambios
+
+
+# ============================================================================
+# v1.46 (regla del cliente: notas iguales o similares => mismo subtema):
+# la MISMA nota publicada en la edición impresa y en la web del mismo medio
+# («Vanguardia» / «Vanguardia.com»), con otro titular y otro arranque, pero
+# con el mismo pasaje del cliente palabra por palabra («En Colombia,
+# organismos como la Defensoría del Pueblo advierten que alrededor de 2,5
+# millones de personas…»). Los pases anteriores comparaban titular y el
+# COMIENZO del texto; este compara pasajes compartidos del Contexto analizado.
+# ============================================================================
+_SUFIJOS_MEDIO = re.compile(r'(?:\s*(?:\.|punto)\s*(?:com|co|net|org|tv|info|news))+$')
+SHINGLE_MISMA_NOTA = 6        # palabras por fragmento
+MIN_COMPARTIDOS_MISMO_MEDIO = 12   # ≈ 17 palabras seguidas en común
+MIN_COMPARTIDOS_OTRO_MEDIO = 30    # ≈ 35 palabras seguidas en común
+MAX_DF_FRAGMENTO = 6          # fragmentos en más notas: plantilla del medio
+
+
+def familia_medio(medio: str) -> str:
+    """«Vanguardia», «Vanguardia.com», «www.vanguardia.com» => «vanguardia»."""
+    m = str(medio or '').strip().lower()
+    m = re.sub(r'^(?:https?://)?(?:www\.)?', '', m)
+    m = _SUFIJOS_MEDIO.sub('', m)
+    return re.sub(r'[^a-z0-9ñ]+', '', nz(m))
+
+
+def _fragmentos_misma_nota(row: dict, km: dict) -> set:
+    c = str(row.get('Contexto analizado') or '').strip()
+    if not c or c == '-':
+        c = str(row.get(km.get('resumen', 'Resumen - Aclaracion')) or row.get('Resumen - Aclaracion') or '')
+    w = nz(c).split()
+    k = SHINGLE_MISMA_NOTA
+    return {' '.join(w[i:i + k]) for i in range(max(0, len(w) - k + 1))}
+
+
+def unificar_misma_nota_final(rows: List[dict], km: dict, fijos=(),
+                              salida_noticias: Optional[list] = None) -> int:
+    """Une el subtema de filas que son la MISMA nota por pasaje compartido:
+    ≥ MIN_COMPARTIDOS_MISMO_MEDIO fragmentos de 6 palabras en común si son
+    del mismo medio (impreso y web), ≥ MIN_COMPARTIDOS_OTRO_MEDIO si son de
+    medios distintos (la misma nota reproducida). Los fragmentos que
+    aparecen en muchas notas (plantillas) no cuentan. El rótulo común es,
+    en este orden: el de una corrección manual o regla política, un rótulo
+    fijo del perfil, el de más notas y, en empate, el de la nota con más
+    texto. Solo cambia el subtema. Devuelve cuántas filas cambiaron."""
+    idx = [i for i, r in enumerate(rows) if not r.get('is_duplicate')
+           and str(r.get('Subtema_IA') or '').strip() not in ('', '-')]
+    if len(idx) < 2:
+        return 0
+    frag = {i: _fragmentos_misma_nota(rows[i], km) for i in idx}
+    df = Counter(f for i in idx for f in frag[i])
+    frag = {i: {f for f in fs if df[f] <= MAX_DF_FRAGMENTO} for i, fs in frag.items()}
+    mk = km.get('medio', 'Medio')
+    fam = {i: familia_medio(rows[i].get(mk) or rows[i].get('Medio')) for i in idx}
+    par = {i: i for i in idx}
+
+    def find(x):
+        while par[x] != x:
+            par[x] = par[par[x]]
+            x = par[x]
+        return x
+    for a_i, a in enumerate(idx):
+        if not frag[a]:
+            continue
+        for b in idx[a_i + 1:]:
+            if not frag[b] or find(a) == find(b):
+                continue
+            comunes = len(frag[a] & frag[b])
+            umbral = MIN_COMPARTIDOS_MISMO_MEDIO if (fam[a] and fam[a] == fam[b]) \
+                else MIN_COMPARTIDOS_OTRO_MEDIO
+            if comunes >= umbral:
+                par[find(b)] = find(a)
+    comp = defaultdict(list)
+    for i in idx:
+        comp[find(i)].append(i)
+    fijos_n = {nz(f) for f in (fijos or []) if f}
+    if salida_noticias is not None:
+        # v1.46: las gemelas cuentan como la MISMA noticia para los pases
+        # siguientes (memoria y hoja, reglas políticas, tono del Distrito).
+        salida_noticias.extend(sorted(m) for m in comp.values() if len(m) > 1)
+    cambios = 0
+    for miembros in comp.values():
+        labs = {nz(rows[i]['Subtema_IA']) for i in miembros}
+        if len(labs) < 2:
+            continue
+        manual = [i for i in miembros if rows[i].get('_correccion_manual') or rows[i].get('_subtema_politico')]
+        fijo = [i for i in miembros if nz(rows[i]['Subtema_IA']) in fijos_n]
+        if manual:
+            elegido = rows[manual[0]]['Subtema_IA']
+        elif fijo:
+            elegido = rows[fijo[0]]['Subtema_IA']
+        else:
+            peso = Counter(nz(rows[i]['Subtema_IA']) for i in miembros)
+            largo = {}
+            for i in miembros:
+                k = nz(rows[i]['Subtema_IA'])
+                largo[k] = max(largo.get(k, 0), len(str(rows[i].get('Contexto analizado') or '')))
+            mejor = max(peso, key=lambda k: (peso[k], largo[k], k))
+            elegido = next(rows[i]['Subtema_IA'] for i in miembros if nz(rows[i]['Subtema_IA']) == mejor)
+        for i in miembros:
+            if rows[i].get('_correccion_manual') or rows[i].get('_subtema_politico'):
+                continue
+            if rows[i]['Subtema_IA'] != elegido:
+                rows[i]['Subtema_IA'] = elegido
+                cambios += 1
+    return cambios
+
+
+def unificar_variantes_final_filas(rows: List[dict], km: dict, brand: str = '', aliases=(),
+                                   fijos=()) -> int:
+    """v1.32: une, sobre las filas ya volcadas, VARIANTES del mismo rótulo
+    que los pases finales dejaron separadas («Evacuación de civiles en
+    Catatumbo» = «Evacuación de civiles y menores en Catatumbo»). Mismo
+    criterio que unificar_variantes_rotulo_estricto: solo rótulos que
+    `_subtemas_mismo_hecho` toma por el mismo hecho; el rótulo elegido (el
+    de más notas) debe ser bien formado y fiel al titular + Contexto de CADA
+    nota que lo recibe. Los rótulos fijos del perfil no entran. Corre antes
+    del evaluador de agrupación, que puede volver a separar lo que decidió
+    separar. Devuelve cuántas filas cambiaron."""
+    fijos_n = {nz(f) for f in (fijos or []) if f}
+    finales = {}
+    for i, row in enumerate(rows):
+        lab = str(row.get('Subtema_IA') or '').strip()
+        if row.get('is_duplicate') or not lab or lab == '-' or nz(lab) in fijos_n:
+            continue
+        finales[i] = lab
+    forma, peso = {}, Counter()
+    for lab in finales.values():
+        forma.setdefault(nz(lab), lab)
+        peso[nz(lab)] += 1
+    claves = sorted(forma)
+    if len(claves) < 2:
+        return 0
+    par = {k: k for k in claves}
+
+    def find(x):
+        while par[x] != x:
+            par[x] = par[par[x]]
+            x = par[x]
+        return x
+    for a_i in range(len(claves)):
+        for b_i in range(a_i + 1, len(claves)):
+            a, b = claves[a_i], claves[b_i]
+            if find(a) != find(b) and _subtemas_mismo_hecho(forma[a], forma[b]):
+                par[find(b)] = find(a)
+    comp = defaultdict(list)
+    for k in claves:
+        comp[find(k)].append(k)
+
+    def _ctx(i):
+        c = str(rows[i].get('Contexto analizado') or '').strip()
+        return c if c and c != '-' else _texto_fila(rows[i], km)
+    cambios = 0
+    for ks in comp.values():
+        if len(ks) < 2:
+            continue
+        orden = sorted(ks, key=lambda k: (-peso[k], -len(k.split()), k))
+        for i in [i for i, lab in finales.items() if nz(lab) in ks]:
+            tit = _titulo_fila(rows[i], km)
+            for k in orden:
+                c = forma[k]
+                if _rotulo_bien_formado(c, [tit]) and _rotulo_fiel(c, tit, _ctx(i), brand, aliases):
+                    if nz(c) != nz(finales[i]):
+                        rows[i]['Subtema_IA'] = c
+                        cambios += 1
+                    break
+    return cambios
+
+
+def unificar_forma_subtemas(rows: List[dict]) -> int:
+    """Portado de Secretaría v1.44 (sin la regla del «en Bogotá», propia del
+    Distrito): último pase de forma sobre las filas volcadas. Un mismo
+    rótulo escrito con otras mayúsculas o tildes es el mismo subtema
+    («Alerta ambiental fase 1» / «Alerta ambiental Fase 1» salían como dos
+    subtemas en el informe). Gana la forma de una corrección manual, si la
+    hay, y si no la más repetida. Devuelve cuántas filas cambiaron."""
+    cambios = 0
+    vivas = [r for r in rows if not r.get('is_duplicate')
+             and str(r.get('Subtema_IA') or '').strip() not in ('', '-')]
+    formas: Dict[str, Counter] = defaultdict(Counter)
+    manual: Dict[str, str] = {}
+    for r in vivas:
+        sub = str(r.get('Subtema_IA') or '').strip()
+        k = nz(sub)
+        formas[k][sub] += 1
+        if r.get('_correccion_manual'):
+            manual.setdefault(k, sub)
+    for r in vivas:
+        sub = str(r.get('Subtema_IA') or '').strip()
+        k = nz(sub)
+        if len(formas[k]) < 2:
+            continue
+        ganador = manual.get(k) or max(formas[k].items(), key=lambda kv: (
+            kv[1], sum(1 for ch in kv[0] if ch.isupper()), -len(kv[0])))[0]
+        if sub != ganador:
+            r['Subtema_IA'] = ganador
+            cambios += 1
+    return cambios
 
 
 def volcar_analisis_en_filas(rows: List[dict], mapa: Dict[int, int],
@@ -9486,6 +9840,14 @@ def enrich_rows_with_ai(
         rows, km, umbral_titulo, umbral_cuerpo,
         estricta=bool(cfg.get('agrupacion_estricta')),
         excluir_similitud=tokens_marca(brand, aliases, cfg.get('voceros') or []))
+    # Secretaría v1.47: la misma noticia (CuerpoEs igual o muy parecido) en
+    # un solo grupo antes de clasificar, también con agrupación estricta.
+    # Se apaga con agrupar_por_cuerpo: false en el perfil.
+    _ULTIMO_RESUMEN.pop('grupos_fusionados_por_cuerpo', None)
+    if cfg.get('agrupar_por_cuerpo', True):
+        grupos, mapa, _fus = fusionar_grupos_por_noticia(
+            rows, grupos, mapa, km, brand, aliases, cfg.get('voceros') or [])
+        _ULTIMO_RESUMEN['grupos_fusionados_por_cuerpo'] = _fus
     for g in grupos:
         contexto = [str(rows[i].get('Contexto analizado') or '') for i in g.get('idxs', [])]
         g['contexto_marca'] = '\n\n'.join(dict.fromkeys(x for x in contexto if x and x != '-'))[:12000]
@@ -9948,6 +10310,23 @@ def enrich_rows_with_ai(
         rotulos_compartidos=[(r or {}).get('subtema') for r in (cfg.get('subtemas_fijos') or [])
                              if isinstance(r, dict)])
     _ULTIMO_RESUMEN['unificacion_por_noticia'] = _por_noticia
+    _fijos_rot = [(r or {}).get('subtema') for r in (cfg.get('subtemas_fijos') or [])
+                  if isinstance(r, dict)]
+    for _k in ('subtemas_variantes_unidas_final', 'subtemas_misma_nota_unidos',
+               'subtemas_fijos_garantia_final', 'subtemas_forma_unificada'):
+        _ULTIMO_RESUMEN.pop(_k, None)
+    # Defensoría v1.32: variantes del mismo rótulo que quedaron separadas
+    # tras los pases finales (antes del evaluador, que conserva sus «separar»).
+    if cfg.get('agrupacion_estricta'):
+        _var = unificar_variantes_final_filas(rows, km, brand=brand, aliases=aliases,
+                                              fijos=_fijos_rot)
+        if _var:
+            _ULTIMO_RESUMEN['subtemas_variantes_unidas_final'] = _var
+    # Defensoría v1.33 / Secretaría v1.46: la misma nota (impreso y web del
+    # mismo medio, o reproducida) por pasaje compartido del Contexto analizado.
+    _misma = unificar_misma_nota_final(rows, km, fijos=_fijos_rot)
+    if _misma:
+        _ULTIMO_RESUMEN['subtemas_misma_nota_unidos'] = _misma
     if _eval_dec:
         # Clausifier: las decisiones del evaluador mandan sobre todas las
         # unificaciones deterministas anteriores (por grupo y por fila).
@@ -9956,6 +10335,15 @@ def enrich_rows_with_ai(
     if haiku:
         _ULTIMO_RESUMEN['subtemas_forma_final'] = guarda_final_forma_subtema(
             rows, km, {i: subtemas_originales.get(g) or '' for i, g in mapa.items() if g})
+    # Defensoría v1.32: garantía ÚLTIMA de los subtemas fijos del perfil,
+    # después del evaluador y de la guarda de forma.
+    _fijos_fin = garantizar_subtemas_fijos_filas(rows, km, cfg.get('subtemas_fijos'), mapa=mapa)
+    if _fijos_fin:
+        _ULTIMO_RESUMEN['subtemas_fijos_garantia_final'] = _fijos_fin
+    # Secretaría v1.44: mismo rótulo con otras mayúsculas o tildes = un subtema.
+    _formas = unificar_forma_subtemas(rows)
+    if _formas:
+        _ULTIMO_RESUMEN['subtemas_forma_unificada'] = _formas
 
     _etapa('Pase final por noticia')
     if haiku:

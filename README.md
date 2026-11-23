@@ -42,6 +42,35 @@ El acceso a la interfaz de producción está resguardado mediante autenticación
 
 ## 🚀 Funcionalidades
 
+### Misma noticia = un grupo y un subtema (v4.73, portado de Secretaría y Defensoría)
+
+Versión general: funciona con la marca, alias y voceros que se escriban en la
+app; ninguna regla depende de un cliente.
+
+- **Antes de clasificar:** los grupos que son la misma noticia (mismo CuerpoEs,
+  texto muy parecido o pasajes literales) se unen en uno solo si alguna nota de
+  uno se parece de verdad a alguna del otro (coseno ≥ 0,35). Se mantiene el veto
+  de lugar o persona distinta y el pie fijo del medio nunca une. El modelo ve la
+  noticia completa una vez y le da un solo subtema. Se apaga con
+  `agrupar_por_cuerpo: false` en el perfil. (Secretaría v1.47)
+- **La misma nota en impreso y web** («Vanguardia» / «Vanguardia.com») o
+  reproducida por otro medio lleva el mismo subtema: ≈17 palabras seguidas en
+  común del Contexto analizado si es el mismo medio, ≈35 si son medios
+  distintos. Una frase corta compartida (una cifra) no basta y los fragmentos de
+  plantilla no cuentan. (Defensoría v1.33 / Secretaría v1.46)
+- **Variantes del mismo hecho** («Evacuación de civiles en Catatumbo» /
+  «Evacuación de civiles y menores en Catatumbo») se unen al final, solo si el
+  rótulo elegido es fiel al titular y al contexto de cada nota. Hechos distintos
+  no se tocan. (Defensoría v1.32, con agrupación estricta)
+- **Nunca la entidad como subtema:** «Datos Defensoría del Pueblo», «Gestión de
+  la entidad», «Declaraciones de <vocero>» se rechazan y se reescriben con el
+  asunto concreto (se calcula con la marca, alias y voceros digitados).
+- Garantía final de los **subtemas fijos** del perfil (frase seguida en el
+  titular, resumen, cuerpo o contexto) y el **mismo rótulo con otras mayúsculas**
+  es un solo subtema.
+- El subtema nunca sale con el nombre del medio pegado («… - CAMBIO COLOMBIA») y
+  los ID numéricos salen sin «.0» en el Excel.
+
 ### Nunca agrupar porque sí (caso «Jardín Olarte», 2026-11-09)
 
 Dossier real de la Secretaría General revisado a mano (51 filas). Con las
