@@ -56,16 +56,25 @@ El acceso a la interfaz de producción está resguardado mediante autenticación
   lleva Subtema_IA; el subtema se usa por dentro para que la misma noticia
   tenga el mismo tono) o «Solo Subtema» (Haiku no analiza el tono: más rápido y
   más barato; el xlsx no lleva Tono_IA).
+- **Una o varias marcas:** en «Marca» se puede escribir una marca o varias
+  separadas por punto y coma o coma («GSK; Sanofi»). Cada una recibe su propio
+  tono, con sus propios alias y voceros. Para decir de qué marca es cada alias
+  o vocero: «GSK: GlaxoSmithKline, Glaxo; Sanofi: Sanofi Pasteur» (los que
+  siguen a «Marca:» son de esa marca); sin indicarlo, se asignan según con qué
+  marca aparecen en el dossier y, si no hay evidencia, por la palabra que
+  comparten con el nombre de la marca.
 - **Tono por la marca de cada fila:** el dossier ya trae una fila por marca
   mencionada, en «Menciones - Empresa» (radio, TV y web) o «Empresa rel.»
-  (prensa). Si la marca de la fila es el cliente (o viene vacía), el tono se
-  mide hacia la marca, alias y voceros escritos en la app. Si es otra marca
-  (p. ej. un competidor: GSK, Moderna, AstraZeneca, Sanofi), el tono de esa fila
-  se mide hacia esa marca, en una pasada aparte del motor. El xlsx agrega
-  «Marca analizada» antes del tono solo cuando hubo filas de otras marcas. Si en
-  todo el dossier hay una sola marca escrita distinto («UNAL» / «Universidad
-  Nacional de Colombia»), se toma como el cliente. Una marca que falla no tumba
-  las demás: sus filas salen en «Para revisar».
+  (prensa). Cada fila se mide hacia la marca escrita que coincide con esa
+  columna (por nombre o alias); sin esa columna, hacia la marca escrita que
+  nombra la nota (primero el titular) o, si no aparece ninguna, hacia la
+  primera. Si la columna trae una marca que no se escribió (p. ej. un
+  competidor), el tono de esa fila se mide hacia esa marca. Cada marca corre en
+  una pasada aparte del motor; con una sola marca y sin filas de otras, es la
+  corrida de siempre. El xlsx agrega «Marca analizada» antes del tono cuando hay
+  más de una marca. Si en todo el dossier hay una sola marca escrita distinto
+  («UNAL» / «Universidad Nacional de Colombia»), se toma como el cliente. Una
+  marca que falla no tumba las demás: sus filas salen en «Para revisar».
 
 ### Motor de Defensoría, versión general (v4.74)
 

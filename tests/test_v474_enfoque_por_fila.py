@@ -108,7 +108,8 @@ def test_fila_de_otra_marca_lleva_su_propio_tono():
     assert por['Sanofi']['Tono_IA'] == 'Negativo'
     assert por['GSK']['Tono_IA'] == 'Positivo'
     assert all(d['Subtema_IA'] and d['Subtema_IA'] != '-' for d in datos)
-    assert res['analisis']['marcas_analizadas']['Sanofi'] == {'filas': 1, 'ok': True}
+    inf = res['analisis']['marcas_analizadas']['Sanofi']
+    assert inf['filas'] == 1 and inf['ok'] and not inf['escrita']
 
 
 def test_una_sola_marca_escrita_distinto_es_el_cliente():
@@ -132,3 +133,50 @@ def test_marca_que_falla_no_tumba_las_demas():
     assert por['Sanofi']['Tono_IA'] in ('-', None)
     assert any('Sanofi' in x['motivo'] for x in res['analisis']['para_revisar'])
     assert res['analisis']['marcas_analizadas']['Sanofi']['ok'] is False
+
+
+# --- Varias marcas escritas en «Marca» (p. ej. «GSK; Sanofi») -------------
+
+def test_separar_marcas():
+    assert pipeline.separar_marcas('GSK; Sanofi, Moderna / AstraZeneca') == \
+        ['GSK', 'Sanofi', 'Moderna', 'AstraZeneca']
+    assert pipeline.separar_marcas('Universidad Simón Bolívar') == ['Universidad Simón Bolívar']
+    assert pipeline.separar_marcas('GSK; gsk') == ['GSK']
+
+
+def test_repartir_alias_y_voceros():
+    km = pipeline.KEY_MAP
+    r = pipeline.repartir_terminos(['GSK', 'Sanofi'],
+                                   ['GSK: GlaxoSmithKline', 'Glaxo', 'Sanofi: Sanofi Pasteur'], [], km)
+    assert r == {'GSK': ['GlaxoSmithKline', 'Glaxo'], 'Sanofi': ['Sanofi Pasteur']}
+    # Sin prefijo: por evidencia del dossier (con qué marca aparece el vocero).
+    filas = [{'Menciones - Empresa': 'Sanofi', 'Título': 'Ana Gómez, de Sanofi, presenta vacuna'},
+             {'Menciones - Empresa': 'GSK', 'Título': 'Luis Díaz anuncia planta de GSK'}]
+    r = pipeline.repartir_terminos(['GSK', 'Sanofi'], ['Ana Gómez', 'Luis Díaz'], filas, km)
+    assert r == {'GSK': ['Luis Díaz'], 'Sanofi': ['Ana Gómez']}
+    # Una sola marca: todo es de ella.
+    assert pipeline.repartir_terminos(['GSK'], ['Glaxo', 'Ana'], [], km) == {'GSK': ['Glaxo', 'Ana']}
+
+
+def test_varias_marcas_escritas_cada_una_con_sus_alias():
+    vistos = {}
+    real = pipeline.enrich_rows_with_ai
+
+    def _spy(**kw):
+        vistos[kw['brand']] = (list(kw['aliases']), list(kw['extra'].get('voceros') or []))
+        return real(**kw)
+    filas = [('Mercado de vacunas', TEXTO, 'GlaxoSmithKline; Sanofi Pasteur; Moderna'),
+             ('Sanofi abre planta en Bogotá', 'Sanofi abre una planta en Bogotá con 200 empleos.', '')]
+    with patch.object(pipeline, 'enrich_rows_with_ai', side_effect=_spy):
+        res, cab, datos = _correr(
+            filas, brand='GSK; Sanofi',
+            aliases=['GSK: GlaxoSmithKline', 'Sanofi: Sanofi Pasteur'], voceros=['GSK: Ana Gómez'])
+    assert vistos['GSK'] == (['GlaxoSmithKline'], ['Ana Gómez'])
+    assert vistos['Sanofi'] == (['Sanofi Pasteur'], [])
+    assert vistos['Moderna'] == ([], [])           # marca de la columna que no se escribió
+    por = {(str(d['ID Noticia']), d[pipeline.COL_MARCA_ANALIZADA]): d for d in datos}
+    assert set(por) == {('1', 'GSK'), ('1', 'Sanofi'), ('1', 'Moderna'), ('2', 'Sanofi')}
+    assert por[('1', 'GSK')]['Tono_IA'] == 'Positivo'
+    assert por[('1', 'Sanofi')]['Tono_IA'] == 'Negativo'
+    inf = res['analisis']['marcas_analizadas']
+    assert inf['GSK']['escrita'] and inf['Sanofi']['escrita'] and not inf['Moderna']['escrita']
