@@ -42,17 +42,34 @@ El acceso a la interfaz de producción está resguardado mediante autenticación
 
 ## 🚀 Funcionalidades
 
-### Misma noticia = un grupo y un subtema (v4.73, portado de Secretaría y Defensoría)
+### Motor de Defensoría, versión general (v4.74)
+
+Grill corre el mismo motor que la app de Defensoría del Pueblo (v1.33): la misma
+precisión de tono y subtema, la misma agrupación (solo se agrupan notas iguales o
+muy parecidas) y el mismo orden de columnas del xlsx de resultado. La diferencia
+es que no hay cliente fijo: todo depende de la marca, los alias y los voceros
+que se escriban (o del perfil que se elija).
+
+- **Sin perfil** rigen los ajustes de Defensoría sin lo propio de ese cliente:
+  agrupación estricta, criterio aspectual estricto y una guía de subtema general
+  (el asunto concreto de la nota, nunca la entidad ni el vocero como tema).
+- **Orden de columnas** del boletín de Defensoría, sin «HORA B»: ID Noticia,
+  Fecha, Medio, Región, Tipo de Medio, Sección - Programa, Título, Duración,
+  CPE, Audiencia, Tier, Tono_IA, Subtema_IA, Link Nota, texto, Link (Streaming -
+  Imagen), Link Ext, FECHA INFORME, ID duplicada, Contexto analizado, Resumen -
+  Aclaracion, Audio, Web Ext. Con un perfil que clasifica TIPO y GÉNERO, van
+  después de Subtema_IA.
+- **No se usa** lo propio de Defensoría: alertas tempranas, hoja de notas ya
+  analizadas y hora del boletín.
+- **Al actualizar** en Streamlit Cloud, la app vuelve a cargar todos sus
+  módulos juntos (antes podían quedar mezclados la versión nueva y la vieja).
+- Como en Defensoría, el análisis es siempre con IA: no hay opción de subir PKL.
+
+### Misma noticia = un subtema (v4.73, de Defensoría v1.32–v1.33)
 
 Versión general: funciona con la marca, alias y voceros que se escriban en la
 app; ninguna regla depende de un cliente.
 
-- **Antes de clasificar:** los grupos que son la misma noticia (mismo CuerpoEs,
-  texto muy parecido o pasajes literales) se unen en uno solo si alguna nota de
-  uno se parece de verdad a alguna del otro (coseno ≥ 0,35). Se mantiene el veto
-  de lugar o persona distinta y el pie fijo del medio nunca une. El modelo ve la
-  noticia completa una vez y le da un solo subtema. Se apaga con
-  `agrupar_por_cuerpo: false` en el perfil. (Secretaría v1.47)
 - **La misma nota en impreso y web** («Vanguardia» / «Vanguardia.com») o
   reproducida por otro medio lleva el mismo subtema: ≈17 palabras seguidas en
   común del Contexto analizado si es el mismo medio, ≈35 si son medios
@@ -66,8 +83,7 @@ app; ninguna regla depende de un cliente.
   la entidad», «Declaraciones de <vocero>» se rechazan y se reescriben con el
   asunto concreto (se calcula con la marca, alias y voceros digitados).
 - Garantía final de los **subtemas fijos** del perfil (frase seguida en el
-  titular, resumen, cuerpo o contexto) y el **mismo rótulo con otras mayúsculas**
-  es un solo subtema.
+  titular, resumen, cuerpo o contexto).
 - El subtema nunca sale con el nombre del medio pegado («… - CAMBIO COLOMBIA») y
   los ID numéricos salen sin «.0» en el Excel.
 

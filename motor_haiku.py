@@ -294,7 +294,7 @@ def es_copia(subtema: str, titulo: str, contexto: str = "") -> Optional[str]:
     return None
 
 
-# Portado de Defensoría v1.32 (guía del cliente: «Nunca la entidad o la persona como tema»):
+# v1.32 (guía del cliente: «Nunca la entidad o la persona como tema»):
 # palabras que, junto al nombre de la entidad o su vocera, no dicen de qué
 # trata la nota («Datos Defensoría del Pueblo», «Gestión de la Defensoría»,
 # «Declaraciones de Iris Marín»).
@@ -801,7 +801,7 @@ Ejemplos:
 - MAL "Anuncia nuevas medidas" (verbo) -> BIEN "Nuevas medidas de protección a líderes sociales"
 - MAL "Realizando jornada" (gerundio y genérico) -> BIEN "Jornada de atención a víctimas en Tumaco"
 - MAL "Denunció amenazas contra líderes en el Cauca" (verbo y extracto) -> BIEN "Amenazas a líderes sociales del Cauca"
-- MAL "La Defensoría del Pueblo emitió una alerta temprana" (copia y verbo) -> BIEN "Alerta temprana por reclutamiento de menores"
+- MAL "La entidad emitió una alerta por reclutamiento de menores" (copia y verbo) -> BIEN "Alerta por reclutamiento de menores"
 - MAL "Jornada de salud" (le sirve a cualquier jornada) -> BIEN "Jornada de vacunación infantil en Soacha"
 - BIEN "Bienestar de la población migrante", "Taller de liderazgo juvenil"
 
@@ -815,6 +815,7 @@ Ejemplos (cliente: una alcaldía):
 - "Denuncian sobrecostos; la Alcaldía respondió que el contrato cumple la ley" -> rol equilibrada, Neutro.
 - "Homicidios aumentaron 12 %, según cifras de la Alcaldía" -> rol referencial, Neutro (asunto grave, pero la nota no evalúa a la Alcaldía).
 - "Empresa privada ganó premio; al acto asistió un delegado de la Alcaldía" -> rol referencial, Neutro.
+- Que la noticia trate de un hecho malo (atentado, amenaza, violencia, crisis) NO la hace Negativa: Negativo es solo si se critica, denuncia o afecta al cliente mismo. Si el cliente o su vocero rechaza, alerta, se pronuncia o expresa preocupación por ese hecho, el tono es Neutro. Ej.: "La entidad rechazó las amenazas contra la prensa" -> Neutro.
 guardar_clasificacion RECHAZA la fila si el rol y el tono no coinciden.
 Si el pedido trae un bloque <criterio_tono>, ese criterio del cliente MANDA en los casos que nombre: usa el tono que indique y el rol que corresponde a ese tono.
 
@@ -872,6 +873,8 @@ PROMPT_REVISOR = (
     "TAREA 3, tono del grupo. Solo cuando las filas del mismo hecho traen tonos distintos, elige "
     "el que sostiene el contexto con esta regla (un auditor de tono aparte revisa el resto, no "
     "cambies tonos de filas que no son del mismo hecho):\n" + RUBRICA_TONO + "\n"
+    "Un hecho malo (atentado, amenaza, violencia) que el cliente rechaza o sobre el que alerta "
+    "no es Negativo; Negativo solo si se critica o afecta al cliente.\n"
     "Responde SOLO con JSON compacto, sin texto alrededor: "
     '{"correcciones":[{"id":"...","subtema":"...","tono":"..."}],'
     '"grupos":[{"grupo":0,"mismo_hecho":true,"razon":"una línea"}]}. '
@@ -922,15 +925,8 @@ def bloque_cliente(brand: str, aliases: Sequence[str] = (), voceros: Sequence[st
 
 def armar_prompt(brand: str, aliases: Sequence[str], voceros: Sequence[str],
                  criterio_texto: str, incluir_tema: bool,
-                 taxonomia: Optional[Sequence[str]] = None, guia_subtema: str = "",
-                 tono_pkl: bool = False) -> str:
+                 taxonomia: Optional[Sequence[str]] = None, guia_subtema: str = "") -> str:
     partes = ["CLIENTE: %s" % brand]
-    if tono_pkl:
-        # Clausifier: con PKL de tono el modelo del cliente pone el TONO; el
-        # agente no lo analiza (envía Neutro) y se concentra en el SUBTEMA.
-        partes.append('TONO POR MODELO DEL CLIENTE: no analices el tono ni el rol; envía siempre '
-                      '"tono":"Neutro", sin "rol", y dedica el trabajo al SUBTEMA.')
-        criterio_texto = ""
     if aliases:
         partes.append("ALIAS: %s" % ", ".join(aliases))
     if voceros:
@@ -1388,8 +1384,7 @@ def clasificar_con_haiku(items: Sequence[dict], brand: str, aliases: Sequence[st
             return {"etiquetas": {}, "costo_usd": 0.0, "turnos": 0, "filas": 0, "faltan": 0,
                     "cambios_revision": 0, "grupos_revision": 0, "subtype": None, "error": None}
         prompt = armar_prompt(brand, list(aliases or []), list(voceros or []), criterio_texto,
-                              incluir_tema, _ESTADO["taxonomia"], guia_subtema,
-                              tono_pkl=tono_pkl)
+                              incluir_tema, _ESTADO["taxonomia"], guia_subtema)
         ctx_cliente = bloque_cliente(brand, list(aliases or []), list(voceros or []),
                                      "" if tono_pkl else criterio_texto)
         enviables = len(_lista_envio())

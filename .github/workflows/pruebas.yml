@@ -1,0 +1,40 @@
+# Revisión automática: corre toda la suite de pruebas en cada pull request
+# hacia main y en cada push a main. Si alguna prueba falla, el PR queda en
+# rojo antes de hacer merge.
+name: Pruebas
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pruebas-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    name: Suite de pruebas
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Instalar dependencias
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt pytest
+
+      - name: Correr pruebas
+        run: python -m pytest -q -p no:cacheprovider tests

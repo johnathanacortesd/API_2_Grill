@@ -8,18 +8,79 @@ import logging
 import os
 import re
 import time
+import sys
 import streamlit as st
 import pandas as pd
+
+
+def _modulos_del_proyecto_al_dia() -> None:
+    """v1.31: tras publicar una versión nueva, Streamlit Cloud puede volver a
+    correr app.py con los módulos del proyecto de la versión anterior aún en
+    memoria (pipeline, analyzer_tono_tema, memoria_cliente…), y un nombre
+    nuevo da ImportError («cannot import name 'cargar_hoja_analizadas'»).
+    Si algún .py del proyecto cambió en disco después de cargarse, se sacan
+    de memoria TODOS los módulos del proyecto para que se importen de nuevo
+    juntos, en la misma versión. Si nada cambió no hace nada."""
+    base = os.path.dirname(os.path.abspath(__file__))
+    try:
+        huella = tuple(sorted((f, os.path.getmtime(os.path.join(base, f)))
+                              for f in os.listdir(base) if f.endswith(".py")))
+    except OSError:
+        return
+    previa = getattr(sys, "_sgb_huella_modulos", None)
+    sys._sgb_huella_modulos = huella
+    if previa == huella:
+        return
+    propios = [n for n, m in list(sys.modules.items())
+               if n not in ("__main__", __name__)
+               and getattr(m, "__file__", None)
+               and os.path.abspath(m.__file__) != os.path.abspath(__file__)
+               and os.path.dirname(os.path.abspath(m.__file__)) == base]
+    if not propios:
+        return
+    if previa is None:
+        # Primera corrida de este código en el proceso: solo hay módulos
+        # viejos si algún archivo se modificó después de que el proceso
+        # arrancó (la actualización llegó con la app corriendo).
+        try:
+            inicio = os.stat("/proc/self").st_ctime
+        except OSError:
+            return
+        if not any(mt > inicio for _f, mt in huella):
+            return
+    for n in propios:
+        sys.modules.pop(n, None)
+
+
+_modulos_del_proyecto_al_dia()
+
 
 from catalogo_tono_tema import CRITERIOS_TONO
 from perfil_cliente import cargar_perfil, guardar_perfil, listar_perfiles, perfil_a_resumen, slugify
 from pipeline import (process_dossier, leer_columnas_xlsx, sugerir_columna,
                       renombrar_columnas_xlsx, construir_ai_config_custom,
-                      LimiteFilasError)
-from pkl_classifier import PklClassifierError, load_sklearn_estimator
+                      LimiteFilasError, ErrorSheetsAnalizadas,
+                      cargar_ids_analizados_desde_sheets, cargar_hoja_analizadas)
 
 # Versión visible de la app (se muestra en el encabezado). Actualizar en cada release.
-APP_VERSION = "v4.73"
+APP_VERSION = "v4.74"
+
+# v4.74: versión general del motor de Defensoría. No hay cliente fijo: el
+# análisis depende de la marca, los alias y los voceros que se escriban (o
+# del perfil que se elija). Sin perfil rigen los ajustes generales de abajo.
+APP_NOMBRE = "Clausifier"
+
+# Ajustes generales (los de Defensoría sin lo propio de ese cliente).
+GUIA_SUBTEMA_GENERAL = (
+    "El sub-tema indica de qué habla ESA nota, con precisión: el asunto o hecho concreto en "
+    "2 a 5 palabras (p. ej. 'Informe sobre líderes sociales asesinados', 'Crisis humanitaria "
+    "en el Catatumbo', 'Cierre de vía en la calle 13'). Nunca la entidad o la persona como "
+    "tema: no el nombre del cliente, 'Gestión de <cliente>' ni 'Declaraciones de <vocero>'; "
+    "si el cliente o su vocero solo opinan sobre un asunto, el sub-tema es ese asunto. NO "
+    "fuerces una nota a un sub-tema que no es el suyo. Solo las notas iguales o muy parecidas "
+    "(mismo titular, mismo texto o el mismo hecho contado casi igual) comparten exactamente "
+    "el mismo sub-tema; las demás conservan el suyo."
+)
 
 # v4.51: sello del analizador que realmente corre en el contenedor. Se lee
 # del módulo del analizador (ya importado vía pipeline); si el despliegue
@@ -30,46 +91,6 @@ try:
     SELLO_ANALIZADOR = getattr(_mod_analizador, "ANALYZER_BUILD", "sin-sello")
 except Exception:
     SELLO_ANALIZADOR = "sin-sello"
-
-# Clausifier: motores de clasificación. Haiku (agente + revisor) es el
-# predeterminado; OpenAI Luna (gpt-6-luna + Jev) sigue disponible igual.
-MOTORES = ["Claude Haiku (agente + revisor)", "OpenAI Luna (gpt-6-luna)"]
-CREDITO = "Clausifier · Creado por Johnathan Cortés y Claude"
-
-# Flags de perfil que afectan tono/subtema (portados de Secretaría y
-# Defensoría). TIPO/GÉNERO y el formato boletín no se usan en Clausifier.
-FLAGS_PERFIL = ("guia_subtema", "subtemas_fijos", "tono_distrito_positivo",
-                "tono_solo_gestion", "tono_alertas_tempranas", "tono_labor_positiva",
-                "agrupacion_estricta")
-
-
-def _flags_de_perfil(perfil: dict) -> dict:
-    """Flags del perfil que viajan en el ai_config. `agrupacion_estricta`
-    None (perfil sin la clave) se omite y rige el default del analizador."""
-    out = {}
-    for k in FLAGS_PERFIL:
-        v = (perfil or {}).get(k)
-        if k == "agrupacion_estricta" and v is None:
-            continue
-        if v not in (None, "", []):
-            out[k] = v
-        elif k != "agrupacion_estricta" and isinstance(v, bool):
-            out[k] = v
-    return out
-
-
-def _activar_clave_claude() -> bool:
-    """Copia ANTHROPIC_API_KEY de st.secrets al entorno (la lee el agente)."""
-    clave = st.secrets.get("ANTHROPIC_API_KEY")
-    if not clave:
-        st.error("❌ Falta configurar ANTHROPIC_API_KEY en los Secrets de Streamlit: "
-                 "el motor Claude Haiku la necesita. Elige «OpenAI Luna» para procesar sin ella.")
-        return False
-    for otra in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_PROFILE"):
-        os.environ.pop(otra, None)
-    os.environ["ANTHROPIC_API_KEY"] = str(clave)
-    return True
-
 
 logger = logging.getLogger("limpieza_grill")
 if not logging.getLogger().handlers:
@@ -158,7 +179,7 @@ div[data-baseweb="tab-border"]{display:none!important;}
 .app-header-title{font-family:'Inter',sans-serif;font-size:1.2rem;font-weight:700;color:var(--text);letter-spacing:-0.01em;line-height:1.25}
 .app-header-version{font-family:'Inter',sans-serif;font-size:0.72rem;font-weight:500;color:var(--text3);letter-spacing:0.02em;margin-top:0.2rem}
 .app-header-badge{background:var(--acento-soft);border:1px solid var(--acento-line);color:var(--acento);font-family:'Inter',sans-serif;font-size:0.66rem;font-weight:600;padding:0.28rem 0.75rem;border-radius:6px;letter-spacing:0.12em;text-transform:uppercase;white-space:nowrap;}
-.metrics-grid{display:grid;grid-template-columns:repeat(5,1fr);gap:0.75rem;margin:0.9rem 0}
+.metrics-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:0.75rem;margin:0.9rem 0}
 .metric-card{background:var(--s1);border:1px solid var(--border);border-radius:var(--r2);padding:1rem 0.6rem;text-align:center;box-shadow:var(--shadow-sm);}
 .metric-card-legacy::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;border-radius:var(--r2) var(--r2) 0 0}
 
@@ -218,9 +239,6 @@ label[data-testid="stWidgetLabel"] p{font-family:'Inter',sans-serif!important;co
 [data-testid="stVerticalBlock"]>div{gap:0.55rem!important}
 [data-testid="stHorizontalBlock"]>div{gap:0.5rem!important}
 hr{border-color:var(--border)!important;margin:0.6rem 0!important}
-.credit{font-family:'Inter',sans-serif;font-size:0.78rem;font-weight:500;color:var(--text3);text-align:center;padding:0.2rem 0 0.8rem;}
-.engine-badge{display:inline-flex;flex-wrap:wrap;gap:0.35rem;margin:0.2rem 0 0.7rem}
-.engine-badge span{background:var(--acento-soft);border:1px solid var(--acento-line);color:var(--acento);border-radius:6px;padding:0.2rem 0.6rem;font-family:'Inter',sans-serif;font-size:0.72rem;font-weight:600}
 .config-badge{display:inline-flex;align-items:center;gap:0.4rem;background:var(--s2);border:1px solid var(--border);border-radius:6px;padding:0.25rem 0.7rem;font-family:'Inter',sans-serif;font-size:0.66rem;font-weight:500;color:var(--text3);margin-bottom:0.6rem;letter-spacing:0.08em;}
 .live-panel{background:#ffffff;border:1px solid var(--border);border-radius:var(--r3);padding:1.4rem 1.6rem;margin:1.5rem auto;max-width:720px;box-shadow:var(--shadow-sm);}
 .live-panel-legacy::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;background:var(--grad-br);box-shadow:0 2px 8px rgba(156,61,18,0.35);}
@@ -243,7 +261,6 @@ hr{border-color:var(--border)!important;margin:0.6rem 0!important}
 .step-item.is-active .dot{border-color:var(--acento);color:var(--acento);box-shadow:none;animation:livePulse 1.6s ease-out infinite}
 .live-hint{background:rgba(156,61,18,0.06);border:1px solid rgba(156,61,18,0.25);color:#7e310e;border-radius:var(--r);padding:0.55rem 0.75rem;font-size:0.78rem;line-height:1.4}
 .live-detail{font-size:0.8rem;color:var(--text2);margin-top:0.5rem;font-family:'Inter',sans-serif}
-.pkl-hint{font-size:0.78rem;color:var(--text3);margin:0.15rem 0 0.55rem;line-height:1.4}
 div[data-testid="stAlert"]{border-radius:var(--r2)!important}
 [data-testid="stAlert"]>div{background:var(--s2)!important;color:var(--text2)!important;}
 [data-testid="stCheckbox"] p,[data-testid="stToggle"] p{color:var(--text-label)!important}
@@ -276,7 +293,7 @@ def check_password():
     if st.session_state.get("password_correct", False):
         return True
     configurada = bool(st.secrets.get("APP_PASSWORD"))
-    st.markdown("""
+    st.markdown(f"""
     <div class="auth-wrap">
         <div class="auth-icon">◈</div>
         <div class="auth-eyebrow">Acceso privado</div>
@@ -363,42 +380,11 @@ def _fmt_size(n_bytes: int) -> str:
     if mb < 0.1: return f"{n_bytes / 1024:.0f} KB"
     return f"{mb:.1f} MB"
 
-def _pasos(motor: str = "openai"):
-    """Pasos del panel en vivo; en Haiku el análisis se muestra como agente +
-    revisor de subtemas."""
-    if motor != "haiku":
-        return PIPELINE_STEPS
-    pasos = []
-    for key, label in PIPELINE_STEPS:
-        if key == "ai":
-            pasos.append(("ai", "Agente Claude Haiku (páginas de noticias)"))
-            pasos.append(("review", "Revisor de subtemas + guardas"))
-        else:
-            pasos.append((key, label))
-    return pasos
-
-
-def _badge_motor(motor: str, tono_pkl: bool, tema_pkl: bool, incluir_tema: bool) -> str:
-    """Texto del badge de configuración: «Motor: Haiku · Tono: PKL · …»."""
-    ia = "Haiku" if motor == "haiku" else "Luna"
-    tema = "PKL" if tema_pkl else (ia if incluir_tema else "—")
-    return "Motor: %s · Tono: %s · Tema: %s · Subtema: %s" % (
-        ia, "PKL" if tono_pkl else ia, tema, ia)
-
-
-def _badge_html(texto: str) -> str:
-    return '<div class="engine-badge">%s</div>' % "".join(
-        "<span>%s</span>" % html.escape(p.strip()) for p in texto.split("·"))
-
-
-def _active_step(pct: int, msg: str, motor: str = "openai") -> str:
+def _active_step(pct: int, msg: str) -> str:
     if pct >= 100 or "completad" in msg.lower():
         return "done"
     if pct >= 94 or "Generando archivo" in msg or "Guardando" in msg:
         return "export"
-    if motor == "haiku" and (pct >= 89 or "Revisor" in msg or "Verificando" in msg
-                             or "Unificando" in msg):
-        return "review"
     if pct >= 70 or "IA" in msg or "Analizando" in msg or "semántica" in msg:
         return "ai"
     if pct >= 55 or "duplicad" in msg.lower() or "Expandiendo" in msg:
@@ -409,11 +395,10 @@ def _active_step(pct: int, msg: str, motor: str = "openai") -> str:
         return "read"
     return "config"
 
-def _render_live_html(pct, msg, elapsed, file_label, active_key, motor="openai",
-                      badge="", haiku_prog=None):
+def _render_live_html(pct, msg, elapsed, file_label, active_key):
     steps_html = []
     reached_active = False
-    for key, label in _pasos(motor):
+    for key, label in PIPELINE_STEPS:
         if active_key == "done":
             cls, mark = "is-done", "✓"
         elif key == active_key:
@@ -426,18 +411,6 @@ def _render_live_html(pct, msg, elapsed, file_label, active_key, motor="openai",
         steps_html.append(f'<div class="step-item {cls}"><span class="dot">{mark}</span>{label}</div>')
         
     file_line = f" · {html.escape(file_label)}" if file_label else ""
-    estado, estado_lbl = "en curso", "Estado"
-    hp = haiku_prog or {}
-    if motor == "haiku" and hp.get("total"):
-        faltan = hp.get("faltan")
-        hechas = hp["total"] - (faltan if faltan is not None else hp["total"])
-        if hp.get("revisado"):
-            estado = "%d grupos" % int(hp.get("grupos") or 0)
-            estado_lbl = "Revisor · %d correcciones" % int(hp.get("cambios_revision") or 0)
-        else:
-            estado = "%d/%d" % (max(0, hechas), hp["total"])
-            estado_lbl = "Haiku · leídas %d" % int(hp.get("leidas") or 0)
-    badge_html = _badge_html(badge) if badge else ""
     title = "Limpieza completada" if active_key == "done" else "Procesando dossier de noticias"
     safe_msg = html.escape(str(msg or ""))
     
@@ -453,9 +426,8 @@ def _render_live_html(pct, msg, elapsed, file_label, active_key, motor="openai",
       <div class="live-metrics">
         <div class="live-metric"><div class="live-metric-val">{int(pct)}%</div><div class="live-metric-lbl">Avance</div></div>
         <div class="live-metric"><div class="live-metric-val">{elapsed}</div><div class="live-metric-lbl">Tiempo</div></div>
-        <div class="live-metric"><div class="live-metric-val">{estado}</div><div class="live-metric-lbl">{estado_lbl}</div></div>
+        <div class="live-metric"><div class="live-metric-val">en curso</div><div class="live-metric-lbl">Estado</div></div>
       </div>
-      {badge_html}
       <div class="step-list">{''.join(steps_html)}</div>
       <div class="live-hint">Límite de seguridad: máximo 1.000 filas por archivo. La deduplicación previa agrupa las notas idénticas antes del análisis.</div>
       <div class="live-detail">{safe_msg}</div>
@@ -570,29 +542,13 @@ def run_cleaning_process(df_file, file_meta=None, ai_config=None):
         file_label = f"{file_label} ({size_lbl})"
 
     t_start = time.time()
-    motor = str((ai_config or {}).get("motor") or "openai")
-    if not (ai_config or {}).get("enabled"):
-        motor = "openai"
-    badge = ""
-    if ai_config and ai_config.get("enabled"):
-        badge = _badge_motor(motor, bool(ai_config.get("tone_pkl_bytes")),
-                             bool(ai_config.get("theme_pkl_bytes")),
-                             bool(ai_config.get("incluir_tema")))
     panel = st.empty()
     progress_bar = st.progress(0, text="Iniciando…")
 
     def paint(pct, msg):
         elapsed = _fmt_elapsed(time.time() - t_start)
-        active = _active_step(pct, msg, motor)
-        hp = None
-        if motor == "haiku":
-            try:
-                import motor_haiku
-                hp = dict(motor_haiku.PROGRESO)
-            except Exception:
-                hp = None
-        panel.markdown(_render_live_html(pct, msg, elapsed, file_label, active, motor=motor,
-                                         badge=badge, haiku_prog=hp), unsafe_allow_html=True)
+        active = _active_step(pct, msg)
+        panel.markdown(_render_live_html(pct, msg, elapsed, file_label, active), unsafe_allow_html=True)
         progress_bar.progress(min(100, max(0, int(pct))), text=msg)
 
     paint(1, "Cargando configuración…")
@@ -604,12 +560,41 @@ def run_cleaning_process(df_file, file_meta=None, ai_config=None):
 
         try:
             region_map, internet_map = load_config_from_sheets()
+            # v1.7: filtro de notas ya analizadas (Google Sheets). Se lee
+            # la hoja actual en cada corrida; si no se puede leer y el
+            # filtro está activado, se detiene sin procesar (el usuario
+            # puede desactivar el filtro y procesar todo).
+            ai_config_efectivo = ai_config
+            _excluir = bool(ai_config and ai_config.get("excluir_analizados"))
+            _refs = bool(ai_config and ai_config.get("referencias_sheets", False))
+            if _excluir or _refs:
+                paint(1, "Leyendo notas ya analizadas (Google Sheets)…")
+                try:
+                    # v1.30: una sola lectura para los IDs y los subtemas ya publicados.
+                    ids_analizados, referencias = cargar_hoja_analizadas(con_referencias=_refs)
+                except ErrorSheetsAnalizadas as exc:
+                    if _excluir:
+                        status_widget.update(
+                            label="No se pudo leer la hoja de notas ya analizadas",
+                            state="error")
+                        st.error(f"⚠️ {exc}")
+                        return
+                    st.warning(f"⚠️ No se tomaron los subtemas de la hoja: {exc}")
+                    ids_analizados, referencias = None, []
+                ai_config_efectivo = dict(ai_config)
+                if _excluir:
+                    ai_config_efectivo["ids_analizados"] = ids_analizados
+                if referencias:
+                    ai_config_efectivo["referencias_sheets"] = referencias
+                    paint(1, f"Subtemas ya publicados en la hoja: {len(referencias)} notas recientes")
+                else:
+                    ai_config_efectivo.pop("referencias_sheets", None)
             result = process_dossier(
                 df_file,
                 region_map,
                 internet_map,
                 progress=on_progress,
-                ai_config=ai_config,
+                ai_config=ai_config_efectivo,
                 # v4.56: el tiempo reportado cubre desde que empezó el proceso
                 # (incluida la carga de configuración), no solo el pipeline.
                 t_inicio=t_start,
@@ -631,10 +616,8 @@ def run_cleaning_process(df_file, file_meta=None, ai_config=None):
 
     st.session_state["medios_sin_mapear"] = result.get("medios_sin_mapear") or None
     st.session_state["analisis"] = result.get("analisis") or {}
-    st.session_state["duplicadas"] = result.get("duplicadas") or []
     st.session_state["vista"] = result.get("vista") or []
     st.session_state["tiempos"] = result.get("tiempos") or []
-    st.session_state["badge_motor"] = badge
     st.session_state["output_data"] = result["output_data"]
     st.session_state["output_filename"] = result["output_filename"]
     st.session_state["processing_complete"] = True
@@ -643,6 +626,9 @@ def run_cleaning_process(df_file, file_meta=None, ai_config=None):
         "unique_rows": result["unique_rows"],
         "duplicates": result["duplicates"],
         "process_duration": result["process_duration"],
+        "omitidas_analizadas": result.get("omitidas_analizadas", 0),
+        "omitidas_analizadas_aplicado": result.get(
+            "omitidas_analizadas_aplicado", False),
     })
     if ai_config and ai_config.get("brand"):
         st.session_state["ai_config"] = ai_config
@@ -655,7 +641,7 @@ def run_cleaning_process(df_file, file_meta=None, ai_config=None):
 # ======================================
 def main():
     st.set_page_config(
-        page_title="Clausifier",
+        page_title=APP_NOMBRE + " · Limpieza y Análisis de Noticias",
         page_icon="◈",
         layout="wide",
         initial_sidebar_state="collapsed"
@@ -681,10 +667,10 @@ def main():
             <div class="app-header">
                 <div class="app-header-icon">◈</div>
                 <div class="app-header-text">
-                    <div class="app-header-title">Clausifier</div>
+                    <div class="app-header-title">{APP_NOMBRE} — Limpieza y Análisis de Noticias</div>
                     <div class="app-header-version">{APP_VERSION}</div>
                 </div>
-                <div class="app-header-badge">Limpieza · Claude Haiku · PKL</div>
+                <div class="app-header-badge">Estructurador + IA</div>
             </div>""", unsafe_allow_html=True)
             col_cfg1, col_cfg2 = st.columns([4, 1])
             with col_cfg1:
@@ -697,28 +683,6 @@ def main():
                     refresh_config_cache()
                     st.success("Config recargada")
 
-            # Motor de clasificación (fuera de los formularios para que se
-            # actualice al instante). Aplica a las dos pestañas.
-            motor_sel = st.radio(
-                "Motor de clasificación",
-                MOTORES,
-                index=0,
-                horizontal=True,
-                key="motor_clasificacion",
-                help="Claude Haiku (por defecto) clasifica Tono y Subtema con un agente y un revisor "
-                     "de subtemas. OpenAI Luna es el motor anterior (gpt-6-luna + Jev). La limpieza, el "
-                     "Contexto analizado, las guardas deterministas y los PKL son los mismos.",
-            )
-            _haiku = motor_sel == MOTORES[0]
-            if _haiku and not st.secrets.get("ANTHROPIC_API_KEY"):
-                st.error("❌ Falta configurar ANTHROPIC_API_KEY en los Secrets de Streamlit: el motor "
-                         "Claude Haiku la necesita. El motor «OpenAI Luna» sigue disponible.")
-            if _haiku:
-                st.caption("Claude Haiku: un agente clasifica Tono y Subtema (y Tema si lo pides) y un "
-                           "revisor unifica los subtemas del mismo hecho. Se factura a la clave de Claude "
-                           "Platform (ANTHROPIC_API_KEY). Si subes PKL de tono o de tema, el PKL manda en "
-                           "ese eje y Haiku hace el Subtema. Lotes, paralelo y verificaciones no aplican.")
-
             tab_std, tab_custom = st.tabs(["📋 Dossier estándar", "🗂 Columnas personalizadas"])
             with tab_std:
                 # --- Perfil de cliente (multicliente): precarga marca, alias, voceros,
@@ -729,9 +693,13 @@ def main():
                 except Exception:
                     _perfiles = []
                 _opciones_perfil = [_SIN_PERFIL] + [p["nombre"] for p in _perfiles]
+                # v4.74: versión general: por defecto «Sin perfil» (marca,
+                # alias y voceros escritos a mano, con los ajustes generales).
+                _indice_perfil_defecto = 0
                 sel_perfil = st.selectbox(
                     "Perfil de cliente",
                     _opciones_perfil,
+                    index=_indice_perfil_defecto,
                     help="Carga la configuración guardada del cliente. Puedes editar los campos "
                          "abajo antes de procesar; también puedes guardar la configuración actual "
                          "como un perfil nuevo desde 'Ajustes finos'.",
@@ -749,15 +717,61 @@ def main():
                                 _perfil_actual.get("criterio") or list(CRITERIOS_TONO)[0])
                             st.session_state["criterio_custom_input"] = _perfil_actual.get("criterio_custom", "")
                             st.session_state["_perfil_taxonomia"] = _perfil_actual.get("taxonomia")
-                            st.session_state["_perfil_flags"] = _flags_de_perfil(_perfil_actual)
+                            st.session_state["_perfil_guia_subtema"] = _perfil_actual.get("guia_subtema") or GUIA_SUBTEMA_GENERAL
+                            st.session_state["_perfil_subtemas_fijos"] = _perfil_actual.get("subtemas_fijos") or []
+                            st.session_state["_perfil_clasificar_tipo_genero"] = bool(_perfil_actual.get("clasificar_tipo_genero"))
+                            st.session_state["_perfil_tono_distrito_positivo"] = bool(_perfil_actual.get("tono_distrito_positivo"))
+                            st.session_state["_perfil_agrupacion_estricta"] = True
+                            st.session_state["_perfil_tono_alertas_tempranas"] = bool(_perfil_actual.get("tono_alertas_tempranas"))
+                            st.session_state["_perfil_tono_labor_positiva"] = bool(_perfil_actual.get("tono_labor_positiva"))
+                            st.session_state["_perfil_formato_boletin"] = True
+                            _cm_p = _perfil_actual.get("hora_boletin_corte_manana")
+                            _ct_p = _perfil_actual.get("hora_boletin_corte_tarde")
+                            st.session_state["_perfil_hora_boletin_corte_manana"] = _cm_p if (isinstance(_cm_p, int) and not isinstance(_cm_p, bool)) else 13
+                            st.session_state["_perfil_hora_boletin_corte_tarde"] = _ct_p if (isinstance(_ct_p, int) and not isinstance(_ct_p, bool)) else 18
+                            st.session_state["_perfil_hora_boletin_manana"] = _perfil_actual.get("hora_boletin_manana") or "1:00 p.m."
+                            st.session_state["_perfil_hora_boletin_tarde"] = _perfil_actual.get("hora_boletin_tarde") or "6:00 p.m."
                             st.session_state["_perfil_aplicado"] = sel_perfil
                             st.rerun()
                         st.caption("📋 " + perfil_a_resumen(_perfil_actual))
                 else:
                     st.session_state["_perfil_aplicado"] = None
                     st.session_state["_perfil_taxonomia"] = None
-                    st.session_state["_perfil_flags"] = {}
+                    st.session_state["_perfil_guia_subtema"] = GUIA_SUBTEMA_GENERAL
+                    st.session_state["_perfil_subtemas_fijos"] = []
+                    st.session_state["_perfil_clasificar_tipo_genero"] = False
+                    st.session_state["_perfil_tono_distrito_positivo"] = False
+                    st.session_state["_perfil_agrupacion_estricta"] = True
+                    st.session_state["_perfil_tono_alertas_tempranas"] = False
+                    st.session_state["_perfil_tono_labor_positiva"] = False
+                    st.session_state["_perfil_formato_boletin"] = True
+                    st.session_state["_perfil_hora_boletin_corte_manana"] = 13
+                    st.session_state["_perfil_hora_boletin_corte_tarde"] = 18
+                    st.session_state["_perfil_hora_boletin_manana"] = "1:00 p.m."
+                    st.session_state["_perfil_hora_boletin_tarde"] = "6:00 p.m."
 
+                # Motor de clasificación (fuera del formulario para que oculte
+                # al instante los controles que solo aplican a OpenAI).
+                _MOTORES = ["Claude Haiku (agente + revisor)", "OpenAI Luna (gpt-6-luna)"]
+                motor_sel = st.radio(
+                    "Motor de clasificación",
+                    _MOTORES,
+                    index=0,
+                    horizontal=True,
+                    key="motor_clasificacion",
+                    help="Claude Haiku (por defecto) usa un agente "
+                         "con un revisor de subtemas. OpenAI Luna es el motor anterior (gpt-6-luna + Jev). La limpieza, el Contexto analizado y las "
+                         "guardas deterministas son las mismas.",
+                )
+                _haiku = motor_sel == _MOTORES[0]
+                if _haiku and not st.secrets.get("ANTHROPIC_API_KEY"):
+                    st.error("❌ Falta configurar ANTHROPIC_API_KEY en los Secrets de Streamlit: el motor "
+                             "Claude Haiku la necesita. El motor «OpenAI Luna» sigue disponible.")
+                if _haiku:
+                    st.caption("Claude Haiku: Tono, Subtema y Tema los clasifica un agente Claude Haiku "
+                               "con un revisor de consistencia. Se factura a la clave de Claude Platform "
+                               "(ANTHROPIC_API_KEY). Sin PKL; modelo, lotes, paralelo y "
+                               "verificaciones no aplican.")
                 with st.form("main_form"):
                     st.markdown('<div class="sec-label">1. Sube el archivo de entrada</div>', unsafe_allow_html=True)
                     st.markdown("""
@@ -774,7 +788,7 @@ def main():
                     f1 = st.file_uploader("Dossier", type=["xlsx"], label_visibility="collapsed", key="f1")
 
                     st.markdown('<div class="sec-label">2. Configuración de Análisis IA (Tono, Tema, Subtema)</div>', unsafe_allow_html=True)
-                    enable_ai = st.checkbox("Activar análisis reputacional con IA + Jev para el tono", value=True)
+                    enable_ai = st.checkbox("Activar análisis reputacional con IA (tono, subtema y tema)", value=True)
             
                     c_brand, c_alias = st.columns(2)
                     with c_brand:
@@ -819,9 +833,8 @@ def main():
                              "Gremio o sector (16 cubos)"],
                             index=0,
                             help="Por defecto los Temas se arman bottom-up en ESTE lote: se agrupan subtemas "
-                                 "afines y se nombra cada familia. Si subes un PKL de tema, se usan las clases "
-                                 "de ese modelo y no se inventan temas del lote. No hay memoria entre corridas. "
-                                 "Las listas fijas o un JSON solo se usan como nombres candidatos cuando no hay PKL.",
+                                 "afines y se nombra cada familia. No hay memoria entre corridas. "
+                                 "Las listas fijas o un JSON solo se usan como nombres candidatos.",
                         )
                         _OPCIONES_TEMA = [
                             "Solo Tono_IA + Subtema_IA (rápido)",
@@ -832,9 +845,7 @@ def main():
                             _OPCIONES_TEMA,
                             index=0,
                             help="El Tema agrupa los subtemas en cubos. La etapa de temas con IA es "
-                                 "secuencial y alarga el proceso. Si subes un PKL de tema más abajo, "
-                                 "la columna Tema_IA se genera automáticamente con las clases de tu "
-                                 "modelo (sin costo extra de IA), aunque elijas el modo rápido.",
+                                 "secuencial y alarga el proceso.",
                         )
                         prominencia_chk = st.checkbox(
                             "Agregar columna Prominencia (presencia de la marca)",
@@ -846,6 +857,10 @@ def main():
                                  "0-1 en el cuerpo. Referencial: 0-1 menciones. En radio/TV el "
                                  "título lo pone el auditor y no cuenta: solo vale el contenido.",
                         )
+                        # v4.74: la hoja de notas ya analizadas es de Defensoría;
+                        # la versión general no la usa.
+                        excluir_analizados_chk = False
+                        referencias_sheets_chk = False
 
                     with st.expander("⚙ Ajustes finos del análisis (opcional)"):
                         ca, cb, cc, cd = st.columns(4)
@@ -872,6 +887,7 @@ def main():
                         cubos_objetivo_input = st.slider("Cubos objetivo cuando la lista es automática", 8, 25, 16, 1)
                         votos_input = st.slider(
                             "Verificaciones del tono por grupo", 1, 3, 2, 1,
+                            disabled=_haiku,
                             help="Cada grupo se etiqueta N veces y gana la mayoría; un empate cae a Neutro. "
                                  "Con 2 se reducen los vaivenes de los modelos pequeños; con 3 sube el costo "
                                  "una vez más.")
@@ -918,42 +934,6 @@ def main():
                                  "el criterio seleccionado arriba.",
                         )
 
-                    st.markdown('<div class="sec-label">3. Modelos PKL del cliente (opcional)</div>', unsafe_allow_html=True)
-                    st.markdown(
-                        '<div class="pkl-hint">Puedes subir el PKL de tono, el de tema, ambos o ninguno. '
-                        "Si un eje no tiene PKL, se mantiene el análisis actual (IA). "
-                        "Funcionan con los dos motores: con Claude Haiku el PKL pone Tono/Tema y Haiku el Subtema. "
-                        "El subtema nunca se reemplaza por PKL. Si subes un PKL de tema, la columna "
-                        "Tema_IA se genera automáticamente con sus clases (verbatim), aunque hayas "
-                        "elegido el modo rápido.</div>",
-                        unsafe_allow_html=True,
-                    )
-                    st.markdown("""
-                    <div class="upload-zone">
-                        <div class="upload-zone-card">
-                            <div class="upload-zone-icon uz-pkl">◆</div>
-                            <div class="upload-zone-text">
-                                <div class="upload-zone-title">Clasificadores sklearn (joblib)</div>
-                                <div class="upload-zone-desc">Archivos .pkl con pipeline de texto (pasos tfidf + clf). No son obligatorios.</div>
-                            </div>
-                        </div>
-                    </div>""", unsafe_allow_html=True)
-                    c_tono, c_tema = st.columns(2)
-                    with c_tono:
-                        f_tono = st.file_uploader(
-                            "PKL de tono",
-                            type=["pkl"],
-                            key="pkl_tono",
-                            help="Modelo opcional de scikit-learn para tono. Si no se sube, se usa la IA existente.",
-                        )
-                    with c_tema:
-                        f_tema = st.file_uploader(
-                            "PKL de tema",
-                            type=["pkl"],
-                            key="pkl_tema",
-                            help="Modelo opcional de scikit-learn para tema. Si no se sube, se usa la IA existente.",
-                        )
-
                     if st.form_submit_button("▶ Iniciar Limpieza y Análisis", use_container_width=True, type="primary"):
                         if not f1:
                             st.error("Por favor, sube un archivo Excel.")
@@ -963,8 +943,15 @@ def main():
                             api_key = st.secrets.get("OPENAI_API_KEY")
                             typesafe_api_key = st.secrets.get("TYPESAFE_API_KEY")
                             if enable_ai and _haiku:
-                                if not _activar_clave_claude():
+                                _clave_claude = st.secrets.get("ANTHROPIC_API_KEY")
+                                if not _clave_claude:
+                                    st.error("❌ Falta configurar ANTHROPIC_API_KEY en los Secrets de Streamlit: "
+                                             "el motor Claude Haiku la necesita. Elige «OpenAI Luna» "
+                                             "para procesar sin ella.")
                                     st.stop()
+                                for _otra in ("CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_PROFILE"):
+                                    os.environ.pop(_otra, None)
+                                os.environ["ANTHROPIC_API_KEY"] = str(_clave_claude)
                             elif enable_ai and not api_key:
                                 st.error("❌ Falta configurar OPENAI_API_KEY en los Secrets de Streamlit: se usa para subtema y tema.")
                                 st.stop()
@@ -985,17 +972,6 @@ def main():
                                 except Exception as exc:
                                     st.error(f"La lista de Temas (JSON) no es válida: {exc}")
                                     st.stop()
-                            tone_bytes = f_tono.getvalue() if f_tono else None
-                            theme_bytes = f_tema.getvalue() if f_tema else None
-                            try:
-                                if tone_bytes:
-                                    load_sklearn_estimator(tone_bytes, "tono")
-                                if theme_bytes:
-                                    load_sklearn_estimator(theme_bytes, "tema")
-                            except PklClassifierError as exc:
-                                st.error(str(exc))
-                                st.stop()
-
                             st.session_state["pending_dossier"] = f1.getvalue()
                             st.session_state["pending_meta"] = {
                                 "name": f1.name,
@@ -1021,6 +997,18 @@ def main():
                                         "voceros": [v.strip() for v in re.split(r"[,;]", voceros_input) if v.strip()],
                                         "criterio": criterio,
                                         "criterio_custom": criterio_texto,
+                                        "guia_subtema": st.session_state.get("_perfil_guia_subtema") or "",
+                                        "subtemas_fijos": st.session_state.get("_perfil_subtemas_fijos") or [],
+                                        "clasificar_tipo_genero": bool(st.session_state.get("_perfil_clasificar_tipo_genero")),
+                                        "tono_distrito_positivo": bool(st.session_state.get("_perfil_tono_distrito_positivo")),
+                                        "agrupacion_estricta": bool(st.session_state.get("_perfil_agrupacion_estricta")),
+                                        "tono_alertas_tempranas": bool(st.session_state.get("_perfil_tono_alertas_tempranas")),
+                                        "tono_labor_positiva": bool(st.session_state.get("_perfil_tono_labor_positiva")),
+                                        "formato_boletin": bool(st.session_state.get("_perfil_formato_boletin")),
+                                        "hora_boletin_corte_manana": st.session_state.get("_perfil_hora_boletin_corte_manana", 13),
+                                        "hora_boletin_corte_tarde": st.session_state.get("_perfil_hora_boletin_corte_tarde", 18),
+                                        "hora_boletin_manana": st.session_state.get("_perfil_hora_boletin_manana") or "1:00 p.m.",
+                                        "hora_boletin_tarde": st.session_state.get("_perfil_hora_boletin_tarde") or "6:00 p.m.",
                                         "taxonomia": tax_cargada,
                                         "notas": "",
                                     })
@@ -1041,8 +1029,8 @@ def main():
                             else:
                                 tax_eff = tax_nombre
                             # v4.26: la prominencia también construye el config aunque no haya
-                            # IA ni PKL (es determinista, no necesita LLM).
-                            if enable_ai or tone_bytes or theme_bytes or prominencia_chk:
+                            # IA (es determinista, no necesita LLM).
+                            if enable_ai or prominencia_chk:
                                 st.session_state["pending_ai_config"] = {
                                     "enabled": bool(enable_ai),
                                     "brand": brand_input.strip(),
@@ -1050,12 +1038,26 @@ def main():
                                     "voceros": [v.strip() for v in re.split(r"[,;]", voceros_input) if v.strip()],
                                     "criterio": criterio,
                                     "criterio_texto": criterio_texto,
+                                    "guia_subtema": st.session_state.get("_perfil_guia_subtema") or "",
+                                    "subtemas_fijos": st.session_state.get("_perfil_subtemas_fijos") or [],
+                                    "clasificar_tipo_genero": bool(st.session_state.get("_perfil_clasificar_tipo_genero")),
+                                    "tono_distrito_positivo": bool(st.session_state.get("_perfil_tono_distrito_positivo")),
+                                    "agrupacion_estricta": bool(st.session_state.get("_perfil_agrupacion_estricta")),
+                                    "tono_alertas_tempranas": bool(st.session_state.get("_perfil_tono_alertas_tempranas")),
+                                    "tono_labor_positiva": bool(st.session_state.get("_perfil_tono_labor_positiva")),
+                                    "formato_boletin": bool(st.session_state.get("_perfil_formato_boletin")),
+                                    "hora_boletin_corte_manana": st.session_state.get("_perfil_hora_boletin_corte_manana", 13),
+                                    "hora_boletin_corte_tarde": st.session_state.get("_perfil_hora_boletin_corte_tarde", 18),
+                                    "hora_boletin_manana": st.session_state.get("_perfil_hora_boletin_manana") or "1:00 p.m.",
+                                    "hora_boletin_tarde": st.session_state.get("_perfil_hora_boletin_tarde") or "6:00 p.m.",
                                     "taxonomia": tax_eff,
                                     "cubos_objetivo": int(cubos_objetivo_input),
                                     "votos": int(votos_input),
                                     "incluir_tema": modo_tema_input == _OPCIONES_TEMA[1],
                                     "incluir_prominencia": bool(prominencia_chk),
                                     "memoria": bool(memoria_chk),
+                                    "excluir_analizados": bool(excluir_analizados_chk),
+                                    "referencias_sheets": bool(referencias_sheets_chk),
                                     "permitir_cubos_nuevos": True,
                                     "tam_lote": int(tam_lote_input),
                                     "workers": int(workers_input),
@@ -1065,21 +1067,11 @@ def main():
                                     "typesafe_api_key": typesafe_api_key if enable_ai else None,
                                     "typesafe_model": "jev-latest",
                                     "model": modelo_input,
-                                    "historial_dir": st.secrets.get("HISTORIAL_DIR"),
-                                    "tone_pkl_bytes": tone_bytes,
-                                    "theme_pkl_bytes": theme_bytes,
                                     "motor": "haiku" if _haiku else "openai",
-                                    # Flags de tono/subtema del perfil (sin TIPO/GÉNERO).
-                                    **(st.session_state.get("_perfil_flags") or {}),
-                                    "clasificar_tipo_genero": False,
+                                    "historial_dir": st.secrets.get("HISTORIAL_DIR"),
                                 }
                             else:
                                 st.session_state["pending_ai_config"] = None
-
-                            # v4.32: sin IA no hay Subtema_IA (ningún PKL lo genera).
-                            if not enable_ai and (tone_bytes or theme_bytes):
-                                st.warning("⚠️ IA desactivada: la columna Subtema_IA no se genera "
-                                           "(los PKL solo cubren tono y/o tema).")
                             st.session_state["procesando"] = True
                             st.session_state["processing_complete"] = False
                             st.rerun()
@@ -1122,7 +1114,7 @@ def main():
                                 help="Esta columna se usará como «Resumen - Aclaracion» (CuerpoEs) en el análisis.")
 
                 st.markdown('<div class="sec-label">2. Configuración del análisis (igual que la pestaña estándar)</div>', unsafe_allow_html=True)
-                enable_ai_c = st.checkbox("Activar análisis reputacional con IA + Jev para el tono",
+                enable_ai_c = st.checkbox("Activar análisis reputacional con IA (tono, subtema y tema)",
                                           value=True, key="enable_ai_custom")
                 cc_brand, cc_alias = st.columns(2)
                 with cc_brand:
@@ -1155,7 +1147,6 @@ def main():
                         index=0,
                         key="tax_nombre_custom",
                         help="Por defecto los Temas se arman bottom-up en ESTE lote. "
-                             "Si subes un PKL de tema, se usan las clases de ese modelo. "
                              "Las listas fijas o un JSON solo se usan como nombres candidatos.",
                     )
                 criterio_custom_c = st.text_area(
@@ -1176,6 +1167,8 @@ def main():
                     value=False, key="prominencia_custom",
                     help="Igual que en la pestaña estándar: métrica determinista que va al final, "
                          "después de «Contexto analizado».")
+                excluir_analizados_c = False
+                referencias_sheets_c = False
 
                 with st.expander("⚙ Ajustes finos del análisis (opcional)"):
                     cca, ccb, ccc, ccd = st.columns(4)
@@ -1218,20 +1211,6 @@ def main():
                              "$0.10 por 1M tokens de entrada; ideal para dossiers de alto volumen).",
                     )
 
-                st.markdown('<div class="sec-label">3. Modelos PKL del cliente (opcional)</div>', unsafe_allow_html=True)
-                st.caption("Igual que la pestaña estándar: puedes subir el PKL de tono, el de tema, "
-                           "ambos o ninguno. Si un eje no tiene PKL, se mantiene el análisis con IA. "
-                           "El subtema nunca se reemplaza por PKL.")
-                cc_pt, cc_pm = st.columns(2)
-                with cc_pt:
-                    f_tono_c = st.file_uploader(
-                        "PKL de tono", type=["pkl"], key="pkl_tono_custom",
-                        help="Modelo opcional de scikit-learn para tono. Si no se sube, se usa la IA existente.")
-                with cc_pm:
-                    f_tema_c = st.file_uploader(
-                        "PKL de tema", type=["pkl"], key="pkl_tema_custom",
-                        help="Modelo opcional de scikit-learn para tema. Si no se sube, se usa la IA existente.")
-
                 if st.button("▶ Iniciar Limpieza y Análisis", use_container_width=True,
                              type="primary", key="btn_custom"):
                     if f2 is None:
@@ -1245,28 +1224,15 @@ def main():
                     else:
                         api_key = st.secrets.get("OPENAI_API_KEY")
                         typesafe_api_key = st.secrets.get("TYPESAFE_API_KEY")
-                        if enable_ai_c and _haiku:
-                            if not _activar_clave_claude():
-                                st.stop()
-                        elif enable_ai_c and not api_key:
+                        if enable_ai_c and not api_key:
                             st.error("❌ Falta configurar OPENAI_API_KEY en los Secrets de Streamlit: se usa para subtema y tema.")
                             st.stop()
-                        if enable_ai_c and not _haiku and not typesafe_api_key:
+                        if enable_ai_c and not typesafe_api_key:
                             st.warning("Sin TYPESAFE_API_KEY la verificación de temas con Jev queda desactivada "
                                        "(es opcional); el tono, el subtema y el tema se generan igual con la API de OpenAI.")
                         try:
                             blob_custom = renombrar_columnas_xlsx(f2.getvalue(), sel_titulo, sel_cuerpo)
                         except ValueError as exc:
-                            st.error(str(exc))
-                            st.stop()
-                        tone_bytes_c = f_tono_c.getvalue() if f_tono_c else None
-                        theme_bytes_c = f_tema_c.getvalue() if f_tema_c else None
-                        try:
-                            if tone_bytes_c:
-                                load_sklearn_estimator(tone_bytes_c, "tono")
-                            if theme_bytes_c:
-                                load_sklearn_estimator(theme_bytes_c, "tema")
-                        except PklClassifierError as exc:
                             st.error(str(exc))
                             st.stop()
                         st.session_state["pending_dossier"] = blob_custom
@@ -1291,15 +1257,31 @@ def main():
                             brand_c, alias_c, voceros_c, criterio_c,
                             incluir_tema=(modo_tema_c == _OPCIONES_TEMA_C[1]),
                             incluir_prominencia=bool(prominencia_c),
+                            excluir_analizados=bool(excluir_analizados_c),
                             enable_ai=enable_ai_c,
                             api_key=api_key,
                             typesafe_api_key=typesafe_api_key,
                             historial_dir=st.secrets.get("HISTORIAL_DIR"),
-                            tone_pkl_bytes=tone_bytes_c,
-                            theme_pkl_bytes=theme_bytes_c,
-                            model="claude-haiku-5-5" if _haiku else modelo_sel_c,
-                            motor="haiku" if _haiku else "openai",
-                            criterio_texto=criterio_custom_c,
+                            # Sin opción de subir PKL (2026-11-02): el análisis es siempre IA.
+                            tone_pkl_bytes=None,
+                            theme_pkl_bytes=None,
+                            model=modelo_sel_c,
+                            # v1.26: si no se escribe un criterio aquí, se usa
+                            # el del perfil cargado (como guía y subtemas fijos).
+                            criterio_texto=(criterio_custom_c or "").strip()
+                            or (st.session_state.get("criterio_custom_input") or ""),
+                            guia_subtema=st.session_state.get("_perfil_guia_subtema") or "",
+                            subtemas_fijos=st.session_state.get("_perfil_subtemas_fijos") or [],
+                            clasificar_tipo_genero=bool(st.session_state.get("_perfil_clasificar_tipo_genero")),
+                            tono_distrito_positivo=bool(st.session_state.get("_perfil_tono_distrito_positivo")),
+                            agrupacion_estricta=bool(st.session_state.get("_perfil_agrupacion_estricta")),
+                            tono_alertas_tempranas=bool(st.session_state.get("_perfil_tono_alertas_tempranas")),
+                            tono_labor_positiva=bool(st.session_state.get("_perfil_tono_labor_positiva")),
+                            formato_boletin=bool(st.session_state.get("_perfil_formato_boletin")),
+                            hora_boletin_corte_manana=st.session_state.get("_perfil_hora_boletin_corte_manana", 13),
+                            hora_boletin_corte_tarde=st.session_state.get("_perfil_hora_boletin_corte_tarde", 18),
+                            hora_boletin_manana=st.session_state.get("_perfil_hora_boletin_manana") or "1:00 p.m.",
+                            hora_boletin_tarde=st.session_state.get("_perfil_hora_boletin_tarde") or "6:00 p.m.",
                             taxonomia=tax_eff_c,
                             cubos_objetivo=int(cubos_objetivo_c),
                             votos=int(votos_c),
@@ -1308,10 +1290,8 @@ def main():
                             umbral_titulo=int(umbral_titulo_c),
                             umbral_cuerpo=int(umbral_cuerpo_c),
                         )
-                        # v4.32: sin IA no hay Subtema_IA (ningún PKL lo genera).
-                        if not enable_ai_c and (tone_bytes_c or theme_bytes_c):
-                            st.warning("⚠️ IA desactivada: la columna Subtema_IA no se genera "
-                                       "(los PKL solo cubren tono y/o tema).")
+                        st.session_state["pending_ai_config"]["referencias_sheets"] = bool(
+                            referencias_sheets_c)
                         st.session_state["procesando"] = True
                         st.session_state["processing_complete"] = False
                         st.rerun()
@@ -1335,30 +1315,19 @@ def main():
                     "⚠️ Medios sin región asignada en Sheets (quedaron N/A): "
                     f"{', '.join(medios_sin_mapear)}."
                 )
+            if st.session_state.get("omitidas_analizadas_aplicado"):
+                st.info(
+                    "Notas ya analizadas omitidas según Google Sheets: "
+                    f"{st.session_state.get('omitidas_analizadas', 0)}. El archivo "
+                    "descargable contiene solo las notas nuevas."
+                )
 
             analisis = st.session_state.get("analisis") or {}
-            _origen = (analisis or {}).get("origen_columnas") or {}
-            if _origen:
-                _ia = {"haiku": "Haiku", "openai": "Luna", "pkl": "PKL", "omitido": "—"}
-                st.markdown(_badge_html("Motor: %s · Tono: %s · Tema: %s · Subtema: %s" % (
-                    _ia.get(analisis.get("motor"), "Luna"), _ia.get(_origen.get("tono"), "—"),
-                    _ia.get(_origen.get("tema"), "—"), _ia.get(_origen.get("subtema"), "—"))),
-                    unsafe_allow_html=True)
-            elif st.session_state.get("badge_motor"):
-                st.markdown(_badge_html(st.session_state["badge_motor"]), unsafe_allow_html=True)
-            if (analisis or {}).get("modo_taxonomia") == "pkl":
-                _n_pkl = analisis.get("temas_por_pkl") or 0
-                st.success(
-                    "◆ Tema: PKL del cliente activo — %d grupos clasificados con las clases "
-                    "del modelo (verbatim, sin reescritura)." % _n_pkl
-                )
             if analisis:
                 grupos = analisis.get("grupos")
                 cubos_nuevos = analisis.get("cubos_nuevos") or []
                 reglas = analisis.get("temas_por_regla")
                 por_llm = analisis.get("temas_por_llm")
-                por_pkl = analisis.get("temas_por_pkl")
-                tonos_pkl = analisis.get("tonos_por_pkl")
                 fallback = len(analisis.get("grupos_con_fallback") or [])
                 errores = analisis.get("errores_api") or []
                 guarda = len(analisis.get("tono_corregido_por_guarda") or [])
@@ -1366,25 +1335,15 @@ def main():
                 piezas = []
                 if grupos:
                     piezas.append(f"{grupos} hechos únicos agrupados")
-                if tonos_pkl:
-                    piezas.append(f"tono clasificado con PKL del cliente ({tonos_pkl} grupos)")
-                elif votos:
+                if votos:
                     piezas.append(f"tono verificado {votos}× por grupo")
                 if guarda:
                     piezas.append(f"guarda del tono: {guarda} Negativos sin señalamiento pasaron a Neutro")
-                if por_pkl:
-                    piezas.append(f"Tema por PKL del cliente: {por_pkl}")
-                elif reglas is not None:
+                if reglas is not None:
                     piezas.append(f"Tema por reglas: {reglas} · por IA: {por_llm or 0}")
                 uni_llm = analisis.get("subtemas_unificados_llm") or 0
                 if uni_llm:
                     piezas.append(f"subtemas unificados entre lotes por IA: {uni_llm}")
-                # v4.72: garantía final «una noticia = un subtema, un tono, un tema».
-                por_noticia = analisis.get("unificacion_por_noticia") or {}
-                if por_noticia.get("noticias_multifila"):
-                    piezas.append(
-                        f"{por_noticia['noticias_multifila']} noticias publicadas en varios medios "
-                        f"con un solo subtema, tono y tema")
                 if cubos_nuevos:
                     piezas.append("Cubos nuevos específicos: " + ", ".join(cubos_nuevos[:4]))
                 if fallback:
@@ -1404,16 +1363,12 @@ def main():
                 detalle_tax = analisis.get("taxonomia_detalle") or {}
                 if temas_gen:
                     modo = analisis.get("modo_taxonomia")
-                    if modo == "pkl":
-                        etiqueta = "clases del PKL del cliente"
-                    elif modo in ("lote", "automatica"):
+                    if modo in ("lote", "automatica"):
                         etiqueta = "de este lote"
                     else:
                         etiqueta = "nombres candidatos del cliente"
-                    titulo_exp = ("Temas del PKL (%d, %s)" % (len(temas_gen), etiqueta)
-                                  if modo == "pkl"
-                                  else "Temas de este lote (%d, %s)" % (len(temas_gen), etiqueta))
-                    with st.expander(titulo_exp, expanded=(modo in ("lote", "automatica", "pkl"))):
+                    titulo_exp = "Temas de este lote (%d, %s)" % (len(temas_gen), etiqueta)
+                    with st.expander(titulo_exp, expanded=(modo in ("lote", "automatica"))):
                         st.markdown(" · ".join("`%s`" % t for t in temas_gen))
                         if detalle_tax:
                             st.download_button(
@@ -1423,31 +1378,13 @@ def main():
                                     st.session_state.get("output_filename", "cliente")).replace(".xlsx", ""),
                                 mime="application/json",
                             )
-                            if modo == "pkl":
-                                st.caption("Son las clases del PKL de tema del cliente. No se inventan "
-                                           "nombres bottom-up ni se reescriben con el quality-gate del lote.")
-                            else:
-                                st.caption("Son los Temas armados bottom-up en esta corrida. El próximo lote "
-                                           "vuelve a agrupar sus propios subtemas; no se reutiliza el vocabulario.")
+                            st.caption("Son los Temas armados bottom-up en esta corrida. El próximo lote "
+                                       "vuelve a agrupar sus propios subtemas; no se reutiliza el vocabulario.")
         
             costo = (analisis or {}).get("costo_aprox_usd")
             uso_t = (analisis or {}).get("uso_tokens") or {}
             modelo_c = (analisis or {}).get("costo_modelo") or ""
-            _hk = (analisis or {}).get("haiku") or {}
-            if costo is not None and (analisis or {}).get("motor") == "haiku":
-                # Clausifier: en Haiku no hay tokens de OpenAI; el costo es el
-                # que reporta el agente (ResultMessage.total_cost_usd).
-                costo_txt = "$%.2f" % costo if costo >= 0.01 else "$%.4f" % costo
-                det_costo = ("%s · %d turnos del agente · %d filas clasificadas · revisor: %d "
-                             "grupos revisados, %d correcciones" % (
-                                 modelo_c, int(_hk.get("turnos") or 0), int(_hk.get("filas") or 0),
-                                 int(_hk.get("grupos_revision") or 0),
-                                 int(_hk.get("cambios_revision") or 0)))
-                _aud = _hk.get("auditor_tono") or {}
-                if _aud.get("candidatos"):
-                    det_costo += " · auditor de tono: %d filas revisadas, %d tonos corregidos" % (
-                        int(_aud.get("candidatos") or 0), len(_aud.get("cambios") or []))
-            elif costo is not None:
+            if costo is not None:
                 costo_txt = "$%.2f" % costo if costo >= 0.01 else "$%.4f" % costo
                 det_costo = "%s tokens de entrada / %s de salida · %d llamadas · %s" % (
                     f"{uso_t.get('input', 0):,}".replace(",", "."),
@@ -1462,26 +1399,10 @@ def main():
               <div class="metric-card m-unique"><div class="metric-val" style="color:var(--green)">{uniq}</div><div class="metric-lbl">Únicos</div></div>
               <div class="metric-card m-dup"><div class="metric-val" style="color:var(--amber)">{dups}</div><div class="metric-lbl">Duplicados</div></div>
               <div class="metric-card m-time"><div class="metric-val" style="color:var(--blue)">{dur}</div><div class="metric-lbl">Tiempo de Ejecución</div></div>
-              <div class="metric-card m-cost" title="{html.escape(det_costo)}"><div class="metric-val" style="color:var(--amber)">{costo_txt}</div><div class="metric-lbl">Costo IA aprox.</div></div>
+              <div class="metric-card m-cost" title="{det_costo}"><div class="metric-val" style="color:var(--amber)">{costo_txt}</div><div class="metric-lbl">Costo IA aprox.</div></div>
             </div>""", unsafe_allow_html=True)
             if det_costo:
                 st.caption("Costo estimado del análisis: " + det_costo + ".")
-
-            _render_resultados(st.session_state.get("vista") or [], analisis,
-                               st.session_state.get("tiempos") or [])
-
-            _dups = st.session_state.get("duplicadas") or []
-            with st.expander(f"Noticias duplicadas ({len(_dups)}) · ID duplicada → ID original",
-                             expanded=bool(_dups)):
-                if _dups:
-                    st.caption("Cada fila duplicada lleva en «ID duplicada» el ID de su original y hereda "
-                               "su tono y subtema. Regla: misma URL + misma mención (prensa, internet) o "
-                               "mismo medio + misma hora + misma mención (radio y TV).")
-                    st.dataframe(pd.DataFrame(_dups)[["ID duplicada", "ID original", "Título", "Medio",
-                                                      "Tipo de Medio", "Motivo", "Mención", "Fila salida"]],
-                                 hide_index=True, use_container_width=True)
-                else:
-                    st.caption("No hay noticias duplicadas en este archivo.")
         
             _historial = []
             try:
@@ -1500,6 +1421,10 @@ def main():
                         "Temas": len(h.get("temas") or h.get("taxonomia") or []),
                         "Archivo": h.get("archivo", "")} for h in _historial[:30]]),
                         hide_index=True, use_container_width=True)
+
+            _render_resultados(st.session_state.get("vista") or [],
+                               st.session_state.get("analisis") or {},
+                               st.session_state.get("tiempos") or [])
 
             c1, c2 = st.columns(2)
             c1.download_button(
@@ -1529,10 +1454,9 @@ def main():
     # El pie solo se muestra fuera del procesamiento.
     if not _procesando:
         st.markdown(
-            '<div class="footer">Estructuración y Limpieza · Johnathan Cortés ©</div>',
+            f'<div class="footer">{APP_NOMBRE} · Estructuración y Limpieza · Johnathan Cortés ©</div>',
             unsafe_allow_html=True
         )
-        st.markdown('<div class="credit">%s</div>' % html.escape(CREDITO), unsafe_allow_html=True)
 
 if __name__ == "__main__":
     main()

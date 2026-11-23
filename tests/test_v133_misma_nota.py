@@ -1,4 +1,4 @@
-"""Portado de Defensoría v1.33: la misma nota en impreso y web del mismo medio (caso real del
+"""v1.33: la misma nota en impreso y web del mismo medio (caso real del
 2026-11-22: Vanguardia / Vanguardia.com, IDs 62096722 y 62091032) lleva el
 mismo subtema, aunque cambien el titular y el arranque del texto."""
 import os, sys, types

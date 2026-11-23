@@ -57,16 +57,18 @@ def _defaults() -> dict:
         "criterio": list(CRITERIOS_TONO)[0],
         "criterio_custom": "",
         "taxonomia": None,
-        # Clausifier: flags de tono/subtema de los perfiles de Secretaría y
-        # Defensoría. `agrupacion_estricta` None = default del analizador.
-        # TIPO/GÉNERO y el formato boletín no se usan (se descartan).
         "guia_subtema": "",
         "subtemas_fijos": [],
+        "clasificar_tipo_genero": False,
         "tono_distrito_positivo": False,
-        "tono_solo_gestion": False,
+        "agrupacion_estricta": False,
         "tono_alertas_tempranas": False,
         "tono_labor_positiva": False,
-        "agrupacion_estricta": None,
+        "formato_boletin": False,
+        "hora_boletin_corte_manana": 13,
+        "hora_boletin_corte_tarde": 18,
+        "hora_boletin_manana": "1:00 p.m.",
+        "hora_boletin_tarde": "6:00 p.m.",
         "notas": "",
     }
 
@@ -91,12 +93,29 @@ def validar_perfil(data: dict) -> list:
                 not isinstance(r, dict) or not str(r.get("contiene") or "").strip()
                 or not str(r.get("subtema") or "").strip() for r in sf):
             errores.append("'subtemas_fijos' debe ser una lista de {contiene, subtema} con textos no vacíos")
-    for campo in ("tono_distrito_positivo", "tono_solo_gestion",
-                  "tono_alertas_tempranas", "tono_labor_positiva"):
-        if not isinstance(d[campo], bool):
-            errores.append("'%s' debe ser true/false" % campo)
-    if d["agrupacion_estricta"] is not None and not isinstance(d["agrupacion_estricta"], bool):
+    if not isinstance(d["clasificar_tipo_genero"], bool):
+        errores.append("'clasificar_tipo_genero' debe ser true/false")
+    if not isinstance(d["tono_distrito_positivo"], bool):
+        errores.append("'tono_distrito_positivo' debe ser true/false")
+    if not isinstance(d["agrupacion_estricta"], bool):
         errores.append("'agrupacion_estricta' debe ser true/false")
+    if not isinstance(d["tono_alertas_tempranas"], bool):
+        errores.append("'tono_alertas_tempranas' debe ser true/false")
+    if not isinstance(d["tono_labor_positiva"], bool):
+        errores.append("'tono_labor_positiva' debe ser true/false")
+    if not isinstance(d["formato_boletin"], bool):
+        errores.append("'formato_boletin' debe ser true/false")
+    _cm, _ct = d["hora_boletin_corte_manana"], d["hora_boletin_corte_tarde"]
+    _cm_ok = isinstance(_cm, int) and not isinstance(_cm, bool) and 0 <= _cm <= 23
+    _ct_ok = isinstance(_ct, int) and not isinstance(_ct, bool) and 0 <= _ct <= 23
+    if not _cm_ok:
+        errores.append("'hora_boletin_corte_manana' debe ser una hora entera 0-23")
+    if not _ct_ok:
+        errores.append("'hora_boletin_corte_tarde' debe ser una hora entera 0-23")
+    if _cm_ok and _ct_ok and _cm >= _ct:
+        errores.append("'hora_boletin_corte_manana' debe ser menor que 'hora_boletin_corte_tarde'")
+    if not isinstance(d["hora_boletin_manana"], str) or not isinstance(d["hora_boletin_tarde"], str):
+        errores.append("'hora_boletin_manana' y 'hora_boletin_tarde' deben ser textos como '4:00 p.m.'")
     tax = d["taxonomia"]
     if tax is not None:
         if not isinstance(tax, dict) or not isinstance(tax.get("temas"), list) \
@@ -124,11 +143,35 @@ def normalizar_perfil(data: dict) -> dict:
         if isinstance(r, dict) and str(r.get("contiene") or "").strip()
         and str(r.get("subtema") or "").strip()
     ]
-    for campo in ("tono_distrito_positivo", "tono_solo_gestion",
-                  "tono_alertas_tempranas", "tono_labor_positiva"):
-        d[campo] = bool(d[campo])
-    if d["agrupacion_estricta"] is not None:
-        d["agrupacion_estricta"] = bool(d["agrupacion_estricta"])
+    d["clasificar_tipo_genero"] = bool(d["clasificar_tipo_genero"])
+    d["tono_distrito_positivo"] = bool(d["tono_distrito_positivo"])
+    d["agrupacion_estricta"] = bool(d["agrupacion_estricta"])
+    d["tono_alertas_tempranas"] = bool(d["tono_alertas_tempranas"])
+    d["tono_labor_positiva"] = bool(d["tono_labor_positiva"])
+    d["formato_boletin"] = bool(d["formato_boletin"])
+    # v1.18/v1.14: compatibilidad con perfiles guardados con el modelo
+    # viejo de un solo corte (hora_boletin_corte/antes/despues): si el
+    # perfil no trae los campos nuevos, se mapean (corte_tarde=corte,
+    # tarde=antes, manana=despues, corte_manana=0 reproduce el modelo
+    # viejo exacto). Los JSON del repo ya traen los campos nuevos.
+    _crudo = data or {}
+    if "hora_boletin_corte_manana" not in _crudo and "hora_boletin_corte" in _crudo:
+        d["hora_boletin_corte_tarde"] = _crudo.get("hora_boletin_corte")
+        d["hora_boletin_corte_manana"] = 0
+    if "hora_boletin_tarde" not in _crudo and "hora_boletin_antes" in _crudo:
+        d["hora_boletin_tarde"] = _crudo.get("hora_boletin_antes")
+    if "hora_boletin_manana" not in _crudo and "hora_boletin_despues" in _crudo:
+        d["hora_boletin_manana"] = _crudo.get("hora_boletin_despues")
+    _cm = d["hora_boletin_corte_manana"]
+    d["hora_boletin_corte_manana"] = _cm if (isinstance(_cm, int)
+        and not isinstance(_cm, bool) and 0 <= _cm <= 23) else 13
+    _ct = d["hora_boletin_corte_tarde"]
+    d["hora_boletin_corte_tarde"] = _ct if (isinstance(_ct, int)
+        and not isinstance(_ct, bool) and 0 <= _ct <= 23) else 18
+    d["hora_boletin_manana"] = (str(d["hora_boletin_manana"] or "1:00 p.m.").strip()
+                                or "1:00 p.m.")
+    d["hora_boletin_tarde"] = (str(d["hora_boletin_tarde"] or "6:00 p.m.").strip()
+                               or "6:00 p.m.")
     d["notas"] = str(d["notas"] or "")
     if d["taxonomia"]:
         d["taxonomia"] = {

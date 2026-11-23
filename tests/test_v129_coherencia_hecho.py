@@ -198,6 +198,12 @@ class TestEjemplosCoherentes(unittest.TestCase):
     def test_regla_de_coherencia_en_prompt(self):
         self.assertIn('COHERENCIA', cat.REGLAS_SUBTEMA)
 
+    def test_perfil_trae_guia_de_subtema(self):
+        ruta = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            'clientes', 'defensoria_del_pueblo.json')
+        with open(ruta, encoding='utf-8') as f:
+            self.assertIn('iguales o muy parecidas', json.load(f)['guia_subtema'])
+
 
 if __name__ == '__main__':
     unittest.main()

@@ -88,10 +88,10 @@ class TestCopiaRealSeRepara(unittest.TestCase):
         derivado = A._subtema_desde_titulo(t)
         self.assertNotIn('?', derivado)
         self.assertNotIn('¿', derivado)
-        nuevo = A.reparar_subtema_determinista(s, t)
-        self.assertTrue(nuevo)
-        self.assertNotIn('?', nuevo)
-        self.assertNotIn('¿', nuevo)
+        # v4.67: lo que se derivaría del titular es un trozo verbatim (copia),
+        # así que la reparación sin modelo devuelve '' y el caso pasa a la
+        # reformulación LLM, que redacta el hecho sin recortar el titular.
+        self.assertEqual(A.reparar_subtema_determinista(s, t), '')
 
     def test_cita_parcial_en_etiqueta_nominal_se_descomilla(self):
         # v4.34 (regla del usuario: el subtema jamás lleva comillas): la cita
