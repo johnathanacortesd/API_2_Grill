@@ -80,6 +80,22 @@ AYUDA_COLUMNAS_IA = ("«Solo Tono»: el xlsx no lleva Subtema_IA (el subtema se 
                      "para que la misma noticia tenga el mismo tono). «Solo Subtema»: Claude "
                      "Haiku no analiza el tono (más rápido y más barato) y el xlsx no lleva Tono_IA.")
 
+# v4.74: una o varias marcas.
+AYUDA_MARCA = (
+    "Una marca, o varias separadas por punto y coma o coma (p. ej. «GSK; Sanofi»): cada una "
+    "recibe su propio tono, con sus propios alias y voceros. El tono de cada fila se mide hacia "
+    "la marca de su «Menciones - Empresa» / «Empresa rel.» (por nombre o alias); sin esa "
+    "columna, hacia la marca que nombra la nota (primero el titular). Si la fila trae una marca "
+    "que no escribiste (p. ej. un competidor), su tono se mide hacia esa marca. Con más de una "
+    "marca el xlsx agrega «Marca analizada».")
+AYUDA_ALIAS = (
+    "Variantes del nombre que deban atribuirse a la marca. Con varias marcas, indica de cuál es "
+    "cada uno: «GSK: GlaxoSmithKline, Glaxo; Sanofi: Sanofi Pasteur» (los que siguen a «Marca:» "
+    "son de esa marca). Sin indicarlo se asignan según con qué marca aparecen en el dossier.")
+AYUDA_VOCEROS = (
+    "Personas cuyo nombre se atribuye a la marca para el tono. Con varias marcas: «GSK: Ana "
+    "Gómez; Sanofi: Luis Díaz»; sin indicarlo se asignan según con qué marca aparecen.")
+
 # Ajustes generales (los de Defensoría sin lo propio de ese cliente).
 GUIA_SUBTEMA_GENERAL = (
     "El sub-tema indica de qué habla ESA nota, con precisión: el asunto o hecho concreto en "
@@ -853,15 +869,15 @@ def main():
                     with c_brand:
                         brand_input = st.text_input(
                             "Marca o Cliente Principal*",
-                            placeholder="Ej: Universidad de Antioquia, Ecopetrol, Bancolombia",
-                            help="El tono se mide sobre esta marca, sus voceros y sus alias. Si una fila trae otra marca en «Menciones - Empresa» o «Empresa rel.» (p. ej. un competidor), el tono de esa fila se mide hacia esa marca y el xlsx lo indica en «Marca analizada».",
+                            placeholder="Ej: Universidad de Antioquia  ·  varias: GSK; Sanofi; Moderna",
+                            help=AYUDA_MARCA,
                             key="brand_input",
                         )
                     with c_alias:
                         alias_input = st.text_input(
                             "Alias o términos relacionados (separados por coma o punto y coma)",
-                            placeholder="Ej: UdeA; Alma Mater; rectoría; la universidad",
-                            help="Variantes del nombre que deban atribuirse al cliente.",
+                            placeholder="Ej: UdeA; Alma Mater  ·  varias marcas: GSK: GlaxoSmithKline; Sanofi: Sanofi Pasteur",
+                            help=AYUDA_ALIAS,
                             key="alias_input",
                         )
 
@@ -882,7 +898,7 @@ def main():
                         voceros_input = st.text_input(
                             "Vocero(s) de la marca (opcional)",
                             placeholder="Ej: Gonzalo Moreno; el rector",
-                            help="Personas cuyo nombre se atribuye a la marca para el tono.",
+                            help=AYUDA_VOCEROS,
                             key="voceros_input",
                         )
                         tax_nombre = st.selectbox(
@@ -1183,15 +1199,15 @@ def main():
                 with cc_brand:
                     brand_c = st.text_input(
                         "Marca o Cliente Principal*",
-                        placeholder="Ej: Universidad de Antioquia, Ecopetrol, Bancolombia",
+                        placeholder="Ej: Universidad de Antioquia  ·  varias: GSK; Sanofi; Moderna",
                         key="brand_custom",
-                        help="El tono se mide sobre esta marca, sus voceros y sus alias. Si una fila trae otra marca en «Menciones - Empresa» o «Empresa rel.» (p. ej. un competidor), el tono de esa fila se mide hacia esa marca y el xlsx lo indica en «Marca analizada».")
+                        help=AYUDA_MARCA)
                 with cc_alias:
                     alias_c = st.text_input(
                         "Alias o términos relacionados (separados por coma o punto y coma)",
-                        placeholder="Ej: UdeA; Alma Mater; rectoría; la universidad",
+                        placeholder="Ej: UdeA; Alma Mater  ·  varias marcas: GSK: GlaxoSmithKline; Sanofi: Sanofi Pasteur",
                         key="alias_custom",
-                        help="Variantes del nombre que deban atribuirse al cliente.")
+                        help=AYUDA_ALIAS)
                 cc_crit, cc_voc = st.columns([3, 2])
                 with cc_crit:
                     criterio_c = st.radio("Criterio del tono", list(CRITERIOS_TONO.keys()), index=0,
@@ -1201,7 +1217,7 @@ def main():
                         "Vocero(s) de la marca (opcional)",
                         placeholder="Ej: Gonzalo Moreno; el rector",
                         key="voceros_custom",
-                        help="Personas cuyo nombre se atribuye a la marca para el tono.")
+                        help=AYUDA_VOCEROS)
                     tax_nombre_c = st.selectbox(
                         "Lista de Temas",
                         ["Automática según el archivo (recomendada)",

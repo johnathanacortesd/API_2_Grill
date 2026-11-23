@@ -1779,65 +1779,190 @@ def _contiene_termino(texto_nz: str, termino: str) -> bool:
     return bool(re.search(r"(?<![a-z0-9ñ])" + re.escape(termino) + r"(?![a-z0-9ñ])", texto_nz))
 
 
-def enfoque_de_fila(row: dict, brand: str, aliases, km: Optional[dict] = None) -> Optional[str]:
-    """Marca de la fila si es distinta del cliente; None si es el cliente o vacía."""
+def separar_marcas(texto) -> List[str]:
+    """«GSK; Sanofi», «GSK, Sanofi», «GSK / Sanofi» => ['GSK', 'Sanofi']."""
+    out, vistos = [], set()
+    for m in re.split(r"\s*(?:[;,|\n]|\s/\s)\s*", str(texto or "")):
+        m = m.strip()
+        if m and norm_key(m) not in vistos:
+            vistos.add(norm_key(m))
+            out.append(m)
+    return out
+
+
+def _texto_fila_nz(row: dict, km: dict) -> Tuple[str, str]:
     from analyzer_tono_tema import nz
-    km = km or KEY_MAP
+    tit = nz(row.get(km.get("titulo", "Título")) or "")
+    cue = nz(" ".join(str(row.get(k) or "") for k in (
+        km.get("resumen", "Resumen - Aclaracion"), "CuerpoEs", "Resumen - Aclaracion")))
+    return tit, cue
+
+
+def repartir_terminos(marcas: List[str], terminos, rows: List[dict], km: dict) -> Dict[str, List[str]]:
+    """Reparte alias (o voceros) entre las marcas escritas.
+
+    - Con una sola marca, todos son de ella.
+    - «Marca: término» los asigna a esa marca; los términos que siguen sin
+      prefijo van a la misma marca, hasta el próximo prefijo.
+    - Sin prefijo: a la marca con la que más aparece en las notas del dossier
+      (la marca de «Menciones - Empresa» o su nombre en el texto) y, si no hay
+      evidencia, a la marca con la que comparte una palabra. Si nada decide,
+      a la primera marca."""
+    from analyzer_tono_tema import nz
+    marcas = list(marcas or [])
+    out: Dict[str, List[str]] = {m: [] for m in marcas}
+    if not marcas:
+        return out
+    terminos = [str(t).strip() for t in (terminos or []) if str(t).strip()]
+    if len(marcas) == 1:
+        # Una sola marca: todo es de ella (sin el prefijo «Marca:» si lo trae).
+        for t in terminos:
+            cab, _sep, resto = t.partition(":")
+            out[marcas[0]].append(resto.strip() if _sep and nz(cab) == nz(marcas[0]) and resto.strip()
+                                  else t)
+        return out
+    por_nz = {nz(m): m for m in marcas}
+    actual = None
+    sin_asignar: List[str] = []
+    for t in terminos:
+        if ":" in t:
+            cab, resto = t.split(":", 1)
+            if nz(cab) in por_nz:
+                actual = por_nz[nz(cab)]
+                if resto.strip():
+                    out[actual].append(resto.strip())
+                continue
+        if actual:
+            out[actual].append(t)
+        else:
+            sin_asignar.append(t)
+    if not sin_asignar:
+        return out
+    # Evidencia del dossier: ¿con qué marca aparece cada término?
+    mk = km.get("menciones", "Menciones - Empresa")
+    marca_fila = []
+    for r in rows:
+        men = nz(r.get(mk) or "")
+        tit, cue = _texto_fila_nz(r, km)
+        dueñas = {m for m in marcas if (men and _contiene_termino(men, nz(m)))}
+        if not dueñas:
+            dueñas = {m for m in marcas if _contiene_termino(tit + " " + cue, nz(m))}
+        if len(dueñas) == 1:
+            marca_fila.append((next(iter(dueñas)), tit + " " + cue))
+    for t in sin_asignar:
+        tn = nz(t)
+        votos = {m: 0 for m in marcas}
+        for m, txt in marca_fila:
+            if tn and _contiene_termino(txt, tn):
+                votos[m] += 1
+        mejor = max(marcas, key=lambda m: (votos[m], -marcas.index(m)))
+        if votos[mejor] == 0 or list(votos.values()).count(votos[mejor]) > 1:
+            palabras = {w for w in tn.split() if len(w) >= 3}
+            comp = [m for m in marcas if palabras & {w for w in nz(m).split() if len(w) >= 3}]
+            mejor = comp[0] if len(comp) == 1 else (mejor if votos[mejor] else marcas[0])
+        out[mejor].append(t)
+    return out
+
+
+def marca_de_fila(row: dict, marcas: Dict[str, List[str]], km: dict) -> Tuple[str, bool]:
+    """(marca, es_escrita): marca escrita a la que pertenece la fila, o la
+    marca de su «Menciones - Empresa» si no es ninguna de las escritas."""
+    from analyzer_tono_tema import nz
+    nombres = list(marcas)
     crudo = str(row.get(km.get("menciones", "Menciones - Empresa")) or "").strip()
-    m = nz(crudo)
-    if not m or m in ("nan", "none", "n a", "na"):
-        return None
-    for t in _terminos_cliente(brand, aliases):
-        if _contiene_termino(m, t) or _contiene_termino(t, m):
-            return None
-    return crudo
+    men = nz(crudo)
+    if men in ("nan", "none", "n a", "na"):
+        men, crudo = "", ""
+    if men:
+        mejor = None
+        for m in nombres:
+            for t in _terminos_cliente(m, marcas[m]):
+                if _contiene_termino(men, t) or _contiene_termino(t, men):
+                    if mejor is None or len(t) > mejor[1]:
+                        mejor = (m, len(t))
+        if mejor:
+            return mejor[0], True
+        return crudo, False
+    tit, cue = _texto_fila_nz(row, km)
+    for txt in (tit, cue):
+        pos = []
+        for m in nombres:
+            for t in _terminos_cliente(m, marcas[m]):
+                mm = re.search(r"(?<![a-z0-9ñ])" + re.escape(t) + r"(?![a-z0-9ñ])", txt)
+                if mm:
+                    pos.append((mm.start(), nombres.index(m), m))
+        if pos:
+            return min(pos)[2], True
+    return nombres[0], True
+
+
+def enfoque_de_fila(row: dict, brand: str, aliases, km: Optional[dict] = None) -> Optional[str]:
+    """Marca de la fila si es distinta de las marcas escritas; None si es una
+    de ellas o viene vacía."""
+    km = km or KEY_MAP
+    marcas = separar_marcas(brand) or [brand]
+    rep = repartir_terminos(marcas, aliases, [row], km)
+    m, escrita = marca_de_fila(row, rep, km)
+    return None if escrita else m
 
 
 def enrich_con_enfoque_por_fila(rows: List[dict], km: dict, ai_config: dict, ai_extra: dict,
                                 tone_model=None, theme_model=None, progress: ProgressCb = None):
-    """Devuelve (rows, analisis). Sin filas de otras marcas es exactamente el
-    camino de siempre (una sola corrida hacia el cliente)."""
-    brand = ai_config["brand"]
+    """Devuelve (rows, analisis). Con una sola marca escrita y sin filas de
+    otras marcas es exactamente el camino de siempre (una sola corrida)."""
+    from analyzer_tono_tema import nz
+    marcas_txt = separar_marcas(ai_config.get("brand")) or [str(ai_config.get("brand") or "")]
     aliases = list(ai_config.get("aliases", []) or [])
-    grupos: Dict[Optional[str], List[dict]] = {}
+    voceros = list(ai_extra.get("voceros") or [])
+    rep_al = repartir_terminos(marcas_txt, aliases, rows, km)
+    rep_vo = repartir_terminos(marcas_txt, voceros, rows, km)
+    terms_fila = {m: rep_al[m] + rep_vo[m] for m in marcas_txt}
+    grupos: Dict[str, List[dict]] = {}
+    escrita: Dict[str, bool] = {}
     nombre: Dict[str, str] = {}
     for r in rows:
-        e = enfoque_de_fila(r, brand, aliases, km)
-        k = None
-        if e:
-            from analyzer_tono_tema import nz
-            k = nz(e)
-            nombre.setdefault(k, e)
+        m, es = marca_de_fila(r, terms_fila, km)
+        k = nz(m)
+        nombre.setdefault(k, m)
+        escrita[k] = escrita.get(k, False) or es
         grupos.setdefault(k, []).append(r)
 
-    def _correr(sub, marca, als, voceros, prog):
+    def _correr(sub, marca, als, vocs, prog):
         return enrich_rows_with_ai(
             rows=sub, km=km, brand=marca, aliases=als,
             api_key=ai_config.get("api_key") or "",
             model=ai_config.get("model", "gpt-6-luna"),
             progress_callback=prog, tone_model=tone_model, theme_model=theme_model,
-            extra=dict(ai_extra, brand=marca, aliases=als, voceros=voceros))
+            extra=dict(ai_extra, brand=marca, aliases=als, voceros=vocs))
 
-    if list(grupos) == [None] or not grupos:
-        out = _correr(rows, brand, aliases, ai_extra.get("voceros") or [], progress)
-        return out, ultimo_resumen()
-    if None not in grupos and len(grupos) == 1:
-        # Todo el dossier es de una sola marca escrita de otra forma
-        # («UNAL» / «Universidad Nacional de Colombia»): es el cliente.
-        unica = nombre[next(iter(grupos))]
-        out = _correr(rows, brand, aliases + [unica], ai_extra.get("voceros") or [], progress)
-        return out, ultimo_resumen()
+    if len(marcas_txt) == 1:
+        principal = marcas_txt[0]
+        ajenas = [k for k in grupos if not escrita[k]]
+        if not ajenas:
+            out = _correr(rows, principal, rep_al[principal], rep_vo[principal], progress)
+            return out, ultimo_resumen()
+        if len(grupos) == 1:
+            # Todo el dossier es de una sola marca escrita de otra forma
+            # («UNAL» / «Universidad Nacional de Colombia»): es el cliente.
+            unica = nombre[ajenas[0]]
+            out = _correr(rows, principal, rep_al[principal] + [unica], rep_vo[principal], progress)
+            return out, ultimo_resumen()
 
-    orden = ([None] if None in grupos else []) + sorted(
-        (k for k in grupos if k is not None), key=lambda k: -len(grupos[k]))
+    orden = [nz(m) for m in marcas_txt if nz(m) in grupos] + sorted(
+        (k for k in grupos if not escrita[k]), key=lambda k: -len(grupos[k]))
     salida: List[dict] = []
     analisis: dict = {}
-    marcas: Dict[str, dict] = {}
+    marcas_inf: Dict[str, dict] = {}
     para_revisar: List[dict] = []
     costo = 0.0
     for n, k in enumerate(orden, 1):
         sub = grupos[k]
-        marca = brand if k is None else nombre[k]
+        marca = nombre[k]
+        if escrita[k]:
+            marca = next(m for m in marcas_txt if nz(m) == k)
+            als, vocs = rep_al[marca], rep_vo[marca]
+        else:
+            als, vocs = [], []
         lo, hi = 70 + int(23 * (n - 1) / len(orden)), 70 + int(23 * n / len(orden))
 
         def _prog(pct, msg, _m=marca, _n=n, _lo=lo, _hi=hi, _f=len(sub)):
@@ -1846,19 +1971,18 @@ def enrich_con_enfoque_por_fila(rows: List[dict], km: dict, ai_config: dict, ai_
                           "Marca %d de %d · tono hacia «%s» (%d filas) · %s"
                           % (_n, len(orden), _m, _f, msg))
         try:
-            if k is None:
-                sub = _correr(sub, brand, aliases, ai_extra.get("voceros") or [], _prog)
-            else:
-                sub = _correr(sub, marca, [], [], _prog)
+            sub = _correr(sub, marca, als, vocs, _prog)
             res = ultimo_resumen()
-            if k is None or not analisis:
+            if not analisis:
                 analisis = dict(res)
             costo += float(res.get("costo_aprox_usd") or 0)
             para_revisar.extend(dict(x, marca=marca) for x in (res.get("para_revisar") or []))
-            marcas[marca] = {"filas": len(sub), "ok": True}
+            marcas_inf[marca] = {"filas": len(sub), "ok": True, "escrita": escrita[k],
+                                 "alias": als, "voceros": vocs}
         except Exception as exc:  # una marca que falla no tumba las demás
             logging.getLogger(__name__).exception("Falló el análisis hacia %s", marca)
-            marcas[marca] = {"filas": len(sub), "ok": False, "error": str(exc)[:300]}
+            marcas_inf[marca] = {"filas": len(sub), "ok": False, "escrita": escrita[k],
+                                 "error": str(exc)[:300]}
             for r in sub:
                 r.setdefault("Contexto analizado", "-")
                 r.setdefault("Tono_IA", "-")
@@ -1870,8 +1994,9 @@ def enrich_con_enfoque_por_fila(rows: List[dict], km: dict, ai_config: dict, ai_
                     "tono": "-", "subtema": "-", "detalle": str(exc)[:200], "marca": marca})
         for r in sub:
             r[COL_MARCA_ANALIZADA] = marca
+            r["_alias_marca_analizada"] = list(als)
         salida.extend(sub)
-    analisis["marcas_analizadas"] = marcas
+    analisis["marcas_analizadas"] = marcas_inf
     analisis["costo_aprox_usd"] = round(costo, 4)
     analisis["para_revisar"] = para_revisar
     return salida, analisis
@@ -2076,11 +2201,20 @@ def process_dossier(
         (ai_config or {}).get("incluir_prominencia", False))
     if _incluir_prominencia:
         emit_progress(progress, 89, "Calculando prominencia de marca…")
-        rows = aplicar_prominencia(
-            rows, KEY_MAP,
-            brand=_brand_prom,
-            aliases=(ai_config or {}).get("aliases", []),
-        )
+        if any(r.get(COL_MARCA_ANALIZADA) for r in rows):
+            # v4.74: varias marcas: la prominencia de cada fila es la de su marca.
+            _por_marca: Dict[str, List[dict]] = {}
+            for _r in rows:
+                _por_marca.setdefault(str(_r.get(COL_MARCA_ANALIZADA) or _brand_prom), []).append(_r)
+            for _m, _sub in _por_marca.items():
+                aplicar_prominencia(_sub, KEY_MAP, brand=_m,
+                                    aliases=_sub[0].get("_alias_marca_analizada") or [])
+        else:
+            rows = aplicar_prominencia(
+                rows, KEY_MAP,
+                brand=_brand_prom,
+                aliases=(ai_config or {}).get("aliases", []),
+            )
 
     # Orden editorial estable: primero por Título A–Z para revisar y agrupar
     # noticias iguales/similares en Excel. La clave ignora mayúsculas y tildes,
