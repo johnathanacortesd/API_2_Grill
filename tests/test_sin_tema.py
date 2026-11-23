@@ -43,8 +43,9 @@ class TestColumnasSinTema(unittest.TestCase):
         self.assertNotIn('Tema_IA', cols)
         # Orden: Tono_IA y Subtema_IA siguen justo después de Audiencia.
         self.assertLess(cols.index('Tono_IA'), cols.index('Subtema_IA'))
-        self.assertEqual(cols[-1], 'Audio')
-        self.assertEqual(cols[-2], 'Contexto analizado')
+        # v4.56/v4.57: «texto», «Audio», «Link Ext» y «Web Ext» cierran el xlsx.
+        self.assertEqual(cols[-4:], ['texto', 'Audio', 'Link Ext', 'Web Ext'])
+        self.assertEqual(cols[-5], 'Contexto analizado')
 
     def test_default_conserva_tema_ia(self):
         cols = output_columns_for_export(include_ai=True)

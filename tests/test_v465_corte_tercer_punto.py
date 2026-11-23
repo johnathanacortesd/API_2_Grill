@@ -1,3 +1,4 @@
+import os
 """v4.65 (decisión del usuario 2026-10-29): Contexto analizado y texto
 nunca traen la noticia entera: se recortan al tercer punto de oración.
 Y el crédito de foto SÍ cuenta como mención: la marca digitada para el
@@ -81,6 +82,12 @@ class TestCreditoCuentaYTextoCorto(unittest.TestCase):
                          "Titular solo")
 
 
+_DOSSIER_61636572 = ("/home/hatch/workspace/user/files/"
+                     "Dossier_comfenalco_20261029_2202.xlsx")
+
+
+@unittest.skipUnless(os.path.exists(_DOSSIER_61636572),
+                     "dossier real de Comfenalco solo disponible en el equipo original")
 class TestCasoReal61636572(unittest.TestCase):
     def test_fila_reportada_extracto_es_el_credito(self):
         import openpyxl

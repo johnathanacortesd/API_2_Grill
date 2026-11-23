@@ -125,10 +125,12 @@ class TestRecorteTituloSeResuelvePorAgrupacionYGuarda(unittest.TestCase):
         # canon por la guarda de sinónimos (ver
         # TestGuardaSinonimosMendoza), así que ninguna llega al Excel
         # con el recorte del titular.
-        self.assertEqual(A.validar(
+        # v4.67 cambió la regla: un trozo contiguo del titular con 3+
+        # palabras de contenido SIEMPRE es copia; ya no se espera [] aquí.
+        self.assertIn('copia_titular', A.validar(
             "Estado de salud de Yamid Amat", 'Neutro',
             ["Actualización sobre el estado de salud de Yamid Amat "
-             "en clínica"]), [])
+             "en clínica"]))
         self.assertEqual(A.validar(
             "Alerta por engaños a universitarias", 'Neutro',
             ["Alerta crítica en Barranquilla por red de engaños dirigida "

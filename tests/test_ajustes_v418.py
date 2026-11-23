@@ -76,7 +76,10 @@ class TestSubtemaDesdeTitulo(unittest.TestCase):
                          "Ascenso político de Estefanel Gutiérrez")
 
     def test_vacio(self):
-        self.assertTrue(_subtema_desde_titulo(""))
+        # v1.14/v1.18 (regla del usuario): «Hecho informativo» no es un subtema
+        # aceptado. Sin hecho, _subtema_desde_titulo devuelve '' y el respaldo
+        # garantizado es _subtema_especifico (texto propio de la nota).
+        self.assertEqual(_subtema_desde_titulo(""), "")
 
 
 class TestRepararSubtemasAjenos(unittest.TestCase):

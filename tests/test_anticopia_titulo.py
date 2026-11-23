@@ -49,13 +49,21 @@ class TestCasiIdentidad(unittest.TestCase):
                       az.validar(SUB, 'Neutro', [TIT]))
 
     def test_parcial_legitimo_no_es_copia(self):
+        # No es casi-identidad (el titular trae bastante más)...
         self.assertFalse(az._es_copia_casi_identica(
             "Estado de salud de Yamid Amat",
             "Actualización sobre el estado de salud de Yamid Amat en clínica"))
-        self.assertEqual(
-            az.validar("Estado de salud de Yamid Amat", 'Neutro',
-                       ["Actualización sobre el estado de salud de Yamid Amat en clínica"]),
-            [])
+        # v4.67: un trozo contiguo del titular con 3+ palabras de contenido
+        # SIEMPRE es copia (ver _subtema_trozo_verbatim): «Estado de salud de
+        # Yamid Amat» dentro de «Actualización sobre el estado de salud…» ya no
+        # es un solapamiento legítimo. La excepción de v4.21 sigue solo para
+        # la reformulación NO contigua (mismo contenido, otro orden).
+        self.assertIn('copia_titular', az.validar(
+            "Estado de salud de Yamid Amat", 'Neutro',
+            ["Actualización sobre el estado de salud de Yamid Amat en clínica"]))
+        self.assertEqual(az.validar(
+            "Desafíos de la criminología con IA", 'Neutro',
+            ["Criminología frente a la IA: los nuevos desafíos del sector"]), [])
 
     def test_parafrasis_no_es_copia(self):
         self.assertFalse(az._es_copia_casi_identica(

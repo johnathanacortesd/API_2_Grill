@@ -56,26 +56,38 @@ class TestCopiaRealSeRepara(unittest.TestCase):
 
     def test_titular_verbatim_se_repara_determinista(self):
         t = "¡Atención! Yamid Amat fue hospitalizado en Bogotá y permanece en UCI"
-        nuevo = A.reparar_subtema_determinista(t, t)
+        # v4.67: lo que se derivaría del titular es un trozo verbatim (copia),
+        # así que la reparación sin modelo devuelve '' y el caso pasa a la
+        # reformulación LLM, que redacta el hecho sin recortar el titular.
+        self.assertEqual(A.reparar_subtema_determinista(t, t), '')
+        # Con un titular corto sí hay reparación limpia sin modelo.
+        t2 = "¡Atención! Yamid Amat fue hospitalizado en Bogotá"
+        nuevo = A.reparar_subtema_determinista(t2, t2)
         self.assertTrue(nuevo)
         self.assertNotIn('¡', nuevo)
         self.assertLessEqual(len(nuevo.split()), 7)
-        self.assertEqual(duros(A.validar(nuevo, 'Neutro', [t])), [])
+        self.assertEqual(duros(A.validar(nuevo, 'Neutro', [t2])), [])
 
     def test_cita_como_etiqueta_se_repara(self):
         # Caso real del dossier Fundación Santa Fe.
         s = '"Septiembre era el momento perfecto"'
         t = ('Lina Tejeiro revela detalles del nacimiento de su hijo Gael: '
              '"Septiembre era el momento perfecto"')
-        nuevo = A.reparar_subtema_determinista(s, t)
-        self.assertTrue(nuevo)
-        self.assertNotIn('"', nuevo)
-        # El hecho está en el segmento previo a la cita, sin verbo inicial.
-        self.assertEqual(nuevo, "Detalles del nacimiento de su hijo Gael")
+        # La derivación sigue tomando el hecho previo a la cita, sin verbo
+        # inicial...
+        self.assertEqual(A._subtema_desde_titulo(t),
+                         "Detalles del nacimiento de su hijo Gael")
+        # v4.67: lo que se derivaría del titular es un trozo verbatim (copia),
+        # así que la reparación sin modelo devuelve '' y el caso pasa a la
+        # reformulación LLM, que redacta el hecho sin recortar el titular.
+        self.assertEqual(A.reparar_subtema_determinista(s, t), '')
 
     def test_pregunta_como_etiqueta_se_repara(self):
         s = "¿Cuántos años tiene Yamid Amat?"
         t = "¿Cuántos años tiene Yamid Amat? Inició en la radio a los 20"
+        derivado = A._subtema_desde_titulo(t)
+        self.assertNotIn('?', derivado)
+        self.assertNotIn('¿', derivado)
         nuevo = A.reparar_subtema_determinista(s, t)
         self.assertTrue(nuevo)
         self.assertNotIn('?', nuevo)
@@ -122,7 +134,7 @@ class TestSubtemaDesdeTitulo(unittest.TestCase):
     def test_dos_puntos_normal_toma_el_ultimo(self):
         # Sin frase destacada, el hecho sigue tras los dos puntos (v4.18).
         r = A._subtema_desde_titulo("Salud: el ministerio anunció nuevas medidas")
-        # v4.71 (Sec v1.34): un subtema nunca es «sujeto + verbo».
+        # v1.29: un subtema nunca es «sujeto + verbo» (regla del usuario).
         self.assertEqual(r, "Nuevas medidas")
 
     def test_mantiene_comportamiento_dos_puntos_normal(self):
@@ -138,9 +150,14 @@ class TestSubtemaDesdeTitulo(unittest.TestCase):
         self.assertNotIn('¿', r)
 
     def test_solo_preguntas(self):
-        # v4.68: _subtema_desde_titulo ya no devuelve el marcador; el
-        # específico con cuerpo lo da _subtema_especifico.
+        # v1.14/v1.18 (regla del usuario): «Hecho informativo» no es un subtema
+        # aceptado. Sin hecho, _subtema_desde_titulo devuelve '' y el respaldo
+        # garantizado es _subtema_especifico (texto propio de la nota).
         self.assertEqual(A._subtema_desde_titulo("¿Quién? ¿Cómo?"), "")
+        r = A._subtema_especifico("¿Quién? ¿Cómo?",
+                                  ["La Alcaldía abrió la convocatoria de becas para jóvenes."])
+        self.assertTrue(r)
+        self.assertNotEqual(r, "Hecho informativo")
 
     def test_recorta_verbo_inicial_tras_corte(self):
         r = A._subtema_desde_titulo(
@@ -148,8 +165,13 @@ class TestSubtemaDesdeTitulo(unittest.TestCase):
         self.assertFalse(r.split()[0].lower() in A._VERBO_INFO_SING)
 
     def test_vacio(self):
+        # v1.14/v1.18 (regla del usuario): «Hecho informativo» no es un subtema
+        # aceptado. Sin hecho, _subtema_desde_titulo devuelve '' y el respaldo
+        # garantizado es _subtema_especifico (texto propio de la nota).
         self.assertEqual(A._subtema_desde_titulo(""), "")
         self.assertEqual(A._subtema_desde_titulo(None), "")
+        self.assertTrue(A._subtema_especifico("", []))
+        self.assertNotEqual(A._subtema_especifico("", []), "Hecho informativo")
 
     def test_conserva_siglas(self):
         r = A._subtema_desde_titulo(
@@ -190,8 +212,10 @@ class TestIntegracionReparacion(unittest.TestCase):
                     reparados[f['grupo']] = nuevo
                     continue
             pendientes.append(f)
-        self.assertEqual([f['grupo'] for f in pendientes], [3])
-        self.assertEqual(set(reparados), {1, 2})
+        # v4.67: la cita (grupo 2) se deriva en un trozo verbatim del
+        # titular, que también es copia: va a la vuelta LLM con el vago.
+        self.assertEqual([f['grupo'] for f in pendientes], [2, 3])
+        self.assertEqual(set(reparados), {1})
         for g, nuevo in reparados.items():
             tit = [f['titulo'] for f in fallos if f['grupo'] == g][0]
             self.assertEqual(duros(A.validar(nuevo, 'Neutro', [tit])), [])
