@@ -71,7 +71,7 @@ El acceso a la interfaz de producción está resguardado mediante autenticación
   primera. Si la columna trae una marca que no se escribió (p. ej. un
   competidor), el tono de esa fila se mide hacia esa marca. Cada marca corre en
   una pasada aparte del motor; con una sola marca y sin filas de otras, es la
-  corrida de siempre. El xlsx agrega «Marca analizada» antes del tono cuando hay
+  corrida de siempre. El xlsx agrega «Marca analizada» antes de «FECHA INFORME» cuando hay
   más de una marca. Si en todo el dossier hay una sola marca escrita distinto
   («UNAL» / «Universidad Nacional de Colombia»), se toma como el cliente. Una
   marca que falla no tumba las demás: sus filas salen en «Para revisar».
