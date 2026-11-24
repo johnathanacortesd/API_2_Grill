@@ -33,8 +33,11 @@ class TestDetector(unittest.TestCase):
     def test_rotulos_buenos_no_se_marcan(self):
         for s in ('Licitación de la segunda línea del metro', 'Pico y placa festivo en Bogotá',
                   'Línea 137', 'Alertas Defensoría del Pueblo', 'Presupuesto de $42,7 billones',
-                  'Bogotá, mi Ciudad, mi Casa', 'Muerte de Antonio Navarro Wolff'):
+                  'Muerte de Antonio Navarro Wolff'):
             self.assertEqual(az._problemas_forma_subtema(s), [], s)
+        # v4.88 (regla del usuario): nunca comas, ni en nombres propios de
+        # programa; la coma decimal de una cifra sí («$42,7 billones»).
+        self.assertIn('puntuacion', az._problemas_forma_subtema('Bogotá, mi Ciudad, mi Casa'))
 
 
 class TestRespaldo(unittest.TestCase):

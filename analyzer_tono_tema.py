@@ -492,7 +492,7 @@ MODELO_DEFECTO = "gpt-6-luna"
 # v4.53: sello del analizador. El encabezado de la app lo muestra junto a
 # APP_VERSION; si el despliegue muestra un sello distinto (o "sin-sello"),
 # el contenedor NO corre este archivo aunque el encabezado diga otra versión.
-ANALYZER_BUILD = "v4.87-guardas-agrupacion"  # v4.87: guardas de agrupación por lugar/persona restauradas (v4.86: Luna con auditor y evaluador)
+ANALYZER_BUILD = "v4.88-forma-subtema"  # v4.88: reglas de forma del subtema restauradas (v4.87: guardas de agrupación)
 # v4.53: solo cambia el sello (la lógica del analizador no se toca en esta versión;
 # el cambio es de interfaz).
 JEV_URL_DEFECTO = "https://api.typesafe.ai/v1/systemone"
@@ -1253,6 +1253,13 @@ def _comas_de_nombre_propio(s: str) -> bool:
     return all(any(w[:1].isupper() for w in t.split()) for t in tramos[1:])
 
 
+# v4.88: guiones, rayas y viñetas al inicio del subtema.
+_INICIO_GUION = re.compile(r'^[\s\-\u2010-\u2015\u2212•·*_~=+>|/\\]+')
+# Coma que no es decimal («$42,7 billones» sí se permite: es parte de la cifra).
+_COMA_TEXTO = re.compile(r'(?<!\d),|,(?!\d)')
+_TOKEN_NUMERO = re.compile(r'^[(\[]?[\d][\d.,:%°ºª$#/\-]*[)\]]?$')
+
+
 def _problemas_forma_subtema(sub_tema: str) -> List[str]:
     """Problemas de forma que ningún subtema puede tener (v1.34)."""
     s = str(sub_tema or '').strip()
@@ -1260,8 +1267,14 @@ def _problemas_forma_subtema(sub_tema: str) -> List[str]:
     if not w:
         return []
     p = []
-    if _PUNTUACION_PAT.search(s) and not _comas_de_nombre_propio(s):
+    # v4.88 (regla del usuario): NUNCA comas, ni en nombres propios.
+    if _COMA_TEXTO.search(s) or (_PUNTUACION_PAT.search(s) and not _comas_de_nombre_propio(s)):
         p.append('puntuacion')
+    # v4.88: nunca empieza con número ni con guion o viñeta.
+    if _INICIO_GUION.match(s):
+        p.append('inicio_guion')
+    elif s[:1].isdigit():
+        p.append('inicio_numero')
     if nz(w[0].strip('"\'«»“”¡¿')) in _PRONOMBRE_INICIAL:
         p.append('inicio_pronombre')
     if len(w) >= 3 and any(_verbo_finito(t) for t in w[1:3]):
@@ -1279,12 +1292,17 @@ def _reparar_forma_subtema(sub_tema: str) -> str:
     s = str(sub_tema or '').strip()
     if not s:
         return ''
-    tramos = [t.strip(' "\'«»“”') for t in re.split(r'(?<!\d)[.,;:](?!\d)', s) if t.strip()]
+    # v4.88: comas siempre parten (también entre cifras) y se quita el guion inicial.
+    tramos = [_INICIO_GUION.sub('', t).strip(' "\'«»“”')
+              for t in re.split(r'(?<!\d),|,(?!\d)|(?<!\d)[.;:](?!\d)', s) if t.strip()]
     candidatos = []
     for tr in sorted(tramos, key=lambda x: -len(x.split())):
         w = tr.split()
+        # v4.71: también se quitan verbos iniciales («según informó este
+        # miércoles» -> sin hecho) y conectores como «según».
         while w and (nz(w[0]) in _PRONOMBRE_INICIAL or nz(w[0]) in _ART_INICIAL
-                     or nz(w[0]) in _PREP_INICIO_ETIQUETA):
+                     or nz(w[0]) in _PREP_INICIO_ETIQUETA or nz(w[0]) == 'segun'
+                     or _TOKEN_NUMERO.match(w[0]) or _empieza_con_verbo(w)):
             w = w[1:]
         for k in range(1, min(4, len(w))):
             if _verbo_finito(w[k]):
@@ -1295,7 +1313,9 @@ def _reparar_forma_subtema(sub_tema: str) -> str:
         if len(w) >= 2:
             c = ' '.join(w[:7]).strip(' .,')
             c = c[0].upper() + c[1:]
-            if not _problemas_forma_subtema(c) and nz(w[-1]) not in PREP_FIN:
+            if not _problemas_forma_subtema(c) and nz(w[-1]) not in PREP_FIN \
+                    and not _empieza_con_verbo(c.split()) \
+                    and not _es_subtema_sin_hecho(c):
                 candidatos.append(c)
     return candidatos[0] if candidatos else ''
 
@@ -1314,6 +1334,134 @@ def _es_nombre_de_tema(sub_tema: str) -> bool:
     if len(contenido) < 2:
         return False
     return all(t[:1].isupper() or t.isdigit() for t in contenido)
+
+
+_NO_VERBO_O_TILDE = {'domino', 'rococo', 'lando', 'yoyo', 'bebo'}
+
+
+def _preterito_acentuado(tok) -> bool:
+    t = str(tok or '').strip().strip('«»"\'¿¡.,;:()').lower()
+    return (len(t) >= 4 and t.endswith('ó') and t.isalpha()
+            and nz(t) not in _NO_VERBO_O_TILDE)
+
+
+_NOMBRES_PILA = {
+    'juliana', 'juan', 'maria', 'pedro', 'luis', 'ana', 'carlos', 'sofia',
+    'andres', 'camila', 'diego', 'laura', 'felipe', 'valentina', 'sebastian',
+    'daniela', 'alejandro', 'isabella', 'santiago', 'mariana', 'ricardo',
+    'paola', 'diana', 'jorge', 'natalia', 'mauricio', 'andrea', 'hector',
+    'martha', 'marta', 'oscar', 'ivan', 'gloria', 'wilson', 'adriana',
+    'nelson', 'liliana', 'edgar', 'beatriz', 'fabio', 'rocio', 'hernan',
+    'yolanda', 'german', 'clara', 'alvaro', 'gustavo', 'claudia', 'jose',
+    'miguel', 'francisco', 'javier', 'fernando', 'jaime', 'alberto',
+    'eduardo', 'manuel', 'antonio', 'sergio', 'gabriel', 'cesar', 'julian',
+    'catalina', 'carolina', 'alejandra', 'monica', 'patricia', 'sandra',
+    'angela', 'lina', 'luz', 'gina', 'viviana', 'lorena', 'marcela',
+    'ximena', 'tatiana', 'johana', 'paula', 'lucia', 'isabel', 'elena',
+    'william', 'jhon', 'john', 'david', 'daniel', 'camilo', 'mateo',
+    'nicolas', 'esteban', 'ivan', 'rafael', 'ramiro', 'rodrigo', 'enrique',
+}
+
+
+_PALABRAS_NO_NOMBRE = {
+    'según', 'segun', 'el', 'la', 'los', 'las', 'para', 'por', 'con', 'y', 'e', 'de', 'del',
+    'alcalde', 'mandatario', 'señor', 'senor', 'que', 'como', 'cuando', 'donde', 'pero',
+    'también', 'tambien', 'a', 'al', 'en', 'su', 'sus', 'este', 'esta', 'dijo', 'afirmó',
+}
+
+
+def _es_solo_persona(s: str) -> bool:
+    """«Ricardo Salazar», «Paola Cárdenas»: 2-4 palabras con mayúscula que
+    empiezan con un nombre de pila frecuente y no traen sustantivo común."""
+    ws = [w for w in re.findall(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+", str(s or ''))
+          if nz(w) not in CONECT]
+    return (2 <= len(ws) <= 4 and nz(ws[0]) in _NOMBRES_PILA
+            and all(w[0].isupper() for w in ws))
+
+
+_TIEMPO_SIN_HECHO = {
+    'fin', 'semana', 'semanas', 'ano', 'anos', 'mes', 'meses', 'dia', 'dias',
+    'hoy', 'ayer', 'manana', 'pasado', 'pasada', 'proximo', 'proxima',
+    'este', 'esta', 'noche', 'tarde', 'madrugada',
+}
+
+
+_PREP_CIRCUNSTANCIA = {'tras', 'durante', 'desde', 'hasta', 'este', 'esta',
+                       'antes', 'despues', 'luego', 'mientras'}
+
+
+_NOMINALIZA = {
+    'lanza': 'Lanzamiento', 'lanzan': 'Lanzamiento', 'lanzo': 'Lanzamiento',
+    'anuncia': 'Anuncio', 'anuncian': 'Anuncio', 'anuncio': 'Anuncio',
+    'presenta': 'Presentación', 'presentan': 'Presentación', 'presento': 'Presentación',
+    'entrega': 'Entrega', 'entregan': 'Entrega', 'entrego': 'Entrega',
+    'inaugura': 'Inauguración', 'inauguran': 'Inauguración', 'inauguro': 'Inauguración',
+    'firma': 'Firma', 'firman': 'Firma', 'firmo': 'Firma',
+    'abre': 'Apertura', 'abren': 'Apertura', 'abrio': 'Apertura',
+    'crea': 'Creación', 'crean': 'Creación', 'creo': 'Creación',
+    'aprueba': 'Aprobación', 'aprueban': 'Aprobación', 'aprobo': 'Aprobación',
+    'denuncia': 'Denuncia', 'denuncian': 'Denuncia', 'denuncio': 'Denuncia',
+    'critica': 'Críticas', 'critican': 'Críticas', 'critico': 'Críticas',
+    'rechaza': 'Rechazo', 'rechazan': 'Rechazo', 'rechazo': 'Rechazo',
+    'capturan': 'Captura', 'captura': 'Captura', 'capturo': 'Captura',
+    'conmemora': 'Conmemoración', 'conmemoran': 'Conmemoración',
+    'termina': 'Fin', 'terminan': 'Fin', 'finaliza': 'Fin', 'finalizan': 'Fin',
+    'inicia': 'Inicio', 'inician': 'Inicio', 'arranca': 'Inicio', 'arrancan': 'Inicio',
+    'amplia': 'Ampliación', 'amplian': 'Ampliación',
+    'suspende': 'Suspensión', 'suspenden': 'Suspensión',
+    'investiga': 'Investigación', 'investigan': 'Investigación',
+    'sanciona': 'Sanción', 'sancionan': 'Sanción',
+    'convoca': 'Convocatoria', 'convocan': 'Convocatoria',
+    'realiza': 'Realización', 'realizan': 'Realización',
+    'reconoce': 'Reconocimiento', 'reconocen': 'Reconocimiento',
+    'construye': 'Construcción', 'construyen': 'Construcción',
+    'implementa': 'Implementación', 'implementan': 'Implementación',
+}
+
+
+_COLA_ATRIBUCION = re.compile(
+    r',\s*(?:advierte|advierten|asegura|aseguran|dice|dicen|afirma|afirman|seg[uú]n|revela|'
+    r'revelan|alerta|alertan|indica|indican|reporta|reportan|explica|explican|se[ñn]ala|'
+    r'se[ñn]alan|denuncia|denuncian|confirma|confirman)\b[^,]*$', re.I)
+
+
+def _nominalizar_titular(t: str) -> str:
+    """«Sujeto + verbo + complemento» → «Sustantivo de + complemento».
+    Solo si el verbo está entre la 2ª y la 6ª palabra, el sujeto empieza
+    con mayúscula y el complemento tiene 2+ palabras; si no, ''."""
+    pals = t.split()
+    for k in range(1, min(6, len(pals) - 2)):
+        nom = _NOMINALIZA.get(nz(pals[k]))
+        if not nom or not pals[0][:1].isupper():
+            continue
+        if any(nz(w) in _NOMINALIZA for w in pals[:k]):
+            return ''
+        comp = ' '.join(pals[k + 1:]).strip(' .,;:')
+        # «a» personal y contracción: «conmemora a víctimas» → «de víctimas»,
+        # «rinde homenaje al alcalde» → «del alcalde».
+        comp = re.sub(r'^a\s+', '', comp, flags=re.I)
+        comp = re.sub(r'^al\s+', 'el ', comp, flags=re.I)
+        if len(comp.split()) < 2:
+            return ''
+        frase = '%s de %s' % (nom, comp)
+        frase = re.sub(r'^(\S+) de el\b', r'\1 del', frase)
+        pf = frase.split()
+        if len(pf) > MAX_PAL:
+            # 1) Cola circunstancial («tras un año», «durante la semana»):
+            # se quita si así cabe; el núcleo del hecho va al inicio.
+            for c in range(len(pf) - 1, 2, -1):
+                if nz(pf[c]) in _PREP_CIRCUNSTANCIA and 3 <= c <= MAX_PAL:
+                    pf = pf[:c]
+                    break
+            frase = ' '.join(pf)
+        if len(frase.split()) > MAX_PAL:
+            # 2) Sin artículo tras «de»: «Aprobación de la reforma
+            # pensional en segundo debate» (8) → «Aprobación de reforma
+            # pensional en segundo debate» (7).
+            frase = re.sub(r'^(\S+) (?:del|de (?:el|la|los|las|un|una)) ',
+                           r'\1 de ', frase)
+        return frase if len(frase.split()) <= MAX_PAL else ''
+    return ''
 
 
 def validar(sub_tema, tono, fuentes, min_pal=MIN_PAL, max_pal=MAX_PAL,
@@ -1344,7 +1492,8 @@ def validar(sub_tema, tono, fuentes, min_pal=MIN_PAL, max_pal=MAX_PAL,
         p.append('termina_preposicion')
     prim = nz(w[0])
     nexo2 = len(w) > 1 and nz(w[1]) in PREP_FIN
-    if prim in _VERBOS_IRREGULARES or (not nexo2 and (prim in VERBOS1 or (len(prim) > 4 and RE_VERBO.search(prim)))):
+    if prim in _VERBOS_IRREGULARES or _preterito_acentuado(w[0]) \
+            or (not nexo2 and (prim in VERBOS1 or (len(prim) > 4 and RE_VERBO.search(prim)))):
         p.append('verbo_inicial(%s)' % prim)
     if prim in _PREP_INICIO_ETIQUETA:
         p.append('preposicion_inicial')
@@ -1569,6 +1718,7 @@ def _es_solo_lugar_fecha(s: str, contenido) -> bool:
     toks_fecha = set(words(s))
     tiene_fecha = (bool(toks_fecha & _MESES_ANIO)
                    or bool(toks_fecha & _DIAS_SEMANA)
+                   or bool(toks_fecha & _TIEMPO_SIN_HECHO)
                    or bool(_RE_RANGO_FECHA.search(nz(s))))
     if not tiene_fecha:
         return False
@@ -1579,7 +1729,8 @@ def _es_solo_lugar_fecha(s: str, contenido) -> bool:
     resto = [w for w in re.findall(
         r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9]+", s)
         if nz(w) not in CONECT and not w.isdigit()
-        and nz(w) not in _MESES_ANIO and nz(w) not in _DIAS_SEMANA]
+        and nz(w) not in _MESES_ANIO and nz(w) not in _DIAS_SEMANA
+        and nz(w) not in _TIEMPO_SIN_HECHO]
     if not resto:
         return True
     return all((w[0].isupper()
@@ -1634,6 +1785,9 @@ def _es_subtema_sin_hecho(sub_tema: str) -> bool:
     # de nombres y el mes no se trataba como fecha, así que se colaba
     # como válido y llegaba al xlsx final.
     if _es_solo_lugar_fecha(s, contenido):
+        return True
+    # v4.71: solo el nombre de una persona («Ricardo Salazar»): sin hecho.
+    if _es_solo_persona(s):
         return True
     return False
 
@@ -3645,7 +3799,7 @@ def _empieza_con_verbo(pals) -> bool:
         return False
     prim = nz(pals[0])
     nexo2 = len(pals) > 1 and nz(pals[1]) in PREP_FIN
-    return bool(prim in _VERBOS_IRREGULARES or
+    return bool(prim in _VERBOS_IRREGULARES or _preterito_acentuado(pals[0]) or
                 (not nexo2 and (prim in VERBOS1 or
                                 (len(prim) > 4 and RE_VERBO.search(prim)))))
 
@@ -3700,7 +3854,7 @@ def _subtema_desde_titulo(titulo: str) -> str:
                 t = previos[0] if previos else ultimo
             elif len(segs) > 1 and _es_frase_destacada(ultimo, segs[0]):
                 t = segs[0]
-            elif _es_subtema_sin_hecho(ultimo):
+            elif _es_subtema_sin_hecho(ultimo) or _COLA_LLAMADO.match(ultimo):
                 # v4.63: la cola tras ':' es una llamada («conozca cuándo
                 # será») o una lista de nombres, no el hecho: el hecho
                 # está en el segmento previo, no en la invitación a leer.
@@ -3716,7 +3870,32 @@ def _subtema_desde_titulo(titulo: str) -> str:
     t = re.sub(r'^(as[ií]\s+fue\s+el|as[ií]\s+fue\s+la|esto\s+es\s+lo\s+que)\s+',
                '', t, flags=re.I).strip()
     t = re.sub(r'^(el|la|los|las|un|una)\s+', '', t, flags=re.I).strip()
+    _nom = _nominalizar_titular(t)
+    if _nom:
+        t = _nom
     pals = t.split()
+    if len(pals) > 7:
+        # v4.72: antes de recortar, se quitan las colas que no son el hecho:
+        # la atribución («…, advierte la Fundación Santa Fe») y la segunda
+        # oración coordinada («…baja 15 % y crece la lista de espera»: el
+        # hecho es la primera). Recortar a las últimas 7 palabras dejaba
+        # «Mama de la Fundación Santa Fe» o «Lista de espera».
+        t2 = _COLA_ATRIBUCION.sub('', t).strip(' ,.;')
+        p2 = t2.split()
+        if len(p2) > 7:
+            for m in re.finditer(r'\s(?:y|e)\s+(\w+)(?:\s+(\w+))?', t2):
+                if (_verbo_finito(m.group(1)) or (m.group(2) and _verbo_finito(m.group(2))
+                                                  and nz(m.group(1)) in _PRONOMBRE_INICIAL)) \
+                        and len(t2[:m.start()].split()) >= 3:
+                    p2 = t2[:m.start()].split()
+                    break
+        if len(p2) > 7:
+            # Cola «de/del + Nombre Propio» (la entidad que hace el hecho).
+            t3 = re.sub(r'\s+(?:de|del)\s+(?:la\s+|el\s+|los\s+|las\s+)?'
+                        r'(?:[A-ZÁÉÍÓÚÑ][\wáéíóúñü]+\s*){1,5}$', '', ' '.join(p2)).strip()
+            if 3 <= len(t3.split()) < len(p2):
+                p2 = t3.split()
+        pals = p2 if 3 <= len(p2) <= 7 else pals
     if len(pals) > 7:
         # Titular largo sin dos puntos: el asunto distintivo suele ir al
         # final («…el VIII Congreso Internacional de … Psicológica»).
@@ -3807,7 +3986,7 @@ def _subtema_especifico(titulo: str, textos=()) -> str:
     if cand and not _es_subtema_sin_hecho(cand):
         return cand
     for texto in (textos or []):
-        for oracion in re.split(r'(?<=[.!?…])\s+', sq(texto or '')):
+        for oracion in re.split(r'(?<=[.!?…])\s+', quitar_entradilla(sq(texto or ''))):
             oracion = oracion.strip(' .')
             if not oracion:
                 continue
@@ -4321,6 +4500,27 @@ def _subtema_envuelto_en_cita(s: str) -> bool:
     return bool(_CITA_ENVOLVENTE.match(str(s or '').strip()))
 
 
+def _recorte_tras_verbo(nuevo: str, titulo: str) -> bool:
+    """v4.88: True si `nuevo` es un trozo literal del titular que empieza
+    justo después de un pretérito con tilde que se le quitó («Inició en la
+    radio a los 20» -> «Radio a los 20»). Sigue siendo copia del titular
+    (regla v4.67): lo redacta la vuelta LLM de reparación."""
+    crudo = re.findall(r"[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9]+", str(titulo or ''))
+    b = [nz(w) for w in crudo]
+    a = nz(nuevo).split()
+    if not a or len(a) >= len(b):
+        return False
+    for k in range(1, len(b) - len(a) + 1):
+        if b[k:k + len(a)] != a:
+            continue
+        j = k - 1
+        while j >= 0 and (b[j] in _ART_INICIAL or b[j] in _PREP_INICIO_ETIQUETA):
+            j -= 1
+        if j >= 0 and _preterito_acentuado(crudo[j]):
+            return True
+    return False
+
+
 def reparar_subtema_determinista(sub_tema: str, titulo: str) -> str:
     """Repara sin LLM un subtema copiado del titular, cita o pregunta.
 
@@ -4360,6 +4560,12 @@ def reparar_subtema_determinista(sub_tema: str, titulo: str) -> str:
     # reformula»). En los demás casos (cita, pregunta) la derivación del
     # titular sí es la reparación aunque coincida con él.
     if identico and nz(nuevo) == nz(t):
+        return ''
+    # v4.88: las reglas de forma restauradas de v4.71 quitan el verbo
+    # inicial del recorte («Inició en la radio a los 20» -> «Radio a los
+    # 20»). Si lo que queda es un trozo literal del titular, sigue siendo
+    # copia (regla v4.67): lo redacta la vuelta LLM de reparación.
+    if _recorte_tras_verbo(nuevo, t):
         return ''
     pr = validar(nuevo, 'Neutro', [t])
     if [x for x in pr if not x.startswith('revisar_anclaje')]:
@@ -6015,7 +6221,8 @@ def sanear_subtemas_finales(rows, mapa, etiquetas, ajustes_subtema, km):
     palabras distintivas. Devuelve el dict de ajustes actualizado."""
     ajustes = dict(ajustes_subtema or {})
     duros = {'puntuacion', 'inicio_pronombre', 'clausula_verbal', 'copia_titular',
-             'verbo_inicial', 'preposicion_inicial', 'subtema_sin_hecho', 'caracter_marcador'}
+             'verbo_inicial', 'preposicion_inicial', 'subtema_sin_hecho', 'caracter_marcador',
+             'inicio_numero', 'inicio_guion'}
     por_grupo = defaultdict(list)
     for i, row in enumerate(rows):
         if not row.get('is_duplicate') and mapa.get(i) is not None:
@@ -6040,7 +6247,10 @@ def sanear_subtemas_finales(rows, mapa, etiquetas, ajustes_subtema, km):
             txt = _texto_fila(rows[i], km)
             candidatos = [grupo_lab] + frecuentes + [
                 _reparar_forma_subtema(actual), _subtema_especifico(tit, [txt])]
-            elegido = next((c for c in candidatos if c and not _malo(c, tit)), '')
+            # v4.71: el reemplazo también debe corresponder a ESTA fila
+            # (nombres propios presentes en su título/cuerpo).
+            elegido = next((c for c in candidatos if c and not _malo(c, tit)
+                            and _etiqueta_fiel_a_texto(c, tit, txt)), '')
             if not elegido:
                 elegido = _reparar_forma_subtema(actual) or \
                     ' '.join(_palabras_distintivas([txt, tit])).capitalize()
@@ -8022,6 +8232,106 @@ def _fragmentos_misma_nota(row: dict, km: dict) -> set:
     return {' '.join(w[i:i + k]) for i in range(max(0, len(w) - k + 1))}
 
 
+def _viola_forma_absoluta(s: str) -> bool:
+    """v4.88 (regla del usuario): un Subtema_IA nunca lleva comas (salvo la
+    coma decimal de una cifra: «$42,7 billones»), nunca
+    empieza con número, guion o viñeta, ni con verbo."""
+    s = str(s or '').strip()
+    w = s.split()
+    return (not w or bool(_COMA_TEXTO.search(s)) or bool(_INICIO_GUION.match(s)) or s[:1].isdigit()
+            or _empieza_con_verbo(w))
+
+
+def _limpiar_forma_absoluta(s: str) -> str:
+    """Arreglo mecánico sin inventar palabras: une las comas («Entrega de
+    becas, en Cali» -> «Entrega de becas en Cali») y quita guiones, cifras
+    y verbos del inicio («15 becas…» -> «Becas…»). '' si no queda una frase
+    de al menos 2 palabras."""
+    s = _INICIO_GUION.sub('', str(s or '')).strip()
+    s = re.sub(r'\s*(?:(?<!\d),|,(?!\d))\s*', ' ', s).strip(' .;:')
+    w = s.split()
+    while len(w) > 2 and (_TOKEN_NUMERO.match(w[0]) or _empieza_con_verbo(w)
+                          or nz(w[0]) in _ART_INICIAL or nz(w[0]) in _PREP_INICIO_ETIQUETA):
+        w = w[1:]
+        while w and _INICIO_GUION.match(w[0]):
+            w = w[1:]
+    if len(w) < 2 or _TOKEN_NUMERO.match(w[0]) or _empieza_con_verbo(w):
+        return ''
+    c = ' '.join(w)
+    return c[0].upper() + c[1:]
+
+
+def garantizar_forma_subtemas(rows: List[dict], km: dict, fijos=()) -> int:
+    """v4.88: garantía FINAL de forma sobre las filas que se exportan (regla
+    del usuario): ningún Subtema_IA lleva comas ni empieza con verbo, número
+    o guion. Se decide por RÓTULO (todas las filas con el mismo subtema
+    reciben el mismo arreglo, así no se parte una noticia): primero el
+    rótulo con las comas unidas y el inicio limpio, si no el reparado por
+    `_reparar_forma_subtema`; solo si ninguno sirve, un respaldo del titular
+    y el cuerpo de la primera fila. Los subtemas fijos del perfil no se
+    tocan. Devuelve cuántas filas cambiaron."""
+    fijos_n = {nz(f) for f in (fijos or []) if f}
+    por_rotulo: Dict[str, List[int]] = defaultdict(list)
+    for i, r in enumerate(rows):
+        lab = str(r.get('Subtema_IA') or '').strip()
+        if lab and lab != '-' and nz(lab) not in fijos_n and _viola_forma_absoluta(lab):
+            por_rotulo[lab].append(i)
+    cambios = 0
+    for lab, filas in por_rotulo.items():
+        nuevo = ''
+        for c in (_limpiar_forma_absoluta(lab), _reparar_forma_subtema(lab)):
+            if c and not _viola_forma_absoluta(c):
+                nuevo = c
+                break
+        if not nuevo:
+            r0 = rows[filas[0]]
+            tit = _titulo_fila(r0, km)
+            c = _subtema_especifico(tit, [_texto_fila(r0, km)])
+            c = c if c and not _viola_forma_absoluta(c) else _limpiar_forma_absoluta(c)
+            nuevo = c if c and not _viola_forma_absoluta(c) else ''
+        if not nuevo:
+            # Último recurso: el rótulo sin comas ni guiones aunque quede corto.
+            nuevo = re.sub(r'\s*(?:(?<!\d),|,(?!\d))\s*', ' ', _INICIO_GUION.sub('', lab)).strip()
+            nuevo = re.sub(r'^[\d.,:%°ºª$#/()\[\]\s-]+', '', nuevo).strip() or nuevo
+            nuevo = nuevo[:1].upper() + nuevo[1:]
+        for i in filas:
+            if rows[i].get('Subtema_IA') != nuevo:
+                rows[i]['Subtema_IA'] = nuevo
+                cambios += 1
+    return cambios
+
+
+def unificar_forma_subtemas(rows: List[dict]) -> int:
+    """Portado de Secretaría v1.44 (sin la regla del «en Bogotá», propia del
+    Distrito): último pase de forma sobre las filas volcadas. Un mismo
+    rótulo escrito con otras mayúsculas o tildes es el mismo subtema
+    («Alerta ambiental fase 1» / «Alerta ambiental Fase 1» salían como dos
+    subtemas en el informe). Gana la forma de una corrección manual, si la
+    hay, y si no la más repetida. Devuelve cuántas filas cambiaron."""
+    cambios = 0
+    vivas = [r for r in rows if not r.get('is_duplicate')
+             and str(r.get('Subtema_IA') or '').strip() not in ('', '-')]
+    formas: Dict[str, Counter] = defaultdict(Counter)
+    manual: Dict[str, str] = {}
+    for r in vivas:
+        sub = str(r.get('Subtema_IA') or '').strip()
+        k = nz(sub)
+        formas[k][sub] += 1
+        if r.get('_correccion_manual'):
+            manual.setdefault(k, sub)
+    for r in vivas:
+        sub = str(r.get('Subtema_IA') or '').strip()
+        k = nz(sub)
+        if len(formas[k]) < 2:
+            continue
+        ganador = manual.get(k) or max(formas[k].items(), key=lambda kv: (
+            kv[1], sum(1 for ch in kv[0] if ch.isupper()), -len(kv[0])))[0]
+        if sub != ganador:
+            r['Subtema_IA'] = ganador
+            cambios += 1
+    return cambios
+
+
 def unificar_misma_nota_final(rows: List[dict], km: dict, fijos=()) -> int:
     """Une el subtema de filas que son la MISMA nota por pasaje compartido:
     ≥ MIN_COMPARTIDOS_MISMO_MEDIO fragmentos de 6 palabras en común si son
@@ -9831,12 +10141,25 @@ def enrich_rows_with_ai(
     _fijos_fin = garantizar_subtemas_fijos_filas(rows, km, cfg.get('subtemas_fijos'), mapa=mapa)
     if _fijos_fin:
         _ULTIMO_RESUMEN['subtemas_fijos_garantia_final'] = _fijos_fin
+    # v4.88 (restaurado de v4.73, Secretaría v1.44): mismo rótulo con otras
+    # mayúsculas o tildes = un solo subtema.
+    _ULTIMO_RESUMEN.pop('subtemas_forma_unificada', None)
+    _formas = unificar_forma_subtemas(rows)
+    if _formas:
+        _ULTIMO_RESUMEN['subtemas_forma_unificada'] = _formas
     # v1.30: subtemas ya publicados en la hoja de notas analizadas (TÍTULO,
     # RESUMEN, TEMA): la MISMA noticia retoma el TEMA de la hoja.
     _refs = (extra or {}).get('referencias_sheets')
     if isinstance(_refs, list) and _refs:
         _ULTIMO_RESUMEN['referencias_sheets_leidas'] = len(_refs)
         _ULTIMO_RESUMEN['subtemas_de_la_hoja'] = anclar_subtemas_hoja(rows, km, _refs, mapa=mapa)
+
+    # v4.88 (regla del usuario): ningún subtema con comas ni empezando con
+    # verbo, número o guion. Último pase sobre lo que se exporta.
+    _ULTIMO_RESUMEN.pop('subtemas_forma_absoluta', None)
+    _abs = garantizar_forma_subtemas(rows, km, cfg.get('subtemas_fijos'))
+    if _abs:
+        _ULTIMO_RESUMEN['subtemas_forma_absoluta'] = _abs
 
     _etapa('Pase final por noticia')
     if haiku:

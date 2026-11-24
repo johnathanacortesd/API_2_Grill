@@ -42,6 +42,46 @@ El acceso a la interfaz de producción está resguardado mediante autenticación
 
 ## 🚀 Funcionalidades
 
+### Forma del subtema: vuelven las reglas de v4.71–v4.73 (v4.88)
+
+- Al portar el motor de Defensoría (v4.74) también se perdieron reglas de
+  forma del subtema. Se restauran:
+  - **Cola de llamado:** «…: lo que dijo Ricardo Salazar», «…: requisitos» o
+    «…: esto se sabe» no son el hecho; el subtema nunca es la persona citada
+    ni la cola de servicio («así fue…» sí se conserva).
+  - **Pretérito con tilde:** un subtema no empieza con «Informó», «Inició»,
+    «Conoció»…
+  - **Sin hecho:** solo una persona («Ricardo Salazar») o solo tiempo («Fin
+    de semana») no es subtema.
+  - **Nominalización:** «El Congreso aprobó la reforma pensional en segundo
+    debate» → «Aprobación de reforma pensional en segundo debate».
+  - **Titular largo:** sin la atribución («…, advierte la Fundación Santa
+    Fe») ni la segunda oración coordinada («…baja 15 % y crece la lista de
+    espera»: el hecho es la primera).
+  - **Mismas palabras, otra forma:** un rótulo con otras mayúsculas o tildes
+    es un solo subtema (gana la corrección manual o la forma más repetida).
+  - El reemplazo de un subtema mal formado debe nombrar lo que nombra la
+    fila (sus lugares y personas).
+- **Sin comas, ni empezar con verbo, número o guion** (regla del usuario):
+  - los dos motores lo rechazan al guardar y le explican el motivo al modelo
+    (Haiku: `problemas_subtema`; Luna: `validar` y la reparación), y los
+    prompts lo piden («Entrega de 300 viviendas», no «300 viviendas
+    entregadas»);
+  - una garantía final (`garantizar_forma_subtemas`) lo cumple sobre lo que
+    se exporta: une las comas («Entrega de becas, en Cali» → «Entrega de
+    becas en Cali») y quita guiones, cifras y verbos del inicio («15 becas…»
+    → «Becas…»), con el mismo arreglo para todas las filas del mismo
+    subtema;
+  - la coma decimal de una cifra sí vale («Presupuesto de $42,7 billones»);
+    los subtemas fijos del perfil no se tocan.
+- Se mantiene la regla de v4.67: si al quitar el verbo queda un trozo literal
+  del titular («Inició en la radio a los 20» → «Radio a los 20»), sigue
+  siendo copia y lo redacta el modelo.
+- Banco de pruebas, 10 semillas: filas con subtema correcto 97,7 % → 97,9 %
+  (normal) y 95,4 % → 95,6 % (estricta); con 30 % de rótulos malos del
+  modelo, 96,4 % → 97,1 % y 93,4 % → 94,1 %. Fusiones y noticias partidas
+  sin cambio.
+
 ### Agrupación: mismo molde en otro lugar ya no se une (v4.87)
 
 - Al portar el motor de Defensoría (v4.74) se perdieron las guardas de
