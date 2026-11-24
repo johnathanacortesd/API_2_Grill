@@ -345,7 +345,8 @@ MAX_FILAS_POR_DOSSIER = 1000
 # no perder datos propios de esa pestaña). Tema_IA no está en la lista
 # y por tanto no se exporta en este formato, aunque se haya calculado.
 BOLETIN_COLUMNAS = [
-    "ID Noticia", "Fecha", "Medio", "Región", "Tipo de Medio",
+    # v4.78 (Grill): «Hora» del dossier de origen, justo después de Fecha.
+    "ID Noticia", "Fecha", "Hora", "Medio", "Región", "Tipo de Medio",
     "Sección - Programa", "Título", "Duración - Nro. Caracteres",
     "CPE", "Audiencia", "Tier", "Tono_IA", "Subtema_IA", "TIPO", "GÉNERO",
     "Link Nota", "texto", "Link (Streaming - Imagen)", "Link Ext",
@@ -720,6 +721,23 @@ def _assign_hyperlink_ref(result: dict, ref: str, target: str) -> None:
 # ======================================
 # Utilidades de Limpieza de Texto
 # ======================================
+_RX_FECHA_ISO = re.compile(r"^\s*\d{4}-\d{1,2}-\d{1,2}(?:[ T].*)?$")
+
+
+def _leer_fechas(serie) -> "pd.Series":
+    """v4.78: fechas del dossier. Día primero (dd/mm/aaaa, formato local),
+    salvo el formato ISO «aaaa-mm-dd», que se lee como tal: con dayfirst
+    pandas convertía «2026-09-01» en el 9 de enero. Las fechas que el Excel
+    ya guarda como fecha no cambian."""
+    serie = pd.Series(serie)
+    iso = serie.map(lambda v: isinstance(v, str) and bool(_RX_FECHA_ISO.match(v)))
+    out = pd.to_datetime(serie.where(~iso), dayfirst=True, errors="coerce", format="mixed")
+    if iso.any():
+        out = out.where(~iso, pd.to_datetime(serie.where(iso), yearfirst=True, dayfirst=False,
+                                              errors="coerce", format="mixed"))
+    return out.dt.normalize()
+
+
 def norm_key(text):
     if text is None:
         return ""
@@ -1371,7 +1389,7 @@ def normalize_dossier_dataframe(df, region_map, internet_map, progress: Progress
         )
 
     df["ID Noticia"] = df.get("NoticiaId", df.get("ID Noticia", pd.Series(dtype=str)))
-    df["Fecha"] = pd.to_datetime(df.get("Fecha", pd.Series(dtype=str)), dayfirst=True, errors="coerce").dt.normalize()
+    df["Fecha"] = _leer_fechas(df.get("Fecha", pd.Series(dtype=str)))
     df["Hora"] = df.get("Hora", pd.Series(dtype=str))
     df["Sección - Programa"] = df.get("Sección - Programa", pd.Series(dtype=str)).astype(str).apply(clean_text)
 

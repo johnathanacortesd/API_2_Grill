@@ -42,6 +42,14 @@ El acceso a la interfaz de producción está resguardado mediante autenticación
 
 ## 🚀 Funcionalidades
 
+### Columna Hora y fechas (v4.78)
+
+- El xlsx de resultado lleva la columna **Hora** del dossier de origen, justo
+  después de Fecha (el orden del boletín de Defensoría no la traía).
+- Fechas en texto «aaaa-mm-dd» se leen bien: antes, si toda la columna venía
+  así, se volteaban día y mes («2026-09-01» salía como 9 de enero). Las demás
+  (dd/mm/aaaa y fechas de Excel) no cambian.
+
 ### Modelos PKL del cliente con Claude Haiku (v4.77)
 
 - En las dos pestañas se pueden subir el **PKL de tono**, el **de tema**, ambos o
