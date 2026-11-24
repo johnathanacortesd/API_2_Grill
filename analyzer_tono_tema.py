@@ -492,7 +492,7 @@ MODELO_DEFECTO = "gpt-6-luna"
 # v4.53: sello del analizador. El encabezado de la app lo muestra junto a
 # APP_VERSION; si el despliegue muestra un sello distinto (o "sin-sello"),
 # el contenedor NO corre este archivo aunque el encabezado diga otra versión.
-ANALYZER_BUILD = "v4.76-marca-antes-fecha-informe"  # v4.76: «Marca analizada» antes de FECHA INFORME (v4.75: motor de Defensoría general, agilidad, solo tono/subtema y varias marcas)
+ANALYZER_BUILD = "v4.77-pkl-con-haiku"  # v4.77: PKL de tono/tema del cliente también con Claude Haiku; Tema_IA en el xlsx
 # v4.53: solo cambia el sello (la lógica del analizador no se toca en esta versión;
 # el cambio es de interfaz).
 JEV_URL_DEFECTO = "https://api.typesafe.ai/v1/systemone"
@@ -7923,7 +7923,7 @@ def _etiquetar_con_haiku(cfg: dict, grupos: List[dict], candidatos_tax: Sequence
         taxonomia=list(candidatos_tax or []) or None, progreso_cb=progreso,
         guia_subtema=cfg.get('guia_subtema') or '',
         # v4.74: «solo subtema»: el agente no analiza el tono (más rápido).
-        tono_pkl=cfg.get('columnas_ia') == 'subtema',
+        tono_pkl=cfg.get('columnas_ia') == 'subtema' or bool(cfg.get('_tono_pkl')),
         auditor_tono=False, paralelo=int(cfg.get('paralelo') or 0),
         rotulos_permitidos=[str((r or {}).get('subtema') or '')
                             for r in (cfg.get('subtemas_fijos') or []) if isinstance(r, dict)])
@@ -8794,8 +8794,11 @@ def enrich_rows_with_ai(
     if haiku:
         cfg['api_key'] = ''
         cfg['typesafe_api_key'] = ''
-        tone_model = theme_model = None
-        incluir_tema = bool(extra.get('incluir_tema', True))
+        # v4.77: los PKL del cliente SÍ se aplican con Haiku: el PKL de tono
+        # pone el Tono (Haiku no lo analiza), el de tema pone el Tema y Haiku
+        # hace el Subtema (que nunca lo pone un PKL).
+        incluir_tema = bool(extra.get('incluir_tema', True)) or theme_model is not None
+        cfg['_tono_pkl'] = tone_model is not None
 
     # --- contexto de marca (funcion existente, se conserva para la columna de auditoria) ---
     cfg['motor'] = 'haiku' if haiku else 'openai'
@@ -8889,7 +8892,8 @@ def enrich_rows_with_ai(
     temas_haiku: Dict[int, str] = {}
     if haiku:
         etiquetas, temas_haiku, info_haiku = _etiquetar_con_haiku(
-            cfg, grupos, candidatos_tax, incluir_tema, progreso, memoria=_mem)
+            cfg, grupos, candidatos_tax, incluir_tema and theme_model is None, progreso,
+            memoria=_mem)
     else:
         etiquetas = etiquetar_grupos(cfg, grupos, progreso, tam_lote=tam_lote, workers=workers,
                                      votos=votos, uso=uso)
@@ -9080,7 +9084,7 @@ def enrich_rows_with_ai(
     # Jev, ni PKL de tema). Ahorra las llamadas secuenciales de nombrar_familias_tema.
     temas: Dict[int, str] = {}
     origen: Dict[int, str] = {}
-    if incluir_tema and haiku:
+    if incluir_tema and haiku and theme_model is None:
         temas = dict(temas_haiku)
         origen = {gid: 'haiku' for gid in temas}
     elif incluir_tema and theme_model is None:
