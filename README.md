@@ -42,11 +42,14 @@ El acceso a la interfaz de producción está resguardado mediante autenticación
 
 ## 🚀 Funcionalidades
 
-### Columna Tamaño (v4.79)
+### Columna Tamaño (v4.79–v4.80)
 
-- La columna **Dimensioncm2** del dossier de origen sale en el xlsx como
-  **Tamaño**, justo antes de Audiencia, con el valor tal cual (en radio y TV la
-  duración ya va en «Duración - Nro. Caracteres»).
+- **Tamaño** va justo antes de Audiencia:
+  - Internet, Prensa y Revistas: la **Dimensioncm2** del origen.
+  - Radio y Televisión: el valor de **Duración - Nro. Caracteres** (que también
+    se queda en su columna).
+- Las duraciones «hh:mm:ss» (texto u hora de Excel) salen tal cual en Tamaño y
+  en Duración - Nro. Caracteres; antes «00:02:30» se volvía el número 230.
 
 ### Columna Hora y fechas (v4.78)
 

@@ -190,18 +190,27 @@ def test_leer_fechas():
     assert pd.isna(got[4]) and pd.isna(got[5]) and got[6] == sep1
 
 
-def test_tamano_es_dimensioncm2_antes_de_audiencia():
-    """v4.79: «Dimensioncm2» del origen sale como «Tamaño», justo antes de
-    Audiencia, con el valor tal cual (en radio/TV no se rellena con la
-    duración, que ya tiene su columna)."""
+def test_tamano_por_tipo_de_medio():
+    """v4.80: «Tamaño» va justo antes de Audiencia. Internet, Prensa y
+    Revistas: la Dimensioncm2 del origen. Radio y Televisión: el valor de
+    «Duración - Nro. Caracteres» (que también se queda en su columna). Las
+    duraciones «hh:mm:ss» salen tal cual, no como número."""
+    import datetime as _dt
     wb = Workbook()
     ws = wb.active
     ws.append(['ID Noticia', 'Título', 'Resumen - Aclaracion', 'Medio', 'Fecha', 'Tipo de Medio',
                'Dimensioncm2', 'Duración - Nro. Caracteres', 'Audiencia'])
-    ws.append(['101', 'La marca entrega un colegio', 'La marca entrega un colegio nuevo a la comunidad.',
-               'El Tiempo', '01/09/2026', 'Prensa', 120.5, '', 1000])
-    ws.append(['102', 'Concejo debate presupuesto', 'El Concejo y la marca debatieron el presupuesto.',
-               'Caracol Radio', '02/09/2026', 'Radio', '', '00:02:30', 5000])
+    filas = [
+        ('101', 'Prensa', 'El Tiempo', 120.5, 3400),
+        ('102', 'Radio', 'Caracol Radio', '', '00:02:30'),
+        ('103', 'Televisión', 'Noticias Caracol', '', _dt.time(0, 1, 45)),
+        ('104', 'Internet', 'Semana.com', '', 2800),
+        ('105', 'Radio', 'Blu Radio', '', 95),
+    ]
+    for i, (idn, tipo, medio, dim, dur) in enumerate(filas):
+        ws.append([idn, 'La marca anuncia plan %d en Bogotá' % i,
+                   'La marca anunció el plan número %d para la ciudad de Bogotá.' % i,
+                   medio, '0%d/09/2026' % (i + 1), tipo, dim, dur, 1000])
     buf = io.BytesIO()
     wb.save(buf)
     global _dossier
@@ -213,6 +222,20 @@ def test_tamano_es_dimensioncm2_antes_de_audiencia():
         _dossier = original
     assert 'Tamaño' in cab and 'Dimensioncm2' not in cab
     assert cab.index('Tamaño') == cab.index('Audiencia') - 1
-    tam = {str(d['ID Noticia']): d['Tamaño'] for d in datos}
-    assert float(tam['101']) == 120.5
-    assert tam['102'] in (None, '', '-')
+    d = {str(x['ID Noticia']): x for x in datos}
+    k = 'Duración - Nro. Caracteres'
+    assert float(d['101']['Tamaño']) == 120.5 and int(d['101'][k]) == 3400   # prensa
+    assert d['102']['Tamaño'] == '00:02:30' and d['102'][k] == '00:02:30'    # radio (texto)
+    assert d['103']['Tamaño'] == '00:01:45' and d['103'][k] == '00:01:45'    # TV (hora de Excel)
+    assert d['104']['Tamaño'] in (None, '', '-') and int(d['104'][k]) == 2800  # internet
+    assert int(d['105']['Tamaño']) == 95 and int(d['105'][k]) == 95          # radio (segundos)
+
+
+def test_duracion_texto():
+    import datetime as _dt
+    assert pipeline._es_duracion('00:02:30') and pipeline._es_duracion('2:30')
+    assert pipeline._es_duracion(_dt.time(0, 2, 30)) and pipeline._es_duracion(_dt.timedelta(seconds=150))
+    assert not pipeline._es_duracion('3400') and not pipeline._es_duracion(150)
+    assert not pipeline._es_duracion(_dt.datetime(2026, 9, 1))
+    assert pipeline._texto_duracion(_dt.timedelta(seconds=150)) == '00:02:30'
+    assert pipeline._texto_duracion(_dt.time(1, 2, 3)) == '01:02:03'

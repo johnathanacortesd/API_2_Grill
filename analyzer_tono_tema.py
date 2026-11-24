@@ -492,7 +492,7 @@ MODELO_DEFECTO = "gpt-6-luna"
 # v4.53: sello del analizador. El encabezado de la app lo muestra junto a
 # APP_VERSION; si el despliegue muestra un sello distinto (o "sin-sello"),
 # el contenedor NO corre este archivo aunque el encabezado diga otra versión.
-ANALYZER_BUILD = "v4.79-tamano"  # v4.79: columna Tamaño (Dimensioncm2) antes de Audiencia (v4.78: Hora y fechas)
+ANALYZER_BUILD = "v4.80-tamano-por-medio"  # v4.80: Tamaño = Dimensioncm2 (Internet, Prensa, Revistas) o la duración (Radio, TV); duraciones hh:mm:ss tal cual
 # v4.53: solo cambia el sello (la lógica del analizador no se toca en esta versión;
 # el cambio es de interfaz).
 JEV_URL_DEFECTO = "https://api.typesafe.ai/v1/systemone"

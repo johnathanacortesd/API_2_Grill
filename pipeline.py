@@ -830,6 +830,28 @@ def normalizar_tipo_medio(tipo_raw):
     return TIPO_MEDIO_MAP.get(t, str(tipo_raw).strip().title() or "Otro")
 
 
+# v4.80: columnas que pueden traer una duración (radio y TV).
+COLS_DURACION = {"Duración - Nro. Caracteres", "Tamaño", "Dimensión"}
+_RX_DURACION = re.compile(r"^\s*\d{1,3}:\d{2}(?::\d{2}(?:[.,]\d+)?)?\s*$")
+
+
+def _es_duracion(val) -> bool:
+    if isinstance(val, (datetime.time, datetime.timedelta)):
+        return True
+    if isinstance(val, datetime.datetime):
+        return False
+    return isinstance(val, str) and bool(_RX_DURACION.match(val))
+
+
+def _texto_duracion(val) -> str:
+    if isinstance(val, datetime.timedelta):
+        seg = int(round(val.total_seconds()))
+        return "%02d:%02d:%02d" % (seg // 3600, (seg % 3600) // 60, seg % 60)
+    if isinstance(val, datetime.time):
+        return val.strftime("%H:%M:%S")
+    return str(val).strip()
+
+
 def parse_numeric(val):
     if val is None:
         return None
@@ -1402,12 +1424,13 @@ def normalize_dossier_dataframe(df, region_map, internet_map, progress: Progress
 
     dim_col = "Dimensioncm2" if "Dimensioncm2" in df.columns else "Dimensión"
     df["Dimensión"] = df.get(dim_col, pd.Series(dtype=str))
-    # v4.79: «Tamaño» es la Dimensioncm2 del origen tal cual (en radio/TV la
-    # duración ya va en «Duración - Nro. Caracteres»).
-    df["Tamaño"] = df["Dimensión"].copy()
     df["Duración - Nro. Caracteres"] = df.get("Duración - Nro. Caracteres", pd.Series(dtype=str))
 
     df.loc[is_av, "Dimensión"] = df.loc[is_av, "Duración - Nro. Caracteres"]
+    # v4.80 (orden del usuario): «Tamaño» = Dimensioncm2 del origen para
+    # Internet, Prensa y Revistas; para Radio y Televisión, el valor de
+    # «Duración - Nro. Caracteres» (que también se queda en su columna).
+    df["Tamaño"] = df["Dimensión"].copy()
     # Sec v1.24 / Def v1.21 (orden del usuario): para aire, cable, AM, FM,
     # Televisión y Radio (todos caen en TIPOS_AV vía TIPO_MEDIO_MAP), el
     # valor de Duración - Nro. Caracteres TAMBIÉN queda en su propia
@@ -1671,6 +1694,10 @@ def _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_plain_hlink,
                             cv = str(val)
                 else:
                     cv = None
+            elif h in COLS_DURACION and _es_duracion(val):
+                # v4.80: una duración «00:02:30» (texto u hora de Excel) sale
+                # tal cual; antes parse_numeric la volvía 230.
+                cv = _texto_duracion(val)
             elif h in NUMERIC_COLS:
                 cv = parse_numeric(val)
             elif isinstance(val, dict) and "url" in val:
