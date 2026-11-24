@@ -148,3 +148,43 @@ def test_ambas_por_defecto():
     res, cab, datos = _correr(_cfg(formato_boletin=True))
     assert 'Tono_IA' in cab and 'Subtema_IA' in cab
     assert not any('SIN TONO' in p for _sp, p in PROMPTS)
+
+
+def test_hora_del_origen_sale_en_el_xlsx():
+    """v4.78: la columna «Hora» del dossier de origen sale en el xlsx, justo
+    después de Fecha, con el mismo valor."""
+    import datetime as _dt
+    wb = Workbook()
+    ws = wb.active
+    ws.append(['ID Noticia', 'Título', 'Resumen - Aclaracion', 'Medio', 'Fecha', 'Hora'])
+    ws.append(['101', 'La marca entrega un colegio', 'La marca entrega un colegio nuevo a la comunidad.',
+               'Prensa', '2026-09-01', '08:35:00'])
+    ws.append(['102', 'Concejo debate presupuesto', 'El Concejo y la marca debatieron el presupuesto.',
+               'Radio', '2026-09-02', _dt.time(17, 5)])
+    buf = io.BytesIO()
+    wb.save(buf)
+    global _dossier
+    original = _dossier
+    _dossier = lambda: buf.getvalue()  # noqa: E731
+    try:
+        res, cab, datos = _correr(_cfg(formato_boletin=True))
+    finally:
+        _dossier = original
+    assert cab.index('Hora') == cab.index('Fecha') + 1
+    horas = {str(d['ID Noticia']): str(d['Hora']) for d in datos}
+    assert horas['101'].startswith('08:35') and horas['102'].startswith('17:05')
+    # Fechas «aaaa-mm-dd» en texto: no se voltean día y mes.
+    fechas = {str(d['ID Noticia']): d['Fecha'] for d in datos}
+    assert (fechas['101'].month, fechas['101'].day) == (9, 1)
+    assert (fechas['102'].month, fechas['102'].day) == (9, 2)
+
+
+def test_leer_fechas():
+    import datetime as _dt
+    import pandas as pd
+    got = pipeline._leer_fechas(pd.Series(['2026-09-01', '01/09/2026', '13/02/2026',
+                                           _dt.datetime(2026, 9, 1, 10), None, 'x',
+                                           '2026-09-01 08:00:00'])).tolist()
+    sep1 = pd.Timestamp('2026-09-01')
+    assert got[:4] == [sep1, sep1, pd.Timestamp('2026-02-13'), sep1]
+    assert pd.isna(got[4]) and pd.isna(got[5]) and got[6] == sep1

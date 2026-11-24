@@ -492,7 +492,7 @@ MODELO_DEFECTO = "gpt-6-luna"
 # v4.53: sello del analizador. El encabezado de la app lo muestra junto a
 # APP_VERSION; si el despliegue muestra un sello distinto (o "sin-sello"),
 # el contenedor NO corre este archivo aunque el encabezado diga otra versión.
-ANALYZER_BUILD = "v4.77-pkl-con-haiku"  # v4.77: PKL de tono/tema del cliente también con Claude Haiku; Tema_IA en el xlsx
+ANALYZER_BUILD = "v4.78-hora"  # v4.78: columna Hora del origen en el xlsx; fechas aaaa-mm-dd bien leídas (v4.77: PKL con Haiku)
 # v4.53: solo cambia el sello (la lógica del analizador no se toca en esta versión;
 # el cambio es de interfaz).
 JEV_URL_DEFECTO = "https://api.typesafe.ai/v1/systemone"
