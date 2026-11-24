@@ -188,3 +188,31 @@ def test_leer_fechas():
     sep1 = pd.Timestamp('2026-09-01')
     assert got[:4] == [sep1, sep1, pd.Timestamp('2026-02-13'), sep1]
     assert pd.isna(got[4]) and pd.isna(got[5]) and got[6] == sep1
+
+
+def test_tamano_es_dimensioncm2_antes_de_audiencia():
+    """v4.79: «Dimensioncm2» del origen sale como «Tamaño», justo antes de
+    Audiencia, con el valor tal cual (en radio/TV no se rellena con la
+    duración, que ya tiene su columna)."""
+    wb = Workbook()
+    ws = wb.active
+    ws.append(['ID Noticia', 'Título', 'Resumen - Aclaracion', 'Medio', 'Fecha', 'Tipo de Medio',
+               'Dimensioncm2', 'Duración - Nro. Caracteres', 'Audiencia'])
+    ws.append(['101', 'La marca entrega un colegio', 'La marca entrega un colegio nuevo a la comunidad.',
+               'El Tiempo', '01/09/2026', 'Prensa', 120.5, '', 1000])
+    ws.append(['102', 'Concejo debate presupuesto', 'El Concejo y la marca debatieron el presupuesto.',
+               'Caracol Radio', '02/09/2026', 'Radio', '', '00:02:30', 5000])
+    buf = io.BytesIO()
+    wb.save(buf)
+    global _dossier
+    original = _dossier
+    _dossier = lambda: buf.getvalue()  # noqa: E731
+    try:
+        res, cab, datos = _correr(_cfg(formato_boletin=True))
+    finally:
+        _dossier = original
+    assert 'Tamaño' in cab and 'Dimensioncm2' not in cab
+    assert cab.index('Tamaño') == cab.index('Audiencia') - 1
+    tam = {str(d['ID Noticia']): d['Tamaño'] for d in datos}
+    assert float(tam['101']) == 120.5
+    assert tam['102'] in (None, '', '-')

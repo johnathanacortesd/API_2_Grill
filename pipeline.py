@@ -318,7 +318,7 @@ KEY_MAP = {
     "idduplicada": "ID duplicada",
 }
 
-THOUSANDS_COLS = {"Nro. Pagina", "Dimensión", "Duración - Nro. Caracteres", "Tier", "Audiencia"}
+THOUSANDS_COLS = {"Nro. Pagina", "Dimensión", "Tamaño", "Duración - Nro. Caracteres", "Tier", "Audiencia"}
 CURRENCY_COLS = {"CPE"}
 NUMERIC_COLS = {"ID Noticia", "ID duplicada"} | THOUSANDS_COLS | CURRENCY_COLS
 # Display "Link" as black, non-underlined text while keeping the hyperlink.
@@ -348,7 +348,8 @@ BOLETIN_COLUMNAS = [
     # v4.78 (Grill): «Hora» del dossier de origen, justo después de Fecha.
     "ID Noticia", "Fecha", "Hora", "Medio", "Región", "Tipo de Medio",
     "Sección - Programa", "Título", "Duración - Nro. Caracteres",
-    "CPE", "Audiencia", "Tier", "Tono_IA", "Subtema_IA", "TIPO", "GÉNERO",
+    # v4.79 (Grill): «Tamaño» = Dimensioncm2 del origen, justo antes de Audiencia.
+    "CPE", "Tamaño", "Audiencia", "Tier", "Tono_IA", "Subtema_IA", "TIPO", "GÉNERO",
     "Link Nota", "texto", "Link (Streaming - Imagen)", "Link Ext",
     # v4.74 (versión general): sin «HORA B» (hora del boletín de Defensoría).
     "FECHA INFORME",
@@ -1401,6 +1402,9 @@ def normalize_dossier_dataframe(df, region_map, internet_map, progress: Progress
 
     dim_col = "Dimensioncm2" if "Dimensioncm2" in df.columns else "Dimensión"
     df["Dimensión"] = df.get(dim_col, pd.Series(dtype=str))
+    # v4.79: «Tamaño» es la Dimensioncm2 del origen tal cual (en radio/TV la
+    # duración ya va en «Duración - Nro. Caracteres»).
+    df["Tamaño"] = df["Dimensión"].copy()
     df["Duración - Nro. Caracteres"] = df.get("Duración - Nro. Caracteres", pd.Series(dtype=str))
 
     df.loc[is_av, "Dimensión"] = df.loc[is_av, "Duración - Nro. Caracteres"]
