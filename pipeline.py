@@ -2141,14 +2141,9 @@ def process_dossier(
 
     _etapa("Lectura, limpieza y duplicados", siempre=True)
     has_ai = bool(ai_config and ai_config.get("enabled"))
-    # Motor de clasificación: "openai" (actual, por defecto) o "haiku"
-    # (agente Claude Haiku, motor_haiku.py). En modo haiku no se cargan PKL
-    # ni se usa Jev: el agente hace Tono/Subtema/Tema.
-    motor = str((ai_config or {}).get("motor") or "openai").strip().lower()
-    if motor == "haiku" and has_ai:
-        tone_model, theme_model = None, None
-    else:
-        tone_model, theme_model = _load_optional_pkl_models(ai_config)
+    # v4.77: los PKL del cliente también se usan con Claude Haiku (el PKL
+    # pone Tono y/o Tema; Haiku, el Subtema).
+    tone_model, theme_model = _load_optional_pkl_models(ai_config)
     has_pkl = tone_model is not None or theme_model is not None
     analisis = {}
     # v4.32: el forzado de incluir_tema por PKL de tema (_ai_extra_con_pkl)
@@ -2274,6 +2269,20 @@ def process_dossier(
             cols_to_export = list(_cols_boletin) + _extras
         else:
             cols_to_export = list(_cols_boletin)
+        # v4.77 (Grill): el orden del boletín no trae Tema_IA. Si se pidió el
+        # tema (o hay PKL de tema, que lo fuerza), va entre Tono_IA y
+        # Subtema_IA; sin IA no hay Subtema_IA (ningún PKL lo genera) y sin IA
+        # ni PKL de tono no hay Tono_IA.
+        if (has_ai or theme_model is not None) and ai_extra.get("incluir_tema") \
+                and "Tema_IA" not in cols_to_export:
+            _p = (cols_to_export.index("Subtema_IA") if "Subtema_IA" in cols_to_export
+                  else cols_to_export.index("Tono_IA") + 1 if "Tono_IA" in cols_to_export
+                  else len(cols_to_export))
+            cols_to_export = cols_to_export[:_p] + ["Tema_IA"] + cols_to_export[_p:]
+        if not has_ai:
+            cols_to_export = [c for c in cols_to_export if c != "Subtema_IA"]
+            if tone_model is None:
+                cols_to_export = [c for c in cols_to_export if c != "Tono_IA"]
 
     # v4.74: solo tono, solo subtema o ambas columnas del análisis.
     cols_to_export = quitar_columnas_ia(cols_to_export, columnas_ia_de(ai_config))

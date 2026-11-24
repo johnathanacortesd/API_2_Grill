@@ -56,6 +56,7 @@ _modulos_del_proyecto_al_dia()
 
 
 from catalogo_tono_tema import CRITERIOS_TONO
+from pkl_classifier import PklClassifierError, load_sklearn_estimator
 from perfil_cliente import cargar_perfil, guardar_perfil, listar_perfiles, perfil_a_resumen, slugify
 from pipeline import (process_dossier, leer_columnas_xlsx, sugerir_columna,
                       renombrar_columnas_xlsx, construir_ai_config_custom,
@@ -63,12 +64,52 @@ from pipeline import (process_dossier, leer_columnas_xlsx, sugerir_columna,
                       cargar_ids_analizados_desde_sheets, cargar_hoja_analizadas)
 
 # Versión visible de la app (se muestra en el encabezado). Actualizar en cada release.
-APP_VERSION = "v4.76"
+APP_VERSION = "v4.77"
 
 # v4.74: versión general del motor de Defensoría. No hay cliente fijo: el
 # análisis depende de la marca, los alias y los voceros que se escriban (o
 # del perfil que se elija). Sin perfil rigen los ajustes generales de abajo.
 APP_NOMBRE = "Clausifier"
+
+# v4.77: modelos PKL del cliente (opcionales).
+AYUDA_PKL = ("Puedes subir el PKL de tono, el de tema, ambos o ninguno. Si un eje no tiene PKL, "
+             "se mantiene el análisis con IA. Funcionan con los dos motores: con Claude Haiku el "
+             "PKL pone el Tono y/o el Tema y Haiku el Subtema (el subtema nunca lo pone un PKL). "
+             "Si subes un PKL de tema, la columna Tema_IA se genera con sus clases aunque hayas "
+             "elegido «Solo Tono_IA + Subtema_IA».")
+
+
+def _ui_pkl(sufijo: str = ""):
+    """Dos cargadores de PKL (tono y tema). Devuelve los archivos subidos."""
+    st.markdown('<div class="sec-label">3. Modelos PKL del cliente (opcional)</div>',
+                unsafe_allow_html=True)
+    st.caption(AYUDA_PKL)
+    c_tono, c_tema = st.columns(2)
+    with c_tono:
+        f_tono = st.file_uploader(
+            "PKL de tono", type=["pkl"], key="pkl_tono" + sufijo,
+            help="Modelo de scikit-learn (pipeline de texto, p. ej. tfidf + clf) para el tono.")
+    with c_tema:
+        f_tema = st.file_uploader(
+            "PKL de tema", type=["pkl"], key="pkl_tema" + sufijo,
+            help="Modelo de scikit-learn (pipeline de texto, p. ej. tfidf + clf) para el tema.")
+    return f_tono, f_tema
+
+
+def _leer_pkl(f_tono, f_tema):
+    """Bytes de los PKL subidos, validados. Detiene la app con el error si no sirven."""
+    tone_bytes = f_tono.getvalue() if f_tono else None
+    theme_bytes = f_tema.getvalue() if f_tema else None
+    try:
+        if tone_bytes:
+            load_sklearn_estimator(tone_bytes, "tono")
+        if theme_bytes:
+            load_sklearn_estimator(theme_bytes, "tema")
+    except PklClassifierError as exc:
+        st.error(str(exc))
+        st.stop()
+    return tone_bytes, theme_bytes
+
 
 # v4.74: qué columnas del análisis se entregan.
 OPCIONES_COLUMNAS_IA = {
@@ -842,7 +883,7 @@ def main():
                 if _haiku:
                     st.caption("Claude Haiku: Tono, Subtema y Tema los clasifica un agente Claude Haiku "
                                "con un revisor de consistencia. Se factura a la clave de Claude Platform "
-                               "(ANTHROPIC_API_KEY). Sin PKL; modelo, lotes, paralelo y "
+                               "(ANTHROPIC_API_KEY). Si subes PKL de tono o de tema, el PKL manda en ese eje y Haiku hace el Subtema; modelo, lotes, paralelo y "
                                "verificaciones no aplican.")
                 with st.form("main_form"):
                     st.markdown('<div class="sec-label">1. Sube el archivo de entrada</div>', unsafe_allow_html=True)
@@ -1009,6 +1050,8 @@ def main():
                                  "el criterio seleccionado arriba.",
                         )
 
+                    f_tono, f_tema = _ui_pkl()
+
                     if st.form_submit_button("▶ Iniciar Limpieza y Análisis", use_container_width=True, type="primary"):
                         if not f1:
                             st.error("Por favor, sube un archivo Excel.")
@@ -1047,6 +1090,7 @@ def main():
                                 except Exception as exc:
                                     st.error(f"La lista de Temas (JSON) no es válida: {exc}")
                                     st.stop()
+                            tone_bytes, theme_bytes = _leer_pkl(f_tono, f_tema)
                             st.session_state["pending_dossier"] = f1.getvalue()
                             st.session_state["pending_meta"] = {
                                 "name": f1.name,
@@ -1105,7 +1149,7 @@ def main():
                                 tax_eff = tax_nombre
                             # v4.26: la prominencia también construye el config aunque no haya
                             # IA (es determinista, no necesita LLM).
-                            if enable_ai or prominencia_chk:
+                            if enable_ai or tone_bytes or theme_bytes or prominencia_chk:
                                 st.session_state["pending_ai_config"] = {
                                     "enabled": bool(enable_ai),
                                     "brand": brand_input.strip(),
@@ -1131,6 +1175,8 @@ def main():
                                     "incluir_tema": modo_tema_input == _OPCIONES_TEMA[1],
                                     "incluir_prominencia": bool(prominencia_chk),
                                     "columnas_ia": OPCIONES_COLUMNAS_IA.get(columnas_ia_sel, "ambas"),
+                                    "tone_pkl_bytes": tone_bytes,
+                                    "theme_pkl_bytes": theme_bytes,
                                     "memoria": bool(memoria_chk),
                                     "excluir_analizados": bool(excluir_analizados_chk),
                                     "referencias_sheets": bool(referencias_sheets_chk),
@@ -1148,6 +1194,10 @@ def main():
                                 }
                             else:
                                 st.session_state["pending_ai_config"] = None
+                            # v4.32: sin IA no hay Subtema_IA (ningún PKL lo genera).
+                            if not enable_ai and (tone_bytes or theme_bytes):
+                                st.warning("⚠️ IA desactivada: la columna Subtema_IA no se genera "
+                                           "(los PKL solo cubren tono y/o tema).")
                             st.session_state["procesando"] = True
                             st.session_state["processing_complete"] = False
                             st.rerun()
@@ -1290,6 +1340,8 @@ def main():
                              "$0.10 por 1M tokens de entrada; ideal para dossiers de alto volumen).",
                     )
 
+                f_tono_c, f_tema_c = _ui_pkl("_custom")
+
                 if st.button("▶ Iniciar Limpieza y Análisis", use_container_width=True,
                              type="primary", key="btn_custom"):
                     if f2 is None:
@@ -1314,6 +1366,7 @@ def main():
                         except ValueError as exc:
                             st.error(str(exc))
                             st.stop()
+                        tone_bytes_c, theme_bytes_c = _leer_pkl(f_tono_c, f_tema_c)
                         st.session_state["pending_dossier"] = blob_custom
                         st.session_state["pending_meta"] = {
                             "name": f2.name,
@@ -1341,9 +1394,9 @@ def main():
                             api_key=api_key,
                             typesafe_api_key=typesafe_api_key,
                             historial_dir=st.secrets.get("HISTORIAL_DIR"),
-                            # Sin opción de subir PKL (2026-11-02): el análisis es siempre IA.
-                            tone_pkl_bytes=None,
-                            theme_pkl_bytes=None,
+                            # v4.77: PKL del cliente opcionales (tono y/o tema).
+                            tone_pkl_bytes=tone_bytes_c,
+                            theme_pkl_bytes=theme_bytes_c,
                             model=modelo_sel_c,
                             # v1.26: si no se escribe un criterio aquí, se usa
                             # el del perfil cargado (como guía y subtemas fijos).
@@ -1369,10 +1422,14 @@ def main():
                             umbral_titulo=int(umbral_titulo_c),
                             umbral_cuerpo=int(umbral_cuerpo_c),
                         )
-                        st.session_state["pending_ai_config"]["referencias_sheets"] = bool(
-                            referencias_sheets_c)
-                        st.session_state["pending_ai_config"]["columnas_ia"] = \
-                            OPCIONES_COLUMNAS_IA.get(columnas_ia_c, "ambas")
+                        if st.session_state["pending_ai_config"] is not None:
+                            st.session_state["pending_ai_config"]["referencias_sheets"] = bool(
+                                referencias_sheets_c)
+                            st.session_state["pending_ai_config"]["columnas_ia"] = \
+                                OPCIONES_COLUMNAS_IA.get(columnas_ia_c, "ambas")
+                        if not enable_ai_c and (tone_bytes_c or theme_bytes_c):
+                            st.warning("⚠️ IA desactivada: la columna Subtema_IA no se genera "
+                                       "(los PKL solo cubren tono y/o tema).")
                         st.session_state["procesando"] = True
                         st.session_state["processing_complete"] = False
                         st.rerun()

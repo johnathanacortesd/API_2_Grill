@@ -42,6 +42,19 @@ El acceso a la interfaz de producción está resguardado mediante autenticación
 
 ## 🚀 Funcionalidades
 
+### Modelos PKL del cliente con Claude Haiku (v4.77)
+
+- En las dos pestañas se pueden subir el **PKL de tono**, el **de tema**, ambos o
+  ninguno (scikit-learn guardado con joblib, p. ej. pipeline tfidf + clf). Si un
+  eje no tiene PKL, se mantiene el análisis con IA.
+- Funcionan con los dos motores. Con Claude Haiku: el PKL de tono pone el
+  Tono_IA (Haiku no analiza el tono ni corre el auditor de tono), el PKL de tema
+  pone el Tema_IA con sus clases tal cual y Haiku hace el Subtema_IA, que nunca
+  lo pone un PKL.
+- **Tema_IA en el xlsx:** el orden del boletín no traía Tema_IA; ahora va entre
+  Tono_IA y Subtema_IA cuando se pide el tema o se sube un PKL de tema. Sin IA
+  (solo PKL), el xlsx no lleva Subtema_IA.
+
 ### Agilidad, avance explicado, columnas y varias marcas (v4.75)
 
 - **Más rápido sin perder precisión:** la normalización de texto que el motor
@@ -97,7 +110,7 @@ que se escriban (o del perfil que se elija).
   analizadas y hora del boletín.
 - **Al actualizar** en Streamlit Cloud, la app vuelve a cargar todos sus
   módulos juntos (antes podían quedar mezclados la versión nueva y la vieja).
-- Como en Defensoría, el análisis es siempre con IA: no hay opción de subir PKL.
+- Desde v4.77 se pueden subir PKL de tono y de tema (ver abajo).
 
 ### Misma noticia = un subtema (v4.73, de Defensoría v1.32–v1.33)
 

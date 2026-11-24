@@ -212,14 +212,17 @@ class TestPipelineMotor(unittest.TestCase):
                 'incluir_tema': False, 'api_key': 'k', 'motor': motor,
                 'tone_pkl_bytes': b'x', 'theme_pkl_bytes': None}
 
-    def test_haiku_salta_pkl_y_pasa_motor(self):
+    def test_haiku_usa_pkl_y_pasa_motor(self):
+        # v4.77 (Grill): con Haiku los PKL del cliente también se aplican.
+        modelo = object()
+
         def enrich(rows, **kw):
             self.assertEqual(kw['extra']['motor'], 'haiku')
-            self.assertIsNone(kw['tone_model'])
+            self.assertIs(kw['tone_model'], modelo)
             for r in rows:
                 r.update(Tono_IA='Neutro', Subtema_IA='x', Tema_IA='')
             return rows
-        with patch.object(pipeline, '_load_optional_pkl_models', side_effect=AssertionError('PKL no')), \
+        with patch.object(pipeline, '_load_optional_pkl_models', return_value=(modelo, None)), \
              patch.object(pipeline, 'enrich_rows_with_ai', side_effect=enrich):
             res = pipeline.process_dossier(io.BytesIO(_dossier_bytes()), {}, {}, ai_config=self._cfg('haiku'))
         ws = load_workbook(io.BytesIO(res['output_data']), read_only=True).active
