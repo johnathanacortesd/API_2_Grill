@@ -347,10 +347,13 @@ MAX_FILAS_POR_DOSSIER = 1000
 BOLETIN_COLUMNAS = [
     # v4.78 (Grill): «Hora» del dossier de origen, justo después de Fecha.
     "ID Noticia", "Fecha", "Hora", "Medio", "Región", "Tipo de Medio",
-    "Sección - Programa", "Título", "Duración - Nro. Caracteres",
+    # v4.81 (Grill): «Nro. Pagina» del origen, justo antes de la duración.
+    "Sección - Programa", "Título", "Nro. Pagina", "Duración - Nro. Caracteres",
     # v4.79 (Grill): «Tamaño» = Dimensioncm2 del origen, justo antes de Audiencia.
     "CPE", "Tamaño", "Audiencia", "Tier", "Tono_IA", "Subtema_IA", "TIPO", "GÉNERO",
-    "Link Nota", "texto", "Link (Streaming - Imagen)", "Link Ext",
+    # v4.81 (Grill): «Menciones - Empresa» (radio/TV) o «Empresa rel.»
+    # (internet, prensa, revistas), justo después del enlace de streaming.
+    "Link Nota", "texto", "Link (Streaming - Imagen)", "Menciones - Empresa", "Link Ext",
     # v4.74 (versión general): sin «HORA B» (hora del boletín de Defensoría).
     "FECHA INFORME",
     "ID duplicada", "Contexto analizado", "Resumen - Aclaracion", "Audio",
