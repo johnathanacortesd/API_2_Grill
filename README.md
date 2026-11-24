@@ -42,6 +42,12 @@ El acceso a la interfaz de producción está resguardado mediante autenticación
 
 ## 🚀 Funcionalidades
 
+### Columna Tamaño (v4.79)
+
+- La columna **Dimensioncm2** del dossier de origen sale en el xlsx como
+  **Tamaño**, justo antes de Audiencia, con el valor tal cual (en radio y TV la
+  duración ya va en «Duración - Nro. Caracteres»).
+
 ### Columna Hora y fechas (v4.78)
 
 - El xlsx de resultado lleva la columna **Hora** del dossier de origen, justo
