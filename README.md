@@ -42,6 +42,31 @@ El acceso a la interfaz de producción está resguardado mediante autenticación
 
 ## 🚀 Funcionalidades
 
+### Agrupación: mismo molde en otro lugar ya no se une (v4.87)
+
+- Al portar el motor de Defensoría (v4.74) se perdieron las guardas de
+  v4.71–v4.72 y la app volvió a unir noticias distintas del mismo molde:
+  «Becas de enfermería en Cartagena» con «… en Medellín», «Sede de urgencias
+  en Chía» con «… en Usaquén». Se restauran:
+  - en la agrupación inicial: veto por nombre propio (lugar o persona que la
+    otra nota no nombra), veto por cuerpo de las uniones débiles (solo por
+    titular, coseno TF-IDF < 0,20) y guarda entre bloques (una nota puente
+    sin lugar en el titular ya no encadena dos ciudades);
+  - en el grafo de evidencia de la agrupación estricta (la de producción) y
+    entre sus componentes;
+  - en los pases de títulos similares, subtema por título y asunto repetido
+    en titulares.
+- La misma noticia reescrita por otro medio se sigue uniendo (nombra los
+  mismos lugares y personas).
+- Banco de pruebas, 10 semillas (`tools/banco_agrupacion.py`, ahora con
+  `--estricta`):
+
+| | v4.86 | v4.87 |
+|---|---|---|
+| Fusiones de noticias distintas (normal / estricta) | 14 / 14 | 1 / 1 |
+| Noticias con subtema partido (normal / estricta) | 0 / 0 | 0 / 1 |
+| Filas con un subtema correcto (normal / estricta) | 93,7 % / 93,7 % | 97,7 % / 95,4 % |
+
 ### OpenAI Luna con auditor de tono y evaluador de agrupación (v4.86)
 
 - **Auditor de tono:** una segunda lectura con Luna, en lotes de 20 en paralelo

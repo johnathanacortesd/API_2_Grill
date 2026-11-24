@@ -492,7 +492,7 @@ MODELO_DEFECTO = "gpt-6-luna"
 # v4.53: sello del analizador. El encabezado de la app lo muestra junto a
 # APP_VERSION; si el despliegue muestra un sello distinto (o "sin-sello"),
 # el contenedor NO corre este archivo aunque el encabezado diga otra versión.
-ANALYZER_BUILD = "v4.86-luna-auditor-evaluador"  # v4.86: Luna con auditor de tono y evaluador de agrupación (v4.85: tono por rol)
+ANALYZER_BUILD = "v4.87-guardas-agrupacion"  # v4.87: guardas de agrupación por lugar/persona restauradas (v4.86: Luna con auditor y evaluador)
 # v4.53: solo cambia el sello (la lógica del analizador no se toca en esta versión;
 # el cambio es de interfaz).
 JEV_URL_DEFECTO = "https://api.typesafe.ai/v1/systemone"
@@ -500,6 +500,14 @@ TAM_LOTE_DEFECTO = 10
 WORKERS_DEFECTO = 8
 UMBRAL_TITULO_DEFECTO = 92
 UMBRAL_CUERPO_DEFECTO = 85
+# v4.87 (restaurado de v4.74): veto textual de uniones débiles (solo por
+# titular). Un titular con ratio/token_sort >= 0.90 es casi copia (unión
+# fuerte). Si la unión es débil y los dos CuerpoEs tienen >= 250 caracteres
+# con coseno TF-IDF < 0.20, no son la misma noticia (hechos distintos del
+# mismo asunto ≈ 0.15-0.20; la misma noticia reescrita ≈ 0.55+).
+TITULO_CASI_IDENTICO = 0.90
+MIN_CUERPO_VETO = 250
+SIM_VETO_CUERPO = 0.20
 K_BODY, MIN_GRAMAS, MIN_PALABRAS_TITULO = 5, 30, 3
 
 _ULTIMO_RESUMEN: Dict[str, object] = {}
@@ -660,8 +668,14 @@ def construir_grupos(
     umbral_titulo: int = UMBRAL_TITULO_DEFECTO,
     umbral_cuerpo: int = UMBRAL_CUERPO_DEFECTO,
     estricta: bool = False,
+    excluir_similitud: Sequence[str] = (),
 ) -> Tuple[List[dict], Dict[int, int]]:
     """Agrupa filas no duplicadas por similitud de titulo (palabras de contenido) y de resumen.
+
+    v4.87: guardas de v4.71-v4.74 restauradas (veto por nombre propio,
+    veto por cuerpo de las uniones débiles y guarda entre bloques).
+    `excluir_similitud` son los tokens de marca/alias/voceros, que no
+    cuentan en la similitud TF-IDF del veto textual (están en todas las notas).
 
     Devuelve (grupos, mapa_indice_fila -> id de grupo). Las filas 'is_duplicate' se excluyen:
     heredan la etiqueta de su original por 'ID duplicada' en el flujo de limpieza.
@@ -679,8 +693,13 @@ def construir_grupos(
         key=lambda i: (nz(_titulo_fila(rows[i], km)), i),
     )
     base = []
+    _excl0 = {nz(t) for t in (excluir_similitud or ())}
     for i in idx_validos:
-        tit = _titulo_fila(rows[i], km)
+        # v4.71: la cola de llamado («…: lo que dijo Diana Mejía», «…: esto
+        # se sabe») no es la noticia: no cuenta para comparar titulares
+        # (unía hechos distintos que citaban a la misma persona).
+        tit_orig = _titulo_fila(rows[i], km)
+        tit = _titulo_sin_cola(tit_orig)
         txt = _texto_fila(rows[i], km)
         ctx = str(rows[i].get('Contexto analizado') or '')
         ctx = '' if ctx.strip() in ('', '-') else ctx
@@ -690,7 +709,7 @@ def construir_grupos(
         _nz_txt = nz(txt)
         base.append({
             'idx': i,
-            'titulo': sq(tit),
+            'titulo': sq(tit_orig),
             'texto': sq(txt),
             'hash_cuerpo': (hashlib.md5(_nz_txt.encode('utf-8')).hexdigest()
                             if len(_nz_txt) >= 120 else ''),
@@ -700,6 +719,12 @@ def construir_grupos(
             # Dos noticias del mismo hecho suelen compartir pasajes citados
             # (declaraciones, cifras) aunque título y cuerpo difieran.
             'g5ctx': grams(words(ctx), K_BODY),
+            # v4.71: nombres propios del titular (lugar, persona, sede).
+            # v4.72: si el titular no nombra ninguno («…sede de urgencias en
+            # el norte de Bogotá»), los de la primera oración del cuerpo.
+            'prop': (_nombres_propios_titular(tit) - _excl0) or (
+                _nombres_propios_titular(_primera_oracion(txt)) - _excl0),
+            'toks': set(words(tit_orig + ' ' + txt + ' ' + ctx)),
         })
 
     par = list(range(len(base)))
@@ -738,7 +763,52 @@ def construir_grupos(
             x = par[x]
         return x
 
-    def uni(a, b):
+    # v4.74: cada unión queda registrada con su fuerza. Las uniones solo
+    # por parecido del TITULAR (token_set, Jaccard, titulares cortos) son
+    # débiles: al final se vetan si los dos CuerpoEs son sustanciales y no
+    # se parecen (TF-IDF), para no agrupar "por agrupar" ni encadenar
+    # hechos distintos que solo comparten palabras del titular.
+    aristas: List[Tuple[int, int, bool]] = []
+    # v4.72: puntaje de cada arista (más alto = evidencia más fuerte) y si
+    # se salta la guarda de nombre propio (cuerpo idéntico). Las uniones se
+    # aplican al final de la más fuerte a la más débil, con la guarda de
+    # nombre propio a nivel de BLOQUE: antes, una nota puente sin lugar en
+    # el titular («…sede de urgencias en el norte de Bogotá») encadenaba
+    # «…en Chía» con «…en Usaquén» aunque cada par directo estuviera vetado.
+    puntaje: Dict[Tuple[int, int], float] = {}
+    fuerza: Dict[Tuple[int, int], bool] = {}
+    sin_guarda_par: set = set()
+
+    _excl_prop = {nz(t) for t in (excluir_similitud or ())}
+
+    def _conflicto_nombre(a, b):
+        # v4.71: dos titulares casi iguales que nombran cada uno un lugar o
+        # una persona que el otro no nombra («…becas en Cartagena» /
+        # «…becas en Medellín», «Entrega de colegio en Bosa» / «…en Usme»)
+        # son el MISMO TIPO de hecho, no la misma noticia.
+        # La prueba es el texto completo: si el nombre propio de cada
+        # titular no aparece en NINGUNA parte (título, cuerpo, contexto) de
+        # la otra nota, cuentan hechos distintos. La misma noticia
+        # reescrita por otro medio nombra los mismos lugares y personas.
+        pa = base[a]['prop'] - _excl_prop - base[b]['toks']
+        pb = base[b]['prop'] - _excl_prop - base[a]['toks']
+        return bool(pa) and bool(pb)
+
+    def uni(a, b, fuerte=True, por_titulo=False, sin_guarda=False, score=0.5):
+        # v4.71: una unión con conflicto de nombre propio no se hace (por
+        # titular ni por pasajes compartidos de cuerpo/contexto): es el
+        # mismo tipo de hecho en otro lugar o con otra persona, no la misma
+        # noticia. Solo el cuerpo idéntico (sin_guarda) no se revisa.
+        if not sin_guarda and _conflicto_nombre(a, b):
+            _ULTIMO_RESUMEN['uniones_titular_vetadas_por_nombre'] = \
+                _ULTIMO_RESUMEN.get('uniones_titular_vetadas_por_nombre', 0) + 1
+            return
+        clave = (min(a, b), max(a, b))
+        # La misma pareja por otra señal: conserva la más fuerte.
+        fuerza[clave] = fuerza.get(clave, False) or bool(fuerte)
+        puntaje[clave] = max(puntaje.get(clave, 0.0), float(score))
+        if sin_guarda:
+            sin_guarda_par.add(clave)
         ra, rb = find(a), find(b)
         if ra != rb:
             par[max(ra, rb)] = min(ra, rb)
@@ -764,10 +834,12 @@ def construir_grupos(
                 # distingue diferencias de longitud.
                 if max(t1[i, j], t2[i, j]) >= umbral_titulo / 100.0 and \
                         len(base[i]['ctit'] & base[j]['ctit']) >= 2:
-                    uni(i, j)
+                    # Titular casi idéntico: fuerte solo si es casi copia.
+                    uni(i, j, fuerte=max(t1[i, j], t2[i, j]) >= TITULO_CASI_IDENTICO,
+                        por_titulo=True, score=max(t1[i, j], t2[i, j]))
                 elif _puente_distintivo(base[i]['ctit'], base[j]['ctit'],
                                         MIN_PALABRAS_TITULO):
-                    uni(i, j)
+                    uni(i, j, fuerte=False, por_titulo=True, score=0.8 * T[i, j])
 
         # --- Señal de bolsa de palabras (orden-independiente): dos noticias
         # parecidas pueden ordenar las palabras distinto. Se fusionan si Jaccard
@@ -777,8 +849,6 @@ def construir_grupos(
         for i in range(len(base)):
             wi = base[i]['ctit']
             for j in range(i + 1, len(base)):
-                if find(i) == find(j):
-                    continue
                 wj = base[j]['ctit']
                 inter = wi & wj
                 if len(inter) < MIN_PALABRAS_TITULO:
@@ -792,7 +862,7 @@ def construir_grupos(
                 # el puente debe ser distintivo (v4.16: freno anti-encadenamiento).
                 if (jac >= 0.42 or (jac >= 0.32 and t3[i, j] >= 0.88)) \
                         and _puente_distintivo(wi, wj, MIN_PALABRAS_TITULO):
-                    uni(i, j)
+                    uni(i, j, fuerte=False, por_titulo=True, score=0.7 * jac + 0.1)
 
         # Titulares cortos casi iguales: 2 palabras distintivas + token_set alto.
         # (Pase unico: antes quedo anidado por error dentro del loop anterior y
@@ -800,11 +870,9 @@ def construir_grupos(
         # resultado es identico pero 445x mas rapido en dossiers medianos.)
         for i in range(len(base)):
             for j in range(i + 1, len(base)):
-                if find(i) == find(j):
-                    continue
                 if _puente_distintivo(base[i]['ctit'], base[j]['ctit'], 2) \
                         and t3[i, j] >= 0.90:
-                    uni(i, j)
+                    uni(i, j, fuerte=False, por_titulo=True, score=0.6 * t3[i, j])
 
     # --- v4.35: CUERPO IDÉNTICO (vía rápida O(n)) ---
     # Mismo CuerpoEs normalizado => misma noticia aunque el título difiera
@@ -818,7 +886,7 @@ def construir_grupos(
         if len(ks) > 1:
             for a in range(len(ks)):
                 for c in range(a + 1, len(ks)):
-                    uni(ks[a], ks[c])
+                    uni(ks[a], ks[c], sin_guarda=True, score=3.0)
 
     inv = defaultdict(set)
     for j, b in enumerate(base):
@@ -840,14 +908,14 @@ def construir_grupos(
                 if j != i:
                     hits[j] += 1
         for j, inter in hits.items():
-            if j <= i or inter < 3 or find(i) == find(j):
+            if j <= i or inter < 3:
                 continue
             tj = nz(base[j]['texto'])
             if len(tj) < 200:
                 continue
             lo, hi = (ti, tj) if len(ti) <= len(tj) else (tj, ti)
             if len(hi) <= 6 * len(lo) and lo in hi:
-                uni(i, j)
+                uni(i, j, score=2.0)
     for i, b in enumerate(base):
         if len(b['g5']) < MIN_GRAMAS:
             continue
@@ -859,7 +927,7 @@ def construir_grupos(
         for j, inter in hits.items():
             if j > i and min(len(b['g5']), len(base[j]['g5'])) >= MIN_GRAMAS and \
                     inter / min(len(b['g5']), len(base[j]['g5'])) >= umbral_cuerpo / 100.0:
-                uni(i, j)
+                uni(i, j, score=1.0 + inter / min(len(b['g5']), len(base[j]['g5'])))
 
     # --- bolsa de palabras del CUERPO: mismo hecho con título muy distinto ---
     # Solo se evaluan pares que comparten AL MENOS un 5-gramo (via el indice inv),
@@ -874,7 +942,7 @@ def construir_grupos(
                 if j != i:
                     candidatos.add(j)
         for j in candidatos:
-            if j < i or par[j] != j or find(i) == find(j):
+            if j < i:
                 continue
             bj = base[j]
             if len(bj['g5']) < 8:
@@ -886,7 +954,7 @@ def construir_grupos(
             # título se conserva para el rango 0.70-0.85 (señal más débil).
             if same_g >= 0.85 or (same_g >= 0.70 and _puente_distintivo(
                     b['ctit'], bj['ctit'], MIN_PALABRAS_TITULO)):
-                uni(i, j)
+                uni(i, j, score=1.0 + same_g)
 
     # --- señal de CONTEXTO ANALIZADO: mismo hecho, título y cuerpo distintos ---
     # Se fusionan si comparten >= 6 5-gramas del contexto de marca y el
@@ -908,7 +976,7 @@ def construir_grupos(
             if j > i:
                 den = min(len(b['g5ctx']), len(base[j]['g5ctx']))
                 if den >= 6 and inter >= 6 and inter / den >= 0.55:
-                    uni(i, j)
+                    uni(i, j, score=1.0 + inter / den)
 
     # --- v4.62: misma historia de riesgo con sinónimos (ancla de cuerpo) ---
     # Título y cuerpo distintos, mismo riesgo + mismo grupo + misma ancla
@@ -924,7 +992,7 @@ def construir_grupos(
             if _misma_historia_riesgo(
                     b['titulo'], b['texto'],
                     base[j]['titulo'], base[j]['texto']):
-                uni(i, j)
+                uni(i, j, score=0.6)
 
     # --- v4.63: mismo evento fechado con ancla distintiva ---
     # Mismo patrón que el pase de riesgo: solo une con fecha + bigrama
@@ -936,7 +1004,68 @@ def construir_grupos(
             if _mismo_evento(
                     b['titulo'], b['texto'],
                     base[j]['titulo'], base[j]['texto']):
-                uni(i, j)
+                uni(i, j, score=0.6)
+
+    # --- v4.74: veto textual de las uniones débiles (solo titular) ---
+    # Título y CuerpoEs son las columnas clave: si dos notas quedaron
+    # unidas solo por palabras del titular y ambas traen un CuerpoEs
+    # sustancial que no se parece (coseno TF-IDF < SIM_VETO_CUERPO), no son
+    # la misma noticia. Se rehace la unión sin esas aristas; las uniones
+    # fuertes (cuerpo idéntico/contenido, 5-gramas de cuerpo o contexto,
+    # ancla de riesgo/evento, titular casi copia) se conservan siempre.
+    aristas = [(a, b, f) for (a, b), f in fuerza.items()]
+    validas = list(aristas)
+    if any(not f for _a, _b, f in aristas):
+        S = matriz_similitud(
+            [texto_noticia(b['titulo'], b['texto']) for b in base],
+            excluir=excluir_similitud or ())
+        vetadas = 0
+        validas = []
+        for a, b, fuerte in aristas:
+            if not fuerte:
+                largos = (len(base[a]['texto']) >= MIN_CUERPO_VETO
+                          and len(base[b]['texto']) >= MIN_CUERPO_VETO)
+                if largos and S[a, b] < SIM_VETO_CUERPO:
+                    vetadas += 1
+                    continue
+            validas.append((a, b, fuerte))
+        if vetadas:
+            _ULTIMO_RESUMEN['uniones_titular_vetadas_por_cuerpo'] = vetadas
+
+    # v4.72: uniones definitivas de la más fuerte a la más débil, con la
+    # guarda de nombre propio entre BLOQUES (cualquier par de titulares
+    # distintos de los dos bloques en conflicto => no se unen).
+    for k in range(len(base)):
+        par[k] = k
+    miembros_de = {k: [k] for k in range(len(base))}
+    validas.sort(key=lambda e: (-puntaje.get((e[0], e[1]), 0.0), e[0], e[1]))
+    vetadas_bloque = 0
+
+    def _reps_bloque(bloque):
+        vistos, out = set(), []
+        for x in bloque:
+            if base[x]['prop'] and base[x]['titulo'] not in vistos:
+                vistos.add(base[x]['titulo'])
+                out.append(x)
+        return out[:15]
+
+    for a, b, _f in validas:
+        ra, rb = find(a), find(b)
+        if ra == rb:
+            continue
+        if (a, b) not in sin_guarda_par and conflicto_entre_bloques(
+                [base[x]['titulo'] for x in _reps_bloque(miembros_de[ra])],
+                ' '.join(base[x]['texto'][:3000] for x in miembros_de[ra][:6]),
+                [base[y]['titulo'] for y in _reps_bloque(miembros_de[rb])],
+                ' '.join(base[y]['texto'][:3000] for y in miembros_de[rb][:6]),
+                excluir_similitud):
+            vetadas_bloque += 1
+            continue
+        nueva, vieja = min(ra, rb), max(ra, rb)
+        par[vieja] = nueva
+        miembros_de[nueva] = miembros_de[nueva] + miembros_de.pop(vieja)
+    if vetadas_bloque:
+        _ULTIMO_RESUMEN['uniones_vetadas_por_nombre_en_bloque'] = vetadas_bloque
 
     por_raiz = defaultdict(list)
     for k in range(len(base)):
@@ -4771,6 +4900,12 @@ def unificar_etiquetas_titulos_similares(rows: List[dict], mapa: Dict[int, int],
             puente = _puente_titulos(puente_ws[k], puente_ws[j])
             if puente < 2:
                 continue
+            # v4.87 (restaurado de v4.71): mismo molde de titular con otro
+            # lugar/persona no es la misma noticia.
+            if _conflicto_nombre_propio(
+                    titulos[k], _texto_fila(rows[idx_validos[k]], km),
+                    titulos[j], _texto_fila(rows[idx_validos[j]], km), marca_toks):
+                continue
             if estricta:
                 # v1.31: solo títulos iguales o muy parecidos (ratio /
                 # token_sort sobre el titular completo; token_set no, porque
@@ -5000,6 +5135,12 @@ def unificar_subtema_titulo_final(rows: List[dict], mapa: Dict[int, int],
                 continue
             puente = _puente_titulos(puente_ws[k], puente_ws[j])
             if puente < 2:
+                continue
+            # v4.87 (restaurado de v4.71): mismo molde de titular con otro
+            # lugar/persona no es la misma noticia.
+            if _conflicto_nombre_propio(
+                    titulos[k], _texto_fila(rows[idx_validos[k]], km),
+                    titulos[j], _texto_fila(rows[idx_validos[j]], km), marca_toks):
                 continue
             if estricta:
                 # v1.31: solo títulos iguales o muy parecidos.
@@ -5411,7 +5552,7 @@ UMBRAL_EVIDENCIA_CONTEXTO = 0.50  # solapamiento de 5-gramas del Contexto analiz
 UMBRAL_EVIDENCIA_CUERPO = 0.50    # solapamiento de 5-gramas del cuerpo
 
 
-def grafo_evidencia_grupos(grupos: Sequence[dict]) -> Dict[int, set]:
+def grafo_evidencia_grupos(grupos: Sequence[dict], excluir=()) -> Dict[int, set]:
     """Aristas entre grupos con evidencia de ser la misma noticia o una muy
     parecida: título (cualquiera de sus titulares) igual o similar con >=2
     palabras de contenido en común, o Contexto analizado / cuerpo con
@@ -5421,6 +5562,14 @@ def grafo_evidencia_grupos(grupos: Sequence[dict]) -> Dict[int, set]:
     vec = {i: set() for i in ids}
     if len(grupos) < 2:
         return vec
+    por_g = {g['grupo']: g for g in grupos}
+
+    def _txt_g(g):
+        return ' '.join([' '.join(g.get('titulos_alt') or []), str(g.get('texto') or ''),
+                         str(g.get('contexto') or '')])
+
+    def _tits_g(g):
+        return [str(g.get('titulo') or '')] + [str(t) for t in (g.get('titulos_alt') or [])]
     tits, ctit = {}, {}
     for g in grupos:
         ts = [str(g.get('titulo') or '')] + [str(t) for t in (g.get('titulos_alt') or [])]
@@ -5446,6 +5595,10 @@ def grafo_evidencia_grupos(grupos: Sequence[dict]) -> Dict[int, set]:
             ok = any(max(fuzz.ratio(a, b), fuzz.token_sort_ratio(a, b)) / 100.0
                      >= UMBRAL_EVIDENCIA_TITULO
                      for a in tits[gid] for b in tits[o])
+            if ok and conflicto_entre_bloques(
+                    _tits_g(por_g[gid]), _txt_g(por_g[gid]),
+                    _tits_g(por_g[o]), _txt_g(por_g[o]), excluir):
+                ok = False  # v4.71/v4.72: mismo molde, otro lugar/persona
             if ok:
                 vec[gid].add(o)
                 vec[o].add(gid)
@@ -5471,13 +5624,55 @@ def grafo_evidencia_grupos(grupos: Sequence[dict]) -> Dict[int, set]:
             for o, inter in hits.items():
                 den = min(len(gs), len(gr[o]))
                 if den >= 6 and inter >= 6 and inter / den >= umbral:
+                    if o in vec[gid]:
+                        continue
+                    if conflicto_entre_bloques(
+                            _tits_g(por_g[gid]), _txt_g(por_g[gid]),
+                            _tits_g(por_g[o]), _txt_g(por_g[o]), excluir):
+                        continue  # v4.71/v4.72: mismo molde, otro lugar/persona
                     vec[gid].add(o)
                     vec[o].add(gid)
     return vec
 
 
-def componentes_evidencia(vec: Dict[int, set]) -> List[List[int]]:
-    """Componentes conexas (>=2 grupos) del grafo de evidencia."""
+def componentes_evidencia(vec: Dict[int, set], grupos: Optional[Sequence[dict]] = None,
+                          excluir=()) -> List[List[int]]:
+    """Componentes conexas (>=2 grupos) del grafo de evidencia.
+
+    v4.72: con `grupos`, una arista no une dos componentes si sus bloques
+    chocan por nombre propio (`conflicto_entre_bloques`): sin esto, un
+    grupo puente encadenaba noticias del mismo molde en lugares distintos."""
+    if grupos:
+        por_g = {g['grupo']: g for g in grupos}
+        par = {g: g for g in vec}
+
+        def find(x):
+            while par[x] != x:
+                par[x] = par[par[x]]
+                x = par[x]
+            return x
+        miembros = {g: [g] for g in vec}
+
+        def _tits(ms):
+            return [t for m in ms for t in [str((por_g.get(m) or {}).get('titulo') or '')]
+                    + [str(x) for x in ((por_g.get(m) or {}).get('titulos_alt') or [])]]
+
+        def _txt(ms):
+            return ' '.join(' '.join([str((por_g.get(m) or {}).get('texto') or '')[:3000],
+                                      str((por_g.get(m) or {}).get('contexto') or '')[:2000]])
+                            for m in ms[:8])
+        for a in sorted(vec):
+            for b in sorted(vec[a]):
+                ra, rb = find(a), find(b)
+                if ra == rb:
+                    continue
+                if conflicto_entre_bloques(_tits(miembros[ra]), _txt(miembros[ra]),
+                                           _tits(miembros[rb]), _txt(miembros[rb]), excluir):
+                    continue
+                nueva, vieja = min(ra, rb), max(ra, rb)
+                par[vieja] = nueva
+                miembros[nueva] = miembros[nueva] + miembros.pop(vieja)
+        return [sorted(ms) for _r, ms in sorted(miembros.items()) if len(ms) > 1]
     vistos, comps = set(), []
     for gid in sorted(vec):
         if gid in vistos or not vec[gid]:
@@ -5514,7 +5709,11 @@ def consolidar_por_evidencia(cfg: dict, grupos: Sequence[dict], etiquetas: Dict[
     aliases = list(cfg.get('aliases') or [])
     for g in grupos:
         etiquetas[g['grupo']]['hecho'] = 'g%d' % g['grupo']
-    comps = componentes_evidencia(grafo_evidencia_grupos(grupos))
+    # v4.87: guarda de nombre propio (mismo molde, otro lugar/persona) en
+    # el grafo y entre componentes, restaurada de v4.72.
+    _excl_ev = _tokens_marca(brand, aliases, cfg.get('voceros') or [])
+    comps = componentes_evidencia(grafo_evidencia_grupos(grupos, excluir=_excl_ev),
+                                  grupos=grupos, excluir=_excl_ev)
     cambios = 0
     pendientes = []
     for n, comp in enumerate(comps, 1):
@@ -5702,15 +5901,22 @@ def unificar_por_asunto_titular(rows, mapa, etiquetas, ajustes_subtema, km,
             par[x] = par[par[x]]
             x = par[x]
         return x
-    primero = {}
+    # v4.87 (restaurado de v4.71): una frase repetida («casos dengue»,
+    # «pico placa») no une notas del mismo molde en otro lugar o con otra
+    # persona (ver _conflicto_nombre_propio): «Pico y placa en Bogotá» y
+    # «Pico y placa en Medellín» son asuntos distintos.
+    miembros_b = defaultdict(list)
     for i in filas:
         for b in _big(tit[i]) & claves:
-            if b in primero:
-                ra, rb = find(i), find(primero[b])
-                if ra != rb:
-                    par[max(ra, rb)] = min(ra, rb)
-            else:
-                primero[b] = i
+            for j in miembros_b[b]:
+                if find(i) == find(j):
+                    continue
+                if _conflicto_nombre_propio(tit[i], _texto_fila(rows[i], km),
+                                            tit[j], _texto_fila(rows[j], km), marca):
+                    continue
+                ra, rb = find(i), find(j)
+                par[max(ra, rb)] = min(ra, rb)
+            miembros_b[b].append(i)
 
     def _final(i):
         return (ajustes.get(i) or '').strip() or \
@@ -8274,6 +8480,25 @@ def _tokens_texto(t: str) -> frozenset:
     return frozenset(words(t))
 
 
+def _conflicto_nombre_propio(tit_a: str, txt_a: str, tit_b: str, txt_b: str,
+                             excluir=()) -> bool:
+    """v4.71: dos notas con titulares del mismo molde que nombran, cada una,
+    un lugar o una persona que NO aparece en ninguna parte de la otra nota
+    («…becas en Cartagena» / «…becas en Medellín», «Entrega de colegio en
+    Bosa» / «…en Usme») son el mismo TIPO de hecho, no la misma noticia:
+    no comparten subtema ni tono por parecido del titular. La misma noticia
+    reescrita por otro medio nombra los mismos lugares y personas, así que
+    esta guarda no la separa. `excluir`: tokens de marca/alias/voceros."""
+    ex = {nz(x) for x in (excluir or ())}
+    pa = _nombres_propios_titular(tit_a) - ex
+    pb = _nombres_propios_titular(tit_b) - ex
+    if not pa or not pb:
+        return False
+    ta = _tokens_texto('%s %s' % (tit_a or '', txt_a or ''))
+    tb = _tokens_texto('%s %s' % (tit_b or '', txt_b or ''))
+    return bool(pa - tb) and bool(pb - ta)
+
+
 def conflicto_entre_bloques(tits_a: Sequence[str], txt_a: str,
                             tits_b: Sequence[str], txt_b: str, excluir=()) -> bool:
     """v4.72: `_conflicto_nombre_propio` entre dos BLOQUES de notas (grupos
@@ -9114,7 +9339,9 @@ def enrich_rows_with_ai(
              % (_n_vivas, ('; %d duplicadas exactas ya heredan de su original' % _n_dup)
                 if _n_dup else ''))
     grupos, mapa = construir_grupos(rows, km, umbral_titulo, umbral_cuerpo,
-                                    estricta=bool(cfg.get('agrupacion_estricta')))
+                                    estricta=bool(cfg.get('agrupacion_estricta')),
+                                    excluir_similitud=tokens_marca(brand, aliases,
+                                                                   cfg.get('voceros') or []))
     for g in grupos:
         contexto = [str(rows[i].get('Contexto analizado') or '') for i in g.get('idxs', [])]
         g['contexto_marca'] = '\n\n'.join(dict.fromkeys(x for x in contexto if x and x != '-'))[:12000]

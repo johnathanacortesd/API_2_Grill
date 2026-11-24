@@ -470,7 +470,8 @@ def evaluar(rows, verdad, col='Subtema_IA'):
             '_partidas': partidas, '_fusiones': fusiones}
 
 
-def correr(semilla=1, factor=1.0, consolidar='solos', detalle=False, ruido_sub=0.0):
+def correr(semilla=1, factor=1.0, consolidar='solos', detalle=False, ruido_sub=0.0,
+           estricta=False):
     rows, verdad = generar_dossier(semilla, factor)
     modelo = ModeloSimulado(semilla, consolidar=consolidar, ruido_sub=ruido_sub)
     original = az.llamar_llm
@@ -479,7 +480,8 @@ def correr(semilla=1, factor=1.0, consolidar='solos', detalle=False, ruido_sub=0
         t0 = time.process_time()
         w0 = time.time()
         az.enrich_rows_with_ai(rows, {'titulo': 'Título'}, MARCA, ALIAS, api_key='simulada',
-                               extra={'voceros': VOCEROS, 'workers': 1})
+                               extra={'voceros': VOCEROS, 'workers': 1,
+                                      'agrupacion_estricta': bool(estricta)})
         cpu = time.process_time() - t0
         pared = time.time() - w0
     finally:
@@ -505,10 +507,12 @@ def main():
     ap.add_argument('--ruido', type=float, default=0.0,
                     help='probabilidad de rótulo malo del modelo simulado (0-1)')
     ap.add_argument('--detalle', action='store_true')
+    ap.add_argument('--estricta', action='store_true',
+                    help='agrupación estricta (como corre la app en producción)')
     a = ap.parse_args()
     tot = Counter()
     for s in range(1, a.semillas + 1):
-        r = correr(s, a.copias, a.consolidar, a.detalle, a.ruido)
+        r = correr(s, a.copias, a.consolidar, a.detalle, a.ruido, a.estricta)
         print('semilla %d: %d filas, CPU %.2fs | subtema: %d/%d historias partidas (exceso %d), '
               '%d fusiones, %d rótulos, calidad %.1f%% | tono partido %d | tema partido %d | llamadas %s'
               % (s, r['filas'], r['cpu_s'], r['sub']['partidas'], r['sub']['multi'],
