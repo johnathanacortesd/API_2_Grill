@@ -833,6 +833,15 @@ def normalizar_tipo_medio(tipo_raw):
     return TIPO_MEDIO_MAP.get(t, str(tipo_raw).strip().title() or "Otro")
 
 
+def caracteres_resumen(texto) -> int:
+    """v4.83: caracteres del Resumen - Aclaracion (espacios incluidos); vacío
+    o «-» = 0."""
+    if texto is None or (isinstance(texto, float) and not math.isfinite(texto)):
+        return 0
+    t = str(texto)
+    return 0 if t.strip() in ("", "-", "nan") else len(t)
+
+
 # v4.80: columnas que pueden traer una duración (radio y TV).
 COLS_DURACION = {"Duración - Nro. Caracteres", "Tamaño", "Dimensión"}
 _RX_DURACION = re.compile(r"^\s*\d{1,3}:\d{2}(?::\d{2}(?:[.,]\d+)?)?\s*$")
@@ -1657,6 +1666,11 @@ def _write_xlsx_rows(ws, rows, km, n, step, progress, fmt_link, fmt_plain_hlink,
         if isinstance(row.get("Resumen - Aclaracion"), str):
             row["Resumen - Aclaracion"] = decode_html_entities(
                 row["Resumen - Aclaracion"])
+        # v4.83 (orden del usuario): en Radio y Televisión, «Duración - Nro.
+        # Caracteres» es la cantidad de caracteres del «Resumen - Aclaracion»
+        # tal como sale en el xlsx (la duración original queda en «Tamaño»).
+        if row.get("Tipo de Medio") in TIPOS_AV:
+            row["Duración - Nro. Caracteres"] = caracteres_resumen(row.get("Resumen - Aclaracion"))
 
         excel_row = i + 1
         for cidx, h in enumerate(cols):

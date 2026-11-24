@@ -42,6 +42,13 @@ El acceso a la interfaz de producción está resguardado mediante autenticación
 
 ## 🚀 Funcionalidades
 
+### Caracteres del resumen en radio y TV (v4.83)
+
+- En Radio y Televisión, **Duración - Nro. Caracteres** es la cantidad de
+  caracteres (espacios incluidos) del «Resumen - Aclaracion» tal como sale en el
+  xlsx; vacío o «-» = 0. La duración original de esas notas queda en
+  **Tamaño**. Internet, Prensa y Revistas conservan el valor del origen.
+
 ### Una fila por marca, con cualquier encabezado (v4.82)
 
 - Si «Menciones - Empresa» (radio y TV) o «Empresa rel.» (internet, prensa y

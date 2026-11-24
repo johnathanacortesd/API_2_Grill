@@ -64,7 +64,7 @@ from pipeline import (process_dossier, leer_columnas_xlsx, sugerir_columna,
                       cargar_ids_analizados_desde_sheets, cargar_hoja_analizadas)
 
 # Versión visible de la app (se muestra en el encabezado). Actualizar en cada release.
-APP_VERSION = "v4.82"
+APP_VERSION = "v4.83"
 
 # v4.74: versión general del motor de Defensoría. No hay cliente fijo: el
 # análisis depende de la marca, los alias y los voceros que se escriban (o
