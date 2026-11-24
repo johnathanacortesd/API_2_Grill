@@ -11,6 +11,9 @@
 - Mismo rótulo con otras mayúsculas o tildes = un solo subtema.
 - Un recorte literal del titular tras quitar el verbo sigue siendo copia
   (regla v4.67): se deja a la reformulación del modelo.
+- Regla del usuario: ningún subtema lleva comas (salvo la coma decimal de
+  una cifra) ni empieza con verbo, número o guion; lo rechazan los dos
+  motores y una garantía final lo cumple sobre lo que se exporta.
 """
 import os
 import sys
@@ -148,6 +151,89 @@ class TestSoloMarcaNoEsSubtema(unittest.TestCase):
             self.assertNotEqual(az.nz(r['Subtema_IA']), az.nz(marca))
             self.assertIn('ciberataque', az.nz(r['Subtema_IA']))
         self.assertEqual(rows[0]['Subtema_IA'], rows[1]['Subtema_IA'])
+
+
+class TestSinComasNumerosNiGuiones(unittest.TestCase):
+    MALOS = ('Entrega de becas, en Cali', '15 becas para enfermería en Cali',
+             '2026 Feria del libro de Bogotá', '- Feria del libro de Bogotá',
+             '– Feria del libro de Bogotá', '• Feria del libro de Bogotá',
+             'Bogotá, mi Ciudad, mi Casa', 'Entregó becas en Cali')
+
+    def test_validar_los_rechaza(self):
+        duros = {'puntuacion', 'inicio_numero', 'inicio_guion', 'caracter_marcador'}
+        for s in self.MALOS:
+            pr = {p.split('(')[0] for p in az.validar(s, 'Neutro', [])}
+            self.assertTrue(pr & (duros | {'verbo_inicial'}), s)
+
+    def test_haiku_los_rechaza_con_motivo(self):
+        import motor_haiku as mh
+        for s in self.MALOS:
+            self.assertTrue(mh.problemas_subtema(s), s)
+        self.assertEqual(mh.problemas_subtema('Feria del libro de Bogotá'), [])
+        self.assertFalse([p for p in mh.problemas_subtema('Presupuesto de $42,7 billones para 2027')
+                          if 'coma' in p])
+
+    def test_coma_decimal_y_cifra_interna_valen(self):
+        for s in ('Presupuesto de $42,7 billones', 'Línea 137 del SITP en Kennedy',
+                  'Entrega de 300 viviendas en Bosa'):
+            self.assertFalse(az._viola_forma_absoluta(s), s)
+            self.assertNotIn('puntuacion', az._problemas_forma_subtema(s), s)
+
+    def test_garantia_final(self):
+        rows = [{'Título': 'x', 'Subtema_IA': s} for s in self.MALOS]
+        rows += [{'Título': 'x', 'Subtema_IA': 'Entrega de becas, en Cali'},
+                 {'Título': 'x', 'Subtema_IA': '-', 'is_duplicate': True},
+                 {'Título': 'x', 'Subtema_IA': 'Presupuesto de $42,7 billones'}]
+        az.garantizar_forma_subtemas(rows, {'titulo': 'Título'})
+        for r in rows:
+            s = r['Subtema_IA']
+            if s == '-':
+                continue
+            self.assertFalse(az._viola_forma_absoluta(s), s)
+        self.assertEqual(rows[0]['Subtema_IA'], 'Entrega de becas en Cali')
+        self.assertEqual(rows[1]['Subtema_IA'], 'Becas para enfermería en Cali')
+        self.assertEqual(rows[3]['Subtema_IA'], 'Feria del libro de Bogotá')
+        # Mismo rótulo, mismo arreglo (no se parte la noticia).
+        self.assertEqual(rows[0]['Subtema_IA'], rows[len(self.MALOS)]['Subtema_IA'])
+        self.assertEqual(rows[-2]['Subtema_IA'], '-')
+        self.assertEqual(rows[-1]['Subtema_IA'], 'Presupuesto de $42,7 billones')
+
+    def test_subtema_fijo_del_perfil_no_se_toca(self):
+        rows = [{'Título': 'x', 'Subtema_IA': 'Plan, Bogotá'}]
+        self.assertEqual(az.garantizar_forma_subtemas(rows, {}, ['Plan, Bogotá']), 0)
+
+    def test_la_corrida_completa_la_aplica(self):
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                        'tools'))
+        import banco_agrupacion as banco
+        original = az.garantizar_forma_subtemas
+        llamadas = []
+
+        def espia(rows, km, fijos=()):
+            for r in rows:
+                if not r.get('is_duplicate'):
+                    r['Subtema_IA'] = '- 15 ' + str(r.get('Subtema_IA') or '') + ', hoy'
+                    break
+            llamadas.append(1)
+            return original(rows, km, fijos)
+        az.garantizar_forma_subtemas = espia
+        try:
+            rows, _v = banco.generar_dossier(1)
+            modelo = banco.ModeloSimulado(1)
+            ll = az.llamar_llm
+            az.llamar_llm = modelo
+            try:
+                az.enrich_rows_with_ai(rows, {'titulo': 'Título'}, banco.MARCA, banco.ALIAS,
+                                       api_key='simulada', extra={'workers': 1})
+            finally:
+                az.llamar_llm = ll
+        finally:
+            az.garantizar_forma_subtemas = original
+        self.assertEqual(llamadas, [1])
+        for r in rows:
+            s = str(r.get('Subtema_IA') or '')
+            if s and s != '-':
+                self.assertFalse(az._viola_forma_absoluta(s), s)
 
 
 if __name__ == '__main__':

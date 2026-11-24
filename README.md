@@ -62,6 +62,18 @@ El acceso a la interfaz de producción está resguardado mediante autenticación
     es un solo subtema (gana la corrección manual o la forma más repetida).
   - El reemplazo de un subtema mal formado debe nombrar lo que nombra la
     fila (sus lugares y personas).
+- **Sin comas, ni empezar con verbo, número o guion** (regla del usuario):
+  - los dos motores lo rechazan al guardar y le explican el motivo al modelo
+    (Haiku: `problemas_subtema`; Luna: `validar` y la reparación), y los
+    prompts lo piden («Entrega de 300 viviendas», no «300 viviendas
+    entregadas»);
+  - una garantía final (`garantizar_forma_subtemas`) lo cumple sobre lo que
+    se exporta: une las comas («Entrega de becas, en Cali» → «Entrega de
+    becas en Cali») y quita guiones, cifras y verbos del inicio («15 becas…»
+    → «Becas…»), con el mismo arreglo para todas las filas del mismo
+    subtema;
+  - la coma decimal de una cifra sí vale («Presupuesto de $42,7 billones»);
+    los subtemas fijos del perfil no se tocan.
 - Se mantiene la regla de v4.67: si al quitar el verbo queda un trozo literal
   del titular («Inició en la radio a los 20» → «Radio a los 20»), sigue
   siendo copia y lo redacta el modelo.

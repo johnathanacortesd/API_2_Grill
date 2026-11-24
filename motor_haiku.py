@@ -327,6 +327,20 @@ def problemas_subtema(subtema: str, titulo: str = "", contexto: str = "") -> Lis
     s = str(subtema or "").strip()
     if not s:
         return ["vacío"]
+    # v4.88 (regla del usuario): nunca comas, nunca empieza con número ni con
+    # guion o viñeta. Aplica también a nombres propios de programa.
+    forma = []
+    if re.search(r"(?<!\d),|,(?!\d)", s):  # la coma decimal («$42,7») sí vale
+        forma.append("tiene comas: escribe una sola frase nominal sin comas")
+    if re.match(r"[\-\u2010-\u2015\u2212•·*_~=+>|/\\]", s):
+        forma.append("empieza con guion o viñeta: empieza con un sustantivo del hecho")
+    if re.match(r"\d", s):
+        forma.append("empieza con número (%s): empieza con un sustantivo del hecho; la "
+                     "cifra puede ir después ('Entrega de 300 viviendas')" % s.split()[0])
+    if forma:
+        return forma + [x for x in problemas_subtema(re.sub(r"(?<!\d),|,(?!\d)", " ", s).lstrip(
+            "-\u2010\u2011\u2012\u2013\u2014\u2015\u2212•·*_~=+>|/\\ 0123456789"),
+            titulo, contexto) if x != "vacío"]
     if es_rotulo_de_entidad(s):
         return ["nombra a la entidad como tema (%s): escribe el asunto concreto de ESTA nota, "
                 "no la entidad ni su vocera" % s]
@@ -790,7 +804,7 @@ SUBTEMA: clasificación precisa y específica del hecho que cuenta el "contexto"
 - NUNCA empieza con un verbo en ninguna forma: ni infinitivo (Realizar, Volver), ni conjugado (Anuncia, Querían, Denunció), ni gerundio (Realizando), ni participio (Anunciado). Empieza con un sustantivo: Anuncio, Riesgo, Entrega, Denuncia, Alerta.
 - NUNCA es un extracto, recorte o casi-copia del título ni del contexto: sintetiza el hecho con tus palabras.
 - Específico, no genérico: nada de "Gestión de la alcaldía" ni "Situación de orden público".
-- Nunca el nombre del medio, sin comas ni punto final.
+- Nunca el nombre del medio, NUNCA comas (ni siquiera en nombres propios) ni punto final, y NUNCA empieza con número ni con guion: la cifra va después del sustantivo ("Entrega de 300 viviendas", no "300 viviendas entregadas").
 - Excepción: si la nota trata de un programa, plan, obra, servicio u operación con NOMBRE PROPIO, el subtema es ese nombre tal como se le conoce, aunque sea corto o esté en el titular: "Jóvenes a la E", "Operación Kratos", "Plan Motos y Vehículos en Engativá", "Metro de Bogotá".
 __RUBRICA_SUBTEMA__
 Si el pedido trae un bloque <guia_subtema>, esa guía del cliente MANDA sobre estas reglas en los casos que nombre.
@@ -847,7 +861,7 @@ SYSTEM_PROMPT = (SYSTEM_PROMPT.replace("__REGLAS_SUBTEMA__", _REGLAS_GRILL)
 
 REGLAS_FORMA_REVISOR = (
     "FORMA DEL SUBTEMA (obligatoria; las correcciones que no la cumplan se rechazan): frase nominal "
-    "de 3 a 7 palabras; NUNCA empieza con verbo (ni infinitivo, ni conjugado, ni gerundio, ni "
+    "de 3 a 7 palabras, sin comas; NUNCA empieza con número ni con guion; NUNCA empieza con verbo (ni infinitivo, ni conjugado, ni gerundio, ni "
     "participio); NUNCA es extracto ni casi-copia del título o del contexto; específica del hecho "
     "(quién, qué), no genérica. MAL 'querían volver a la guerra' -> BIEN 'Riesgo de reactivación del "
     "conflicto armado'. MAL 'Anuncia nuevas medidas' -> BIEN 'Nuevas medidas de protección a líderes "

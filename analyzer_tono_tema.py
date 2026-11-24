@@ -1253,6 +1253,13 @@ def _comas_de_nombre_propio(s: str) -> bool:
     return all(any(w[:1].isupper() for w in t.split()) for t in tramos[1:])
 
 
+# v4.88: guiones, rayas y viñetas al inicio del subtema.
+_INICIO_GUION = re.compile(r'^[\s\-\u2010-\u2015\u2212•·*_~=+>|/\\]+')
+# Coma que no es decimal («$42,7 billones» sí se permite: es parte de la cifra).
+_COMA_TEXTO = re.compile(r'(?<!\d),|,(?!\d)')
+_TOKEN_NUMERO = re.compile(r'^[(\[]?[\d][\d.,:%°ºª$#/\-]*[)\]]?$')
+
+
 def _problemas_forma_subtema(sub_tema: str) -> List[str]:
     """Problemas de forma que ningún subtema puede tener (v1.34)."""
     s = str(sub_tema or '').strip()
@@ -1260,8 +1267,14 @@ def _problemas_forma_subtema(sub_tema: str) -> List[str]:
     if not w:
         return []
     p = []
-    if _PUNTUACION_PAT.search(s) and not _comas_de_nombre_propio(s):
+    # v4.88 (regla del usuario): NUNCA comas, ni en nombres propios.
+    if _COMA_TEXTO.search(s) or (_PUNTUACION_PAT.search(s) and not _comas_de_nombre_propio(s)):
         p.append('puntuacion')
+    # v4.88: nunca empieza con número ni con guion o viñeta.
+    if _INICIO_GUION.match(s):
+        p.append('inicio_guion')
+    elif s[:1].isdigit():
+        p.append('inicio_numero')
     if nz(w[0].strip('"\'«»“”¡¿')) in _PRONOMBRE_INICIAL:
         p.append('inicio_pronombre')
     if len(w) >= 3 and any(_verbo_finito(t) for t in w[1:3]):
@@ -1279,7 +1292,9 @@ def _reparar_forma_subtema(sub_tema: str) -> str:
     s = str(sub_tema or '').strip()
     if not s:
         return ''
-    tramos = [t.strip(' "\'«»“”') for t in re.split(r'(?<!\d)[.,;:](?!\d)', s) if t.strip()]
+    # v4.88: comas siempre parten (también entre cifras) y se quita el guion inicial.
+    tramos = [_INICIO_GUION.sub('', t).strip(' "\'«»“”')
+              for t in re.split(r'(?<!\d),|,(?!\d)|(?<!\d)[.;:](?!\d)', s) if t.strip()]
     candidatos = []
     for tr in sorted(tramos, key=lambda x: -len(x.split())):
         w = tr.split()
@@ -1287,7 +1302,7 @@ def _reparar_forma_subtema(sub_tema: str) -> str:
         # miércoles» -> sin hecho) y conectores como «según».
         while w and (nz(w[0]) in _PRONOMBRE_INICIAL or nz(w[0]) in _ART_INICIAL
                      or nz(w[0]) in _PREP_INICIO_ETIQUETA or nz(w[0]) == 'segun'
-                     or _empieza_con_verbo(w)):
+                     or _TOKEN_NUMERO.match(w[0]) or _empieza_con_verbo(w)):
             w = w[1:]
         for k in range(1, min(4, len(w))):
             if _verbo_finito(w[k]):
@@ -6206,7 +6221,8 @@ def sanear_subtemas_finales(rows, mapa, etiquetas, ajustes_subtema, km):
     palabras distintivas. Devuelve el dict de ajustes actualizado."""
     ajustes = dict(ajustes_subtema or {})
     duros = {'puntuacion', 'inicio_pronombre', 'clausula_verbal', 'copia_titular',
-             'verbo_inicial', 'preposicion_inicial', 'subtema_sin_hecho', 'caracter_marcador'}
+             'verbo_inicial', 'preposicion_inicial', 'subtema_sin_hecho', 'caracter_marcador',
+             'inicio_numero', 'inicio_guion'}
     por_grupo = defaultdict(list)
     for i, row in enumerate(rows):
         if not row.get('is_duplicate') and mapa.get(i) is not None:
@@ -8216,6 +8232,75 @@ def _fragmentos_misma_nota(row: dict, km: dict) -> set:
     return {' '.join(w[i:i + k]) for i in range(max(0, len(w) - k + 1))}
 
 
+def _viola_forma_absoluta(s: str) -> bool:
+    """v4.88 (regla del usuario): un Subtema_IA nunca lleva comas (salvo la
+    coma decimal de una cifra: «$42,7 billones»), nunca
+    empieza con número, guion o viñeta, ni con verbo."""
+    s = str(s or '').strip()
+    w = s.split()
+    return (not w or bool(_COMA_TEXTO.search(s)) or bool(_INICIO_GUION.match(s)) or s[:1].isdigit()
+            or _empieza_con_verbo(w))
+
+
+def _limpiar_forma_absoluta(s: str) -> str:
+    """Arreglo mecánico sin inventar palabras: une las comas («Entrega de
+    becas, en Cali» -> «Entrega de becas en Cali») y quita guiones, cifras
+    y verbos del inicio («15 becas…» -> «Becas…»). '' si no queda una frase
+    de al menos 2 palabras."""
+    s = _INICIO_GUION.sub('', str(s or '')).strip()
+    s = re.sub(r'\s*(?:(?<!\d),|,(?!\d))\s*', ' ', s).strip(' .;:')
+    w = s.split()
+    while len(w) > 2 and (_TOKEN_NUMERO.match(w[0]) or _empieza_con_verbo(w)
+                          or nz(w[0]) in _ART_INICIAL or nz(w[0]) in _PREP_INICIO_ETIQUETA):
+        w = w[1:]
+        while w and _INICIO_GUION.match(w[0]):
+            w = w[1:]
+    if len(w) < 2 or _TOKEN_NUMERO.match(w[0]) or _empieza_con_verbo(w):
+        return ''
+    c = ' '.join(w)
+    return c[0].upper() + c[1:]
+
+
+def garantizar_forma_subtemas(rows: List[dict], km: dict, fijos=()) -> int:
+    """v4.88: garantía FINAL de forma sobre las filas que se exportan (regla
+    del usuario): ningún Subtema_IA lleva comas ni empieza con verbo, número
+    o guion. Se decide por RÓTULO (todas las filas con el mismo subtema
+    reciben el mismo arreglo, así no se parte una noticia): primero el
+    rótulo con las comas unidas y el inicio limpio, si no el reparado por
+    `_reparar_forma_subtema`; solo si ninguno sirve, un respaldo del titular
+    y el cuerpo de la primera fila. Los subtemas fijos del perfil no se
+    tocan. Devuelve cuántas filas cambiaron."""
+    fijos_n = {nz(f) for f in (fijos or []) if f}
+    por_rotulo: Dict[str, List[int]] = defaultdict(list)
+    for i, r in enumerate(rows):
+        lab = str(r.get('Subtema_IA') or '').strip()
+        if lab and lab != '-' and nz(lab) not in fijos_n and _viola_forma_absoluta(lab):
+            por_rotulo[lab].append(i)
+    cambios = 0
+    for lab, filas in por_rotulo.items():
+        nuevo = ''
+        for c in (_limpiar_forma_absoluta(lab), _reparar_forma_subtema(lab)):
+            if c and not _viola_forma_absoluta(c):
+                nuevo = c
+                break
+        if not nuevo:
+            r0 = rows[filas[0]]
+            tit = _titulo_fila(r0, km)
+            c = _subtema_especifico(tit, [_texto_fila(r0, km)])
+            c = c if c and not _viola_forma_absoluta(c) else _limpiar_forma_absoluta(c)
+            nuevo = c if c and not _viola_forma_absoluta(c) else ''
+        if not nuevo:
+            # Último recurso: el rótulo sin comas ni guiones aunque quede corto.
+            nuevo = re.sub(r'\s*(?:(?<!\d),|,(?!\d))\s*', ' ', _INICIO_GUION.sub('', lab)).strip()
+            nuevo = re.sub(r'^[\d.,:%°ºª$#/()\[\]\s-]+', '', nuevo).strip() or nuevo
+            nuevo = nuevo[:1].upper() + nuevo[1:]
+        for i in filas:
+            if rows[i].get('Subtema_IA') != nuevo:
+                rows[i]['Subtema_IA'] = nuevo
+                cambios += 1
+    return cambios
+
+
 def unificar_forma_subtemas(rows: List[dict]) -> int:
     """Portado de Secretaría v1.44 (sin la regla del «en Bogotá», propia del
     Distrito): último pase de forma sobre las filas volcadas. Un mismo
@@ -10068,6 +10153,13 @@ def enrich_rows_with_ai(
     if isinstance(_refs, list) and _refs:
         _ULTIMO_RESUMEN['referencias_sheets_leidas'] = len(_refs)
         _ULTIMO_RESUMEN['subtemas_de_la_hoja'] = anclar_subtemas_hoja(rows, km, _refs, mapa=mapa)
+
+    # v4.88 (regla del usuario): ningún subtema con comas ni empezando con
+    # verbo, número o guion. Último pase sobre lo que se exporta.
+    _ULTIMO_RESUMEN.pop('subtemas_forma_absoluta', None)
+    _abs = garantizar_forma_subtemas(rows, km, cfg.get('subtemas_fijos'))
+    if _abs:
+        _ULTIMO_RESUMEN['subtemas_forma_absoluta'] = _abs
 
     _etapa('Pase final por noticia')
     if haiku:
