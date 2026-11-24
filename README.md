@@ -42,6 +42,24 @@ El acceso a la interfaz de producción está resguardado mediante autenticación
 
 ## 🚀 Funcionalidades
 
+### OpenAI Luna con las guardas de Claude Haiku (v4.85)
+
+- **Tono por rol:** Luna recibe la misma rúbrica de Haiku y declara el *rol*
+  del cliente en la nota (gestion, logro, critica, afectacion, equilibrada,
+  referencial). El tono debe corresponder a ese rol (gestion/logro = Positivo;
+  critica/afectacion = Negativo; equilibrada/referencial = Neutro). Si no
+  cuadra, o un Positivo/Negativo viene sin rol, la nota vuelve a Luna con el
+  motivo y lo que la nota dice del cliente. Si tras dos vueltas sigue sin
+  cuadrar: ante la duda, Neutro. La regla de tono del cliente manda en los
+  casos que nombre.
+- **Validador de subtema de Haiku:** en la vuelta de reparación de Luna se
+  suman los controles de Haiku (3 a 7 palabras de contenido, sin verbo
+  conjugado, sin copiar titular ni contexto, nunca la entidad o el vocero como
+  tema), con el motivo explicado al modelo. Los rótulos fijos del perfil no se
+  validan.
+- No aplica el control de rol con PKL de tono ni con «Solo Subtema»; con Jev
+  activo, Jev sigue poniendo el tono. Se apaga con `luna_guardas_haiku: false`.
+
 ### Resumen y texto intercambian lugar (v4.84)
 
 - En el xlsx, **Resumen - Aclaracion** va ahora justo después de «Link Nota»
