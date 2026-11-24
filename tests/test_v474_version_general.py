@@ -225,10 +225,14 @@ def test_tamano_por_tipo_de_medio():
     d = {str(x['ID Noticia']): x for x in datos}
     k = 'Duración - Nro. Caracteres'
     assert float(d['101']['Tamaño']) == 120.5 and int(d['101'][k]) == 3400   # prensa
-    assert d['102']['Tamaño'] == '00:02:30' and d['102'][k] == '00:02:30'    # radio (texto)
-    assert d['103']['Tamaño'] == '00:01:45' and d['103'][k] == '00:01:45'    # TV (hora de Excel)
+    # Radio/TV: la duración va en Tamaño; Duración - Nro. Caracteres es el
+    # número de caracteres del Resumen - Aclaracion (v4.83).
+    for idn in ('102', '103', '105'):
+        assert int(d[idn][k]) == len(d[idn]['Resumen - Aclaracion'])
+    assert d['102']['Tamaño'] == '00:02:30'                                  # radio (texto)
+    assert d['103']['Tamaño'] == '00:01:45'                                  # TV (hora de Excel)
     assert d['104']['Tamaño'] in (None, '', '-') and int(d['104'][k]) == 2800  # internet
-    assert int(d['105']['Tamaño']) == 95 and int(d['105'][k]) == 95          # radio (segundos)
+    assert int(d['105']['Tamaño']) == 95                                     # radio (segundos)
 
 
 def test_duracion_texto():
@@ -342,3 +346,30 @@ def test_canonizar_columnas():
     assert list(out['Dimensioncm2']) == [12] and list(out['Empresa rel.']) == ['A;B']
     assert list(out['Hora']) == ['09:00']          # la exacta manda
     assert 'Empresa Rel.' in out.columns            # la original se conserva
+
+
+def test_caracteres_del_resumen_en_radio_y_tv():
+    """v4.83: en Radio y Televisión, «Duración - Nro. Caracteres» = caracteres
+    del «Resumen - Aclaracion» tal como sale en el xlsx; Prensa, Internet y
+    Revistas conservan el valor del origen."""
+    base = ['ID Noticia', 'Título', 'Resumen - Aclaracion', 'Medio', 'Fecha', 'Tipo de Medio',
+            'Duración - Nro. Caracteres']
+    res, cab, datos = _correr_filas(base, [
+        ['1', 'La marca anuncia plan', 'La marca anunció un plan en Cali hoy.', 'Caracol Radio',
+         '01/09/2026', 'Radio', '00:02:30'],
+        ['2', 'La marca y el plan', 'La marca &amp; el plan.', 'Noticias Caracol',
+         '02/09/2026', 'Televisión', '00:01:45'],
+        ['3', 'La marca abre planta', 'La marca abrió una planta en Bogotá.', 'El Tiempo',
+         '03/09/2026', 'Prensa', 3400]])
+    d = {str(x['ID Noticia']): x for x in datos}
+    k = 'Duración - Nro. Caracteres'
+    assert int(d['1'][k]) == len('La marca anunció un plan en Cali hoy.') == 37
+    assert d['2']['Resumen - Aclaracion'] == 'La marca & el plan.' and int(d['2'][k]) == 19
+    assert int(d['3'][k]) == 3400
+    assert d['1']['Tamaño'] == '00:02:30' and d['2']['Tamaño'] == '00:01:45'
+
+
+def test_caracteres_resumen():
+    assert pipeline.caracteres_resumen('Hola mundo') == 10
+    assert pipeline.caracteres_resumen('') == 0 and pipeline.caracteres_resumen('-') == 0
+    assert pipeline.caracteres_resumen(None) == 0 and pipeline.caracteres_resumen(float('nan')) == 0
