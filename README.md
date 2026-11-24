@@ -42,6 +42,12 @@ El acceso a la interfaz de producción está resguardado mediante autenticación
 
 ## 🚀 Funcionalidades
 
+### Resumen y texto intercambian lugar (v4.84)
+
+- En el xlsx, **Resumen - Aclaracion** va ahora justo después de «Link Nota»
+  (donde iba «texto») y **texto** justo después de «Contexto analizado» (donde
+  iba el resumen). El contenido de cada columna no cambia.
+
 ### Caracteres del resumen en radio y TV (v4.83)
 
 - En Radio y Televisión, **Duración - Nro. Caracteres** es la cantidad de
