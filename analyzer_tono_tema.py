@@ -492,7 +492,7 @@ MODELO_DEFECTO = "gpt-6-luna"
 # v4.53: sello del analizador. El encabezado de la app lo muestra junto a
 # APP_VERSION; si el despliegue muestra un sello distinto (o "sin-sello"),
 # el contenedor NO corre este archivo aunque el encabezado diga otra versión.
-ANALYZER_BUILD = "v4.85-luna-rol"  # v4.85: Luna con tono por rol y validador de subtema de Haiku (v4.84: resumen y texto)
+ANALYZER_BUILD = "v4.86-luna-auditor-evaluador"  # v4.86: Luna con auditor de tono y evaluador de agrupación (v4.85: tono por rol)
 # v4.53: solo cambia el sello (la lógica del analizador no se toca en esta versión;
 # el cambio es de interfaz).
 JEV_URL_DEFECTO = "https://api.typesafe.ai/v1/systemone"
@@ -2326,6 +2326,134 @@ def _rol_canon(v) -> str:
     return r if r in ROLES_TONO else ''
 
 
+# ============================================================================
+# v4.86 — Auditor de tono con OpenAI Luna (el mismo del motor Claude Haiku):
+# una segunda lectura, en lotes de 20 y en paralelo, de los grupos con tono de
+# riesgo (hasta 160 por corrida), con el prompt del auditor de Haiku. Solo se
+# aplica un veredicto con tono válido y rol coherente.
+# ============================================================================
+LOTE_AUDITOR_LUNA = 20
+MAX_AUDITOR_LUNA = 160
+
+
+def auditor_luna_activo(cfg: dict) -> bool:
+    """Con Jev, PKL de tono o «Solo Subtema» el tono no lo pone Luna."""
+    return bool(cfg.get('auditor_tono', True) and (cfg.get('api_key') or '').strip()
+                and not (cfg.get('typesafe_api_key') or '').strip()
+                and not cfg.get('_tono_pkl') and cfg.get('columnas_ia') != 'subtema')
+
+
+def candidatos_tono_luna(cfg: dict, grupos: Sequence[dict], etiquetas: Dict[int, dict]) -> List[dict]:
+    """Grupos cuyo tono conviene volver a leer, con el motivo. Sin IA."""
+    import motor_haiku as _mh
+    terminos = _mh.terminos_cliente(cfg.get('brand') or '', cfg.get('aliases') or [],
+                                    cfg.get('voceros') or [])
+    dudosos = set(cfg.get('_tono_dudoso_luna') or ())
+    tonos_sub: Dict[str, set] = defaultdict(set)
+    for g in grupos:
+        e = etiquetas.get(g['grupo']) or {}
+        if e.get('tono') and e.get('sub_tema'):
+            tonos_sub[nz(e['sub_tema'])].add(e['tono'])
+    out = []
+    for g in grupos:
+        e = etiquetas.get(g['grupo']) or {}
+        tono = e.get('tono')
+        if tono not in TONOS:
+            continue
+        tit = str(g.get('titulo') or '')
+        ctx = str(g.get('contexto_marca') or g.get('contexto') or g.get('texto') or '')
+        motivos, peso = [], 0
+        if g['grupo'] in dudosos:
+            motivos.append('el rol y el tono no coincidían')
+            peso = 4
+        if tono != 'Neutro' and not _mh.menciona_cliente(tit + ' ' + ctx, terminos):
+            motivos.append('tono %s sin mención literal del cliente, alias ni voceros' % tono)
+            peso = max(peso, 4)
+        if len(tonos_sub.get(nz(e.get('sub_tema') or ''), ())) > 1:
+            motivos.append('su subtema tiene grupos con tonos distintos')
+            peso = max(peso, 3)
+        if tono == 'Negativo':
+            motivos.append('Negativo: confirma que la crítica o el hecho adverso recae en el cliente')
+            peso = max(peso, 2)
+        elif tono == 'Positivo' and not _mh.menciona_cliente(tit, terminos):
+            motivos.append('Positivo y el cliente no está en el título: confirma que la acción o el '
+                           'resultado favorable es suyo y no una mención de paso')
+            peso = max(peso, 1)
+        if motivos:
+            out.append({'id': str(g['grupo']), 'titulo': tit[:220], 'contexto': ctx[:700],
+                        'subtema': e.get('sub_tema') or '', 'tono_actual': tono,
+                        'rol_actual': e.get('rol') or '', 'motivos': motivos, '_peso': peso})
+    out.sort(key=lambda c: -c['_peso'])
+    out = out[:MAX_AUDITOR_LUNA]
+    out.sort(key=lambda c: nz(c['subtema']))
+    for c in out:
+        del c['_peso']
+    return out
+
+
+def auditar_tono_luna(cfg: dict, grupos: Sequence[dict], etiquetas: Dict[int, dict],
+                      uso: Optional[dict] = None, workers: int = WORKERS_DEFECTO) -> dict:
+    """Devuelve {candidatos, lotes, cambios:[{grupo, de, a, rol, razon}], confirmados,
+    error}. No modifica `etiquetas` (corre a la vez que el evaluador de
+    agrupación): los cambios se aplican después. Nunca lanza."""
+    out = {'candidatos': 0, 'lotes': 0, 'cambios': [], 'confirmados': 0, 'error': None}
+    try:
+        import motor_haiku as _mh
+        cands = candidatos_tono_luna(cfg, grupos, etiquetas)
+    except Exception as e:  # noqa: BLE001
+        out['error'] = '%s: %s' % (type(e).__name__, e)
+        return out
+    out['candidatos'] = len(cands)
+    if not cands:
+        return out
+    lotes = [cands[i:i + LOTE_AUDITOR_LUNA] for i in range(0, len(cands), LOTE_AUDITOR_LUNA)]
+    out['lotes'] = len(lotes)
+    cliente = {'marca': cfg.get('brand') or '', 'alias': list(cfg.get('aliases') or []),
+               'voceros': list(cfg.get('voceros') or [])}
+    crit = ((cfg.get('criterio_texto') or '').strip()
+            or str(CRITERIOS_TONO.get(cfg.get('criterio') or '', '') or ''))
+
+    def _uno(chunk):
+        pedido: Dict[str, object] = {'cliente': cliente}
+        if crit:
+            pedido['criterio_tono'] = _mh.limpiar_criterio(crit)
+        pedido['filas'] = chunk
+        txt = llamar_llm(cfg, [{'role': 'system', 'content': _mh.PROMPT_AUDITOR_TONO},
+                               {'role': 'user', 'content': json.dumps(pedido, ensure_ascii=False)}],
+                         uso=uso)
+        return _json_loose(txt) or {}
+
+    pedidos = {c['id'] for c in cands}
+    with ThreadPoolExecutor(max_workers=max(1, min(int(workers), len(lotes)))) as ex:
+        futs = [ex.submit(_uno, c) for c in lotes]
+        for f in futs:
+            try:
+                data = f.result()
+            except Exception as e:  # noqa: BLE001 - un lote que falla no tumba los demás
+                out['error'] = '%s: %s' % (type(e).__name__, e)
+                continue
+            for r in (data.get('resultados') or []) if isinstance(data, dict) else []:
+                if not isinstance(r, dict):
+                    continue
+                fid = str(r.get('id'))
+                tono = sq(r.get('tono')).capitalize()
+                rol = _rol_canon(r.get('rol'))
+                if fid not in pedidos or tono not in TONOS or ROLES_TONO.get(rol) != tono:
+                    continue
+                pedidos.discard(fid)            # un veredicto por grupo
+                try:
+                    gid = int(fid)
+                except ValueError:
+                    continue
+                antes = (etiquetas.get(gid) or {}).get('tono')
+                if antes == tono:
+                    out['confirmados'] += 1
+                    continue
+                out['cambios'].append({'grupo': gid, 'de': antes, 'a': tono, 'rol': rol,
+                                       'razon': str(r.get('razon') or '')[:160]})
+    return out
+
+
 def _luna_guardas_activas(cfg: dict) -> Tuple[bool, bool]:
     """(chequear_rol, chequear_forma) para el motor Luna."""
     if not cfg.get('luna_guardas_haiku', True):
@@ -2840,6 +2968,8 @@ def etiquetar_grupos(cfg: dict, grupos: List[dict], progress: Optional[Callable]
                     and e['tono'] != 'Neutro':
                 e['tono'] = 'Neutro'
                 _a_neutro += 1
+                # v4.86: el auditor de tono de Luna los vuelve a leer.
+                cfg.setdefault('_tono_dudoso_luna', set()).add(g['grupo'])
     _ULTIMO_RESUMEN['luna_guardas_haiku'] = {
         'rol_tono_a_revisar': _stats_luna.get('rol_tono', 0),
         'forma_subtema_a_revisar': _stats_luna.get('forma', 0),
@@ -9050,6 +9180,14 @@ def enrich_rows_with_ai(
         _aud_futuro = _aud_pool.submit(
             _mha.auditar_tono, brand, list(aliases or []), cfg.get('voceros') or [], _crit_aud,
             corrida=info_haiku['corrida'], silencioso=True)
+    # v4.86: con OpenAI Luna, el mismo auditor de tono (prompt de Haiku),
+    # también a la vez que el evaluador; los cambios se aplican después.
+    _aud_luna = None
+    _luna_aud = (not haiku) and tone_model is None and auditor_luna_activo(cfg)
+    if _luna_aud:
+        _aud_pool = ThreadPoolExecutor(max_workers=1)
+        _aud_luna = _aud_pool.submit(auditar_tono_luna, cfg, grupos,
+                                     {k: dict(v) for k, v in etiquetas.items()}, uso, workers)
     # Clausifier 2026-11-08: agente evaluador de agrupación (modo Haiku).
     # Grupos candidatos por Título / Resumen / texto / Contexto analizado
     # parecidos (rapidfuzz); el agente decide agrupar o separar ANTES de las
@@ -9057,7 +9195,10 @@ def enrich_rows_with_ai(
     _eval_dec: List[dict] = []
     _eval_estado: dict = {}
     _ULTIMO_RESUMEN.pop('evaluador_agrupacion', None)
-    if haiku and cfg.get('evaluador_agrupacion', True):
+    _ULTIMO_RESUMEN.pop('auditor_tono_luna', None)
+    # v4.86: el evaluador de agrupación también corre con OpenAI Luna.
+    _luna_eval = (not haiku) and bool((cfg.get('api_key') or '').strip())
+    if (haiku or _luna_eval) and cfg.get('evaluador_agrupacion', True):
         import evaluador_agrupacion as _ev
         progreso(76, 'Paso 4 de 5 · Evaluador de agrupación: revisando si las noticias parecidas '
                      'son de verdad la misma (si no, se separan) y auditando el tono…')
@@ -9067,8 +9208,12 @@ def enrich_rows_with_ai(
             cliente={'brand': brand, 'aliases': list(aliases or []),
                      'voceros': cfg.get('voceros') or [],
                      'criterio_texto': ((cfg.get('criterio_texto') or '').strip()
-                                        or str(CRITERIOS_TONO.get(cfg.get('criterio') or '', '') or ''))})
-        _ULTIMO_RESUMEN['evaluador_agrupacion'] = dict(_ev.ULTIMO)
+                                        or str(CRITERIOS_TONO.get(cfg.get('criterio') or '', '') or ''))},
+            llm_fn=None if haiku else (
+                lambda _sys, _usr: llamar_llm(cfg, [{'role': 'system', 'content': _sys},
+                                                    {'role': 'user', 'content': _usr}], uso=uso)),
+            workers=workers)
+        _ULTIMO_RESUMEN['evaluador_agrupacion'] = dict(_ev.ULTIMO, motor='haiku' if haiku else 'luna')
     if _aud_futuro is not None:
         # El tono auditado entra antes de aplicar las decisiones del evaluador.
         try:
@@ -9085,9 +9230,23 @@ def enrich_rows_with_ai(
         info_haiku['auditor_tono'] = _aud
         info_haiku['costo_usd'] = round(float(info_haiku.get('costo_usd') or 0.0)
                                         + float(_aud.get('costo_usd') or 0.0), 6)
+    if _aud_luna is not None:
+        try:
+            _aud = _aud_luna.result()
+        except Exception as _e:  # noqa: BLE001 - el auditor nunca tumba la corrida
+            _aud = {'candidatos': 0, 'cambios': [], 'confirmados': 0,
+                    'error': '%s: %s' % (type(_e).__name__, _e)}
+        finally:
+            _aud_pool.shutdown(wait=False)
+        for _c in _aud.get('cambios') or []:
+            _e_aud = etiquetas.setdefault(_c['grupo'], {})
+            _e_aud['tono'] = _c['a']
+            _e_aud['rol'] = _c['rol']
+        _ULTIMO_RESUMEN['auditor_tono_luna'] = _aud
     if _eval_dec:
         _eval_estado = _ev.aplicar_inicial(_eval_dec, _cands, mapa, etiquetas)
-    _etapa('Evaluador de agrupación y auditor de tono' if haiku else 'Preparación')
+    _etapa('Evaluador de agrupación y auditor de tono'
+           if (haiku or _luna_eval or _luna_aud) else 'Preparación')
     # Subtema que el etiquetador le dio a cada grupo, antes de las
     # unificaciones (lo usa el pase final por noticia).
     subtemas_originales = {gid: (e or {}).get('sub_tema') or ''
