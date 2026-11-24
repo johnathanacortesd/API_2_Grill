@@ -753,7 +753,7 @@ def get_column_robust(df, name):
     for col in df.columns:
         if norm_key(col) == name_norm:
             return df[col]
-    return pd.Series([np.nan] * len(df))
+    return pd.Series([np.nan] * len(df), index=df.index)
 
 
 def clean_text(text):
@@ -1367,9 +1367,36 @@ def construir_ai_config_custom(brand, alias_txt, voceros_txt, criterio,
     }
 
 
+# v4.82: columnas del dossier que el proceso lee por nombre. Un encabezado
+# escrito de otra forma («Empresa Rel.», «MENCIONES - EMPRESA», «Hora »,
+# «DimensionCm2») se reconoce sin importar mayúsculas, tildes, espacios ni
+# signos. Antes se ignoraba: sin «Menciones - Empresa» / «Empresa rel.» la
+# fila no se duplicaba por marca y la columna salía vacía.
+COLUMNAS_CONOCIDAS = (
+    "ID Noticia", "Fecha", "Hora", "Medio", "Tipo de Medio", "Sección - Programa", "Región",
+    "Título", "Titulo", "Autor - Conductor", "Nro. Pagina", "Dimensión", "Dimensioncm2",
+    "Duración - Nro. Caracteres", "CPE", "Valor de Nota", "Tier", "Audiencia", "Link Nota",
+    "Resumen - Aclaracion", "CuerpoEs", "Link (Streaming - Imagen)", "Menciones - Empresa",
+    "Empresa rel.", "Link Ext", "Web Ext", "ID duplicada",
+)
+
+
+def canonizar_columnas(df):
+    """Agrega con su nombre estándar las columnas conocidas que vienen
+    escritas de otra forma (la original también se queda, para la pestaña de
+    columnas personalizadas). No toca las que ya traen el nombre exacto."""
+    canon = {norm_key(c): c for c in COLUMNAS_CONOCIDAS}
+    for col in list(df.columns):
+        c = canon.get(norm_key(col))
+        if c and c != col and c not in df.columns:
+            df[c] = df[col]
+    return df
+
+
 def normalize_dossier_dataframe(df, region_map, internet_map, progress: ProgressCb = None):
     if df is None or df.empty:
         return pd.DataFrame()
+    df = canonizar_columnas(df)
 
     emit_progress(progress, 42, "Normalizando tipo de medio, región y columnas…")
 
@@ -1499,9 +1526,16 @@ def normalize_dossier_dataframe(df, region_map, internet_map, progress: Progress
         "",
     )
 
-    menciones_av = df.get("Menciones - Empresa", pd.Series([""] * len(df))).fillna("").astype(str).apply(clean_text)
-    menciones_grafica = df.get("Empresa rel.", pd.Series([""] * len(df))).fillna("").astype(str).apply(clean_text)
-    df["Menciones - Empresa"] = np.where(is_av, menciones_av, np.where(is_grafica, menciones_grafica, menciones_av))
+    menciones_av = get_column_robust(df, "Menciones - Empresa").fillna("").astype(str).apply(clean_text)
+    menciones_grafica = get_column_robust(df, "Empresa rel.").fillna("").astype(str).apply(clean_text)
+    menciones_av = menciones_av.where(~menciones_av.str.lower().isin(["nan", "none"]), "")
+    menciones_grafica = menciones_grafica.where(~menciones_grafica.str.lower().isin(["nan", "none"]), "")
+    # Radio/TV: «Menciones - Empresa»; Internet, Prensa y Revistas: «Empresa
+    # rel.». v4.82: si la que corresponde viene vacía, se usa la otra (y en
+    # un tipo de medio no reconocido, la que traiga datos).
+    _prim = np.where(is_grafica, menciones_grafica, menciones_av)
+    _sec = np.where(is_grafica, menciones_av, menciones_grafica)
+    df["Menciones - Empresa"] = np.where(pd.Series(_prim, index=df.index).str.strip() != "", _prim, _sec)
 
     emit_progress(progress, 52, "Columnas normalizadas.")
     return df
@@ -1510,8 +1544,14 @@ def normalize_dossier_dataframe(df, region_map, internet_map, progress: Progress
 def expand_menciones(df) -> List[dict]:
     records = df.to_dict("records")
     rows_expanded = []
+    _marca_nk = {norm_key("Menciones - Empresa"), norm_key("Empresa rel.")}
+    _claves_marca = [c for c in df.columns if norm_key(c) in _marca_nk and c != "Menciones - Empresa"]
     for idx, rec in enumerate(records):
         menciones = [m.strip() for m in str(rec.get("Menciones - Empresa", "")).split(";") if m.strip()]
+        # v4.82: la misma marca dos veces en la celda no duplica la fila.
+        _vistas = set()
+        menciones = [m for m in menciones
+                     if not (norm_key(m) in _vistas or _vistas.add(norm_key(m)))]
         if not menciones:
             row_dict = dict(rec)
             row_dict["Menciones - Empresa"] = ""
@@ -1522,6 +1562,15 @@ def expand_menciones(df) -> List[dict]:
         for m in menciones:
             row_dict = dict(rec)
             row_dict["Menciones - Empresa"] = m
+            # v4.82: las columnas de marca originales («Menciones - Empresa»
+            # / «Empresa rel.» con cualquier escritura), que se conservan en
+            # la pestaña de columnas personalizadas, también quedan con la
+            # marca de esta fila y no con la lista completa.
+            for _k in _claves_marca:
+                _v = rec.get(_k)
+                if isinstance(_v, str) and ";" in _v and norm_key(m) in {
+                        norm_key(x) for x in _v.split(";")}:
+                    row_dict[_k] = m
             row_dict["original_index"] = idx
             row_dict["is_duplicate"] = False
             rows_expanded.append(row_dict)

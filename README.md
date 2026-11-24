@@ -42,6 +42,22 @@ El acceso a la interfaz de producción está resguardado mediante autenticación
 
 ## 🚀 Funcionalidades
 
+### Una fila por marca, con cualquier encabezado (v4.82)
+
+- Si «Menciones - Empresa» (radio y TV) o «Empresa rel.» (internet, prensa y
+  revistas) trae varias marcas separadas por «;», la fila completa se duplica
+  una vez por marca y cada copia queda con una sola marca. Ya existía, pero
+  solo funcionaba si el encabezado se llamaba exactamente así: con «Empresa
+  Rel.», «Empresa rel», «MENCIONES - EMPRESA» o un espacio al final, la columna
+  se ignoraba y no se duplicaba nada.
+- Ahora las columnas conocidas del dossier (Hora, Nro. Pagina, Dimensioncm2,
+  Menciones - Empresa, Empresa rel., etc.) se reconocen sin importar
+  mayúsculas, tildes, espacios ni signos.
+- Si la columna que corresponde al tipo de medio viene vacía, se usa la otra.
+  La misma marca repetida en la celda no duplica la fila.
+- En «Columnas personalizadas», la columna original de marca también queda con
+  la marca de cada fila.
+
 ### Columnas Nro. Pagina y Menciones - Empresa (v4.81)
 
 - **Nro. Pagina** del origen va justo antes de «Duración - Nro. Caracteres».
