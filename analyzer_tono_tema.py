@@ -492,7 +492,7 @@ MODELO_DEFECTO = "gpt-6-luna"
 # v4.53: sello del analizador. El encabezado de la app lo muestra junto a
 # APP_VERSION; si el despliegue muestra un sello distinto (o "sin-sello"),
 # el contenedor NO corre este archivo aunque el encabezado diga otra versión.
-ANALYZER_BUILD = "v4.84-resumen-texto"  # v4.84: Resumen - Aclaracion y texto intercambian lugar (v4.83: caracteres en radio/TV)
+ANALYZER_BUILD = "v4.85-luna-rol"  # v4.85: Luna con tono por rol y validador de subtema de Haiku (v4.84: resumen y texto)
 # v4.53: solo cambia el sello (la lógica del analizador no se toca en esta versión;
 # el cambio es de interfaz).
 JEV_URL_DEFECTO = "https://api.typesafe.ai/v1/systemone"
@@ -2237,6 +2237,13 @@ def prompt_sistema(cfg: dict) -> str:
         'REGLA DE TONO',
         regla,
         '',
+        # v4.85: el tono se decide por el ROL del cliente en la nota (la misma
+        # rúbrica del motor Claude Haiku). Si la regla del cliente de arriba
+        # nombra un caso, esa regla manda y el rol es el que corresponde a ese tono.
+        _rubrica_rol(),
+        'Si la REGLA DE TONO del cliente indica otro tono para un caso, usa ese tono y el rol '
+        'que corresponde a ese tono.',
+        '',
         'REGLA DE SUB-TEMA',
         REGLAS_SUBTEMA,
         ('GUÍA DE SUBTEMAS PARA ESTE CLIENTE: ' + cfg.get('guia_subtema')
@@ -2270,6 +2277,7 @@ def prompt_sistema(cfg: dict) -> str:
             '',
             'SALIDA: solo JSON, sin markdown y sin explicaciones:',
             '{"resultados":[{"id":<numero de grupo>,"sub_tema":"<3 a 5 palabras>",'
+            '"rol":"gestion|logro|critica|afectacion|equilibrada|referencial",'
             '"tono":"Positivo|Neutro|Negativo",'
             '"tipo":"Institucional|Proyectos y programas|Información general|Ranking|Opinión de terceros",'
             '"genero":"Noticia|Opinión|Entrevista|Editorial|Reportaje"}]}',
@@ -2280,10 +2288,79 @@ def prompt_sistema(cfg: dict) -> str:
             '',
             'SALIDA: solo JSON, sin markdown y sin explicaciones:',
             '{"resultados":[{"id":<numero de grupo>,"sub_tema":"<3 a 5 palabras>",'
+            '"rol":"gestion|logro|critica|afectacion|equilibrada|referencial",'
             '"tono":"Positivo|Neutro|Negativo"}]}',
             'Un objeto por cada grupo recibido, con su id exacto.',
         ]
     return '\n'.join(lineas)
+
+
+# ============================================================================
+# v4.85 — Motor Luna con las dos guardas del motor Claude Haiku:
+#   1. Tono por ROL: Luna declara el papel del cliente en la nota (gestion,
+#      logro, critica, afectacion, equilibrada, referencial) y el tono debe
+#      corresponder a ese rol; si no, la fila vuelve al modelo con el motivo.
+#   2. Validador de subtema de Haiku (3-7 palabras de contenido, sin verbo
+#      conjugado, sin copiar titular/contexto, sin la entidad o el vocero como
+#      tema): sus motivos van a la vuelta de reparación con el modelo.
+# ============================================================================
+ROLES_TONO = {
+    'gestion': 'Positivo', 'logro': 'Positivo',
+    'critica': 'Negativo', 'afectacion': 'Negativo',
+    'equilibrada': 'Neutro', 'referencial': 'Neutro',
+}
+
+
+def _rubrica_rol() -> str:
+    try:
+        import motor_haiku as _mh
+        return _mh.RUBRICA_TONO
+    except Exception:  # pragma: no cover
+        return ('El tono sale del rol del cliente en la nota: gestion y logro = Positivo; '
+                'critica y afectacion = Negativo; equilibrada y referencial = Neutro.')
+
+
+def _rol_canon(v) -> str:
+    r = nz(v).replace(' ', '')
+    r = {'gestión': 'gestion', 'afectación': 'afectacion', 'crítica': 'critica'}.get(r, r)
+    return r if r in ROLES_TONO else ''
+
+
+def _luna_guardas_activas(cfg: dict) -> Tuple[bool, bool]:
+    """(chequear_rol, chequear_forma) para el motor Luna."""
+    if not cfg.get('luna_guardas_haiku', True):
+        return False, False
+    rol = not cfg.get('_tono_pkl') and cfg.get('columnas_ia') != 'subtema'
+    return rol, True
+
+
+def _problemas_luna(cfg: dict, g: dict, e: dict, permitidos: set, terminos: Sequence[str]) -> List[str]:
+    """Motivos adicionales (rol↔tono y forma de Haiku) para la reparación Luna."""
+    chequear_rol, chequear_forma = _luna_guardas_activas(cfg)
+    out: List[str] = []
+    try:
+        import motor_haiku as _mh
+    except Exception:  # pragma: no cover
+        return out
+    sub = str(e.get('sub_tema') or '').strip()
+    if chequear_forma and sub and _mh._simple(sub) not in permitidos:
+        ctx = g.get('contexto_marca') or g.get('contexto') or ''
+        for m in _mh.problemas_subtema(sub, g.get('titulo') or '', ctx):
+            if m.startswith('nombra a la entidad'):
+                continue   # se evalúa abajo con los términos de ESTE cliente
+            out.append('forma(%s)' % m)
+        if terminos and _mh.es_rotulo_de_entidad(sub, terminos):
+            out.append('forma(nombra a la entidad o al vocero como tema: escribe el asunto '
+                       'concreto de ESTA nota)')
+    if chequear_rol:
+        rol = e.get('rol') or ''
+        tono = e.get('tono') or 'Neutro'
+        if rol and ROLES_TONO[rol] != tono:
+            out.append("rol_tono(el rol '%s' corresponde a tono %s, no a %s: decide primero el rol "
+                       "del cliente en la nota y pon el tono de ese rol)" % (rol, ROLES_TONO[rol], tono))
+        elif not rol and tono in ('Positivo', 'Negativo'):
+            out.append('rol_tono(falta el rol del cliente: indica el rol y pon el tono que le corresponde)')
+    return out
 
 
 def prompt_lote(grupos_lote: Sequence[dict], candidatos: Sequence[str]) -> str:
@@ -2317,11 +2394,23 @@ def prompt_lote(grupos_lote: Sequence[dict], candidatos: Sequence[str]) -> str:
 
 def prompt_reparacion(fallos: Sequence[dict]) -> str:
     detalle = []
+    hay_rol = False
     for f in fallos:
-        detalle.append('GRUPO id=%d\nTITULAR: %s\nTEXTO: %s\nSUB-TEMA ACTUAL: "%s"\nPROBLEMAS: %s'
-                       % (f['grupo'], sq(f['titulo'])[:180], sq(f['texto'])[:450],
-                          f['sub_tema'], '; '.join(f['problemas'])))
-    return ('Corrige SOLO estos sub-temas. Devuelve el mismo tono salvo que el tono no sea valido.\n'
+        _b = ('GRUPO id=%d\nTITULAR: %s\nTEXTO: %s\nSUB-TEMA ACTUAL: "%s"\nPROBLEMAS: %s'
+              % (f['grupo'], sq(f['titulo'])[:180], sq(f['texto'])[:450],
+                 f['sub_tema'], '; '.join(f['problemas'])))
+        # v4.85: para corregir el tono hace falta lo que la nota dice del cliente.
+        if any(str(p).startswith('rol_tono') for p in f['problemas']):
+            hay_rol = True
+            _b += ('\nTONO ACTUAL: %s  |  ROL ACTUAL: %s\nCONTEXTO DE LA MARCA: %s'
+                   % (f.get('tono') or '-', f.get('rol') or '-', sq(f.get('contexto') or '')[:1500]))
+        detalle.append(_b)
+    _rol_txt = ('Si un problema es rol_tono, decide primero el ROL del cliente en la nota '
+                '(gestion, logro, critica, afectacion, equilibrada o referencial) y pon el tono de ese '
+                'rol: gestion y logro = Positivo; critica y afectacion = Negativo; equilibrada y '
+                'referencial = Neutro. Ante la duda, referencial (Neutro).\n') if hay_rol else ''
+    return ('Corrige SOLO estos sub-temas. Devuelve el mismo tono salvo que el tono no sea valido\n'
+            'o que un problema sea rol_tono.\n' + _rol_txt +
             'Un sub-tema valido tiene 3 a 5 palabras (maximo 7) en frase nominal, no empieza con verbo\n'
             'conjugado, no termina en preposicion y no lleva marcadores ni rotulos vacios. Nunca devuelvas\n'
             'una cola de llamado del titular (conozca cuando/donde/como, asi puede participar, que llevar)\n'
@@ -2330,7 +2419,8 @@ def prompt_reparacion(fallos: Sequence[dict]) -> str:
             'con tus palabras e incluye el actor o lugar distintivo. Si dice subtema_vago, agrega el\n'
             'objeto o asunto concreto del que se trata.\n\n'
             + '\n\n'.join(detalle)
-            + '\n\nResponde UNICAMENTE con {"resultados":[{"id":<grupo>,"sub_tema":"...","tono":"..."}]}')
+            + '\n\nResponde UNICAMENTE con {"resultados":[{"id":<grupo>,"sub_tema":"...",'
+              '"rol":"gestion|logro|critica|afectacion|equilibrada|referencial","tono":"..."}]}')
 
 
 def prompt_cubos(pendientes: Sequence[dict], tax: dict, permitir_nuevos: bool) -> str:
@@ -2503,6 +2593,9 @@ def _normaliza_label(d: dict, ids_lote: Sequence[int], con_tipo_genero: bool = F
             tono = sq(r.get('tono')).capitalize()
             e = {'sub_tema': sq(r.get('sub_tema')),
                  'tono': tono if tono in TONOS else 'Neutro'}
+            _rol = _rol_canon(r.get('rol'))
+            if _rol:
+                e['rol'] = _rol
             if con_tipo_genero:
                 tip = _canon_tipo_genero(r.get('tipo'), TIPOS_VALIDOS)
                 gen = _canon_tipo_genero(r.get('genero'), GENEROS_VALIDOS)
@@ -2545,6 +2638,12 @@ def _voto_mayoria(por_grupo: List[Dict[int, dict]], ids_lote: Sequence[int]) -> 
             # a «Creación de la Universidad de Atalaya»). Criterio v4.15.
             sub = max(candidatos, key=len)
         e_out = {'sub_tema': sub, 'tono': tono}
+        # v4.85: el rol que acompaña al tono ganador (el más votado entre los
+        # coherentes con ese tono; si ninguno lo es, el más votado).
+        _roles = [v[gid].get('rol') for v in por_grupo if gid in v and v[gid].get('rol')]
+        if _roles:
+            _coh = [r for r in _roles if ROLES_TONO.get(r) == tono]
+            e_out['rol'] = Counter(_coh or _roles).most_common(1)[0][0]
         for _campo, _validos, _defecto in (('tipo', TIPOS_VALIDOS, TIPO_DEFECTO),
                                            ('genero', GENEROS_VALIDOS, GENERO_DEFECTO)):
             _vals = [v[gid][_campo] for v in por_grupo
@@ -2649,6 +2748,20 @@ def etiquetar_grupos(cfg: dict, grupos: List[dict], progress: Optional[Callable]
 
     # ---- reparacion secuencial de etiquetas invalidas (segunda vuelta al modelo) ----
     por_grupo = {g['grupo']: g for g in grupos}
+    # v4.85: guardas de Haiku (rol↔tono y forma del subtema) en la reparación.
+    _permitidos: set = set()
+    _terminos: List[str] = []
+    try:
+        import motor_haiku as _mh_l
+        _permitidos = _mh_l.rotulos_permitidos_de(
+            cfg.get('guia_subtema') or '',
+            [str((r or {}).get('subtema') or '') for r in (cfg.get('subtemas_fijos') or [])
+             if isinstance(r, dict)])
+        _terminos = _mh_l.terminos_cliente(cfg.get('brand') or '', cfg.get('aliases') or [],
+                                           cfg.get('voceros') or [])
+    except Exception:  # pragma: no cover
+        pass
+    _stats_luna = {'rol_tono': 0, 'forma': 0}
     for ronda in range(max_reparaciones):
         fallos = []
         for g in grupos:
@@ -2656,9 +2769,15 @@ def etiquetar_grupos(cfg: dict, grupos: List[dict], progress: Optional[Callable]
             pr = validar(e['sub_tema'], e['tono'],
                          [g['titulo']] + g.get('titulos_alt', []) + [g['texto']])
             duros = [x for x in pr if not x.startswith('revisar_anclaje')]
-            if duros or not e['sub_tema']:
+            extra = _problemas_luna(cfg, g, e, _permitidos, _terminos)
+            for _x in extra:
+                _stats_luna[_x.split('(')[0]] = _stats_luna.get(_x.split('(')[0], 0) + (ronda == 0)
+            if duros or not e['sub_tema'] or extra:
                 fallos.append({'grupo': g['grupo'], 'titulo': g['titulo'], 'texto': g['texto'],
-                               'sub_tema': e['sub_tema'], 'problemas': duros or ['vacio']})
+                               'contexto': g.get('contexto') or g.get('contexto_marca') or '',
+                               'sub_tema': e['sub_tema'], 'tono': e.get('tono') or '',
+                               'rol': e.get('rol') or '',
+                               'problemas': (duros + extra) or ['vacio']})
         # v4.21: reparacion determinista primero para los problemas mecanicos
         # (titular copiado como subtema, cita o pregunta como etiqueta). Lo
         # que se repara aqui no gasta llamada LLM; el resto sigue a la vuelta
@@ -2705,7 +2824,27 @@ def etiquetar_grupos(cfg: dict, grupos: List[dict], progress: Optional[Callable]
                     # sub_tema/tono, así que se fusiona sobre la etiqueta vieja.
                     _nuevo = dict(etiquetas.get(gid) or {})
                     _nuevo.update(v)
+                    if 'rol' not in v and _nuevo.get('rol') and \
+                            ROLES_TONO.get(_nuevo['rol']) != _nuevo.get('tono'):
+                        _nuevo.pop('rol', None)
                     etiquetas[gid] = _nuevo
+
+    # v4.85: si tras las vueltas el rol y el tono siguen sin cuadrar, regla de
+    # prudencia (la misma de Haiku): ante la duda, Neutro.
+    _rol_chk, _ = _luna_guardas_activas(cfg)
+    _a_neutro = 0
+    if _rol_chk:
+        for g in grupos:
+            e = etiquetas[g['grupo']]
+            if e.get('rol') and e.get('tono') and ROLES_TONO.get(e['rol']) != e['tono'] \
+                    and e['tono'] != 'Neutro':
+                e['tono'] = 'Neutro'
+                _a_neutro += 1
+    _ULTIMO_RESUMEN['luna_guardas_haiku'] = {
+        'rol_tono_a_revisar': _stats_luna.get('rol_tono', 0),
+        'forma_subtema_a_revisar': _stats_luna.get('forma', 0),
+        'tono_incoherente_a_neutro': _a_neutro,
+    }
 
     # ---- fallback determinista para lo que quedo vacio: nunca dejamos una fila sin etiqueta ----
     # v4.21: el rótulo se deriva del titular con _subtema_desde_titulo (rótulo
@@ -8798,7 +8937,8 @@ def enrich_rows_with_ai(
         # pone el Tono (Haiku no lo analiza), el de tema pone el Tema y Haiku
         # hace el Subtema (que nunca lo pone un PKL).
         incluir_tema = bool(extra.get('incluir_tema', True)) or theme_model is not None
-        cfg['_tono_pkl'] = tone_model is not None
+    # v4.85: con PKL de tono el tono no lo pone el modelo (ni Haiku ni Luna).
+    cfg['_tono_pkl'] = tone_model is not None
 
     # --- contexto de marca (funcion existente, se conserva para la columna de auditoria) ---
     cfg['motor'] = 'haiku' if haiku else 'openai'
