@@ -42,6 +42,22 @@ El acceso a la interfaz de producción está resguardado mediante autenticación
 
 ## 🚀 Funcionalidades
 
+### OpenAI Luna con auditor de tono y evaluador de agrupación (v4.86)
+
+- **Auditor de tono:** una segunda lectura con Luna, en lotes de 20 en paralelo
+  (hasta 160 grupos por corrida), de los grupos con tono de riesgo: Positivo o
+  Negativo sin mención literal del cliente, subtemas con tonos distintos, todo
+  Negativo, Positivo sin el cliente en el título y los que no cuadraron rol y
+  tono. Usa el prompt del auditor de Haiku y solo aplica un veredicto con tono
+  válido y rol coherente. No corre con Jev, PKL de tono ni «Solo Subtema»; se
+  apaga con `auditor_tono: false`.
+- **Evaluador de agrupación:** el mismo de Haiku (mismo prompt, mismos lotes y
+  misma validación) decide con Luna si las noticias parecidas son la misma o se
+  separan, antes de las unificaciones automáticas. Se apaga con
+  `evaluador_agrupacion: false`.
+- Los dos corren a la vez; los cambios del auditor se aplican después. Un lote
+  que falla no tumba la corrida. El costo va en el uso de tokens de OpenAI.
+
 ### OpenAI Luna con las guardas de Claude Haiku (v4.85)
 
 - **Tono por rol:** Luna recibe la misma rúbrica de Haiku y declara el *rol*

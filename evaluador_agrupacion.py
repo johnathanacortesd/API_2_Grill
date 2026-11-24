@@ -28,7 +28,7 @@ import re
 import tempfile
 import unicodedata
 from collections import Counter, defaultdict
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 LOTE_CANDIDATOS = 15
 MAX_CANDIDATOS = 120
@@ -171,28 +171,36 @@ def _payload(comps: Sequence[List[int]], rows: List[dict], mapa: Dict[int, int],
 def evaluar(cands: Dict[str, Any], rows: List[dict], mapa: Dict[int, int],
             etiquetas: Dict[int, dict], km: Optional[dict] = None, query_fn=None,
             lote: int = LOTE_CANDIDATOS, modelo: Optional[str] = None,
-            cliente: Optional[dict] = None) -> List[dict]:
+            cliente: Optional[dict] = None,
+            llm_fn: Optional[Callable[[str, str], str]] = None,
+            workers: int = 4) -> List[dict]:
     """Llama al agente (una vez por lote, lotes en paralelo). Devuelve
     decisiones normalizadas [{agrupar:[u], separar:[u], subtema, tono,
     subtemas:{u:str}, motivo}] con u = nota representante. Nunca lanza.
 
     `cliente`: {brand, aliases, voceros, criterio_texto}. Sin él, el agente
-    decidía el tono común sin saber de quién se mide; ahora va en el pedido."""
+    decidía el tono común sin saber de quién se mide; ahora va en el pedido.
+
+    v4.86: `llm_fn(system, prompt) -> texto` usa otro modelo (OpenAI Luna)
+    con el mismo prompt, los mismos lotes y la misma validación de la salida;
+    sin `llm_fn` se usa el agente Claude Haiku."""
     import motor_haiku as mh
     comps = list((cands or {}).get("comps") or [])
     ULTIMO.clear()
     ULTIMO.update(candidatos=len(comps), lotes=0, costo_usd=0.0, error=None, decisiones=[])
     if not comps:
         return []
-    try:
-        sdk = mh._sdk()
-        query_fn = query_fn or QUERY_FN
-        if query_fn is None:
-            mh._preparar_credencial()
-            query_fn = sdk.query
-    except Exception as e:  # noqa: BLE001
-        ULTIMO["error"] = str(e)
-        return []
+    sdk = None
+    if llm_fn is None:
+        try:
+            sdk = mh._sdk()
+            query_fn = query_fn or QUERY_FN
+            if query_fn is None:
+                mh._preparar_credencial()
+                query_fn = sdk.query
+        except Exception as e:  # noqa: BLE001
+            ULTIMO["error"] = str(e)
+            return []
     candidatos = comps
     lotes = [list(candidatos[i:i + lote]) for i in range(0, len(candidatos), lote)]
     ULTIMO["lotes"] = len(lotes)
@@ -229,8 +237,23 @@ def evaluar(cands: Dict[str, Any], rows: List[dict], mapa: Dict[int, int],
     async def _todos():
         await asyncio.gather(*[_uno(n, c) for n, c in enumerate(lotes)])
 
+    def _uno_llm(n: int, chunk):
+        prompt = json.dumps(dict(cabecera, candidatos=_payload(chunk, rows, mapa, etiquetas, km,
+                                                               n * lote)),
+                            ensure_ascii=False)
+        textos[n] = llm_fn(system, prompt) or ""
+
     try:
-        mh._ejecutar(_todos())
+        if llm_fn is not None:
+            from concurrent.futures import ThreadPoolExecutor
+            with ThreadPoolExecutor(max_workers=max(1, min(int(workers), len(lotes)))) as ex:
+                for f in [ex.submit(_uno_llm, n, c) for n, c in enumerate(lotes)]:
+                    try:
+                        f.result()
+                    except Exception as e:  # noqa: BLE001 - un lote que falla no tumba los demás
+                        ULTIMO["error"] = "%s: %s" % (type(e).__name__, e)
+        else:
+            mh._ejecutar(_todos())
     except Exception as e:  # noqa: BLE001
         ULTIMO["error"] = "%s: %s" % (type(e).__name__, e)
     ULTIMO["costo_usd"] = round(sum(costos), 6)
