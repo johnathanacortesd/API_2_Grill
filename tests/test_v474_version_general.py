@@ -373,3 +373,15 @@ def test_caracteres_resumen():
     assert pipeline.caracteres_resumen('Hola mundo') == 10
     assert pipeline.caracteres_resumen('') == 0 and pipeline.caracteres_resumen('-') == 0
     assert pipeline.caracteres_resumen(None) == 0 and pipeline.caracteres_resumen(float('nan')) == 0
+
+
+def test_resumen_y_texto_intercambiados():
+    """v4.84: «Resumen - Aclaracion» va donde iba «texto» (después de Link
+    Nota) y «texto» donde iba el resumen (después de Contexto analizado); el
+    contenido de cada una no cambia."""
+    res, cab, datos = _correr(_cfg(formato_boletin=True))
+    assert cab.index('Resumen - Aclaracion') == cab.index('Link Nota') + 1
+    assert cab.index('texto') == cab.index('Contexto analizado') + 1
+    assert cab.index('Resumen - Aclaracion') < cab.index('Link (Streaming - Imagen)')
+    for d in datos:
+        assert d['Resumen - Aclaracion'] and d['texto']

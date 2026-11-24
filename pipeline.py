@@ -353,10 +353,11 @@ BOLETIN_COLUMNAS = [
     "CPE", "Tamaño", "Audiencia", "Tier", "Tono_IA", "Subtema_IA", "TIPO", "GÉNERO",
     # v4.81 (Grill): «Menciones - Empresa» (radio/TV) o «Empresa rel.»
     # (internet, prensa, revistas), justo después del enlace de streaming.
-    "Link Nota", "texto", "Link (Streaming - Imagen)", "Menciones - Empresa", "Link Ext",
+    # v4.84 (orden del usuario): «Resumen - Aclaracion» y «texto» intercambian lugar.
+    "Link Nota", "Resumen - Aclaracion", "Link (Streaming - Imagen)", "Menciones - Empresa", "Link Ext",
     # v4.74 (versión general): sin «HORA B» (hora del boletín de Defensoría).
     "FECHA INFORME",
-    "ID duplicada", "Contexto analizado", "Resumen - Aclaracion", "Audio",
+    "ID duplicada", "Contexto analizado", "texto", "Audio",
     "Web Ext"
 ]
 

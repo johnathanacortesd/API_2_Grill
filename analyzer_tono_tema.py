@@ -492,7 +492,7 @@ MODELO_DEFECTO = "gpt-6-luna"
 # v4.53: sello del analizador. El encabezado de la app lo muestra junto a
 # APP_VERSION; si el despliegue muestra un sello distinto (o "sin-sello"),
 # el contenedor NO corre este archivo aunque el encabezado diga otra versión.
-ANALYZER_BUILD = "v4.83-caracteres-av"  # v4.83: Radio/TV: Duración - Nro. Caracteres = caracteres del Resumen (v4.82: una fila por marca)
+ANALYZER_BUILD = "v4.84-resumen-texto"  # v4.84: Resumen - Aclaracion y texto intercambian lugar (v4.83: caracteres en radio/TV)
 # v4.53: solo cambia el sello (la lógica del analizador no se toca en esta versión;
 # el cambio es de interfaz).
 JEV_URL_DEFECTO = "https://api.typesafe.ai/v1/systemone"
