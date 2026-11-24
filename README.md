@@ -42,6 +42,13 @@ El acceso a la interfaz de producción está resguardado mediante autenticación
 
 ## 🚀 Funcionalidades
 
+### Columnas Nro. Pagina y Menciones - Empresa (v4.81)
+
+- **Nro. Pagina** del origen va justo antes de «Duración - Nro. Caracteres».
+- **Menciones - Empresa** va justo después de «Link (Streaming - Imagen)»:
+  en Radio y Televisión lleva la columna «Menciones - Empresa» del origen; en
+  Internet, Prensa y Revistas, la columna «Empresa rel.».
+
 ### Columna Tamaño (v4.79–v4.80)
 
 - **Tamaño** va justo antes de Audiencia:

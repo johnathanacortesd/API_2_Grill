@@ -239,3 +239,38 @@ def test_duracion_texto():
     assert not pipeline._es_duracion(_dt.datetime(2026, 9, 1))
     assert pipeline._texto_duracion(_dt.timedelta(seconds=150)) == '00:02:30'
     assert pipeline._texto_duracion(_dt.time(1, 2, 3)) == '01:02:03'
+
+
+def test_nro_pagina_y_menciones_empresa():
+    """v4.81: «Nro. Pagina» justo antes de «Duración - Nro. Caracteres» y
+    «Menciones - Empresa» justo después de «Link (Streaming - Imagen)»: el
+    valor de «Menciones - Empresa» del origen en Radio y Televisión, el de
+    «Empresa rel.» en Internet, Prensa y Revistas."""
+    wb = Workbook()
+    ws = wb.active
+    ws.append(['ID Noticia', 'Título', 'Resumen - Aclaracion', 'Medio', 'Fecha', 'Tipo de Medio',
+               'Nro. Pagina', 'Duración - Nro. Caracteres', 'Menciones - Empresa', 'Empresa rel.'])
+    filas = [('201', 'Prensa', 'El Tiempo', 7, 3400, '', 'Marca S.A.'),
+             ('202', 'Radio', 'Caracol Radio', '', '00:02:30', 'Marca', ''),
+             ('203', 'Internet', 'Semana.com', '', 2800, 'otra cosa', 'Marca Colombia')]
+    for i, (idn, tipo, medio, pag, dur, men, rel) in enumerate(filas):
+        ws.append([idn, 'La marca anuncia plan %d en Bogotá' % i,
+                   'La marca anunció el plan número %d para la ciudad de Bogotá.' % i,
+                   medio, '0%d/09/2026' % (i + 1), tipo, pag, dur, men, rel])
+    buf = io.BytesIO()
+    wb.save(buf)
+    global _dossier
+    original = _dossier
+    _dossier = lambda: buf.getvalue()  # noqa: E731
+    try:
+        res, cab, datos = _correr(_cfg(formato_boletin=True))
+    finally:
+        _dossier = original
+    assert cab.index('Nro. Pagina') == cab.index('Duración - Nro. Caracteres') - 1
+    assert cab.index('Menciones - Empresa') == cab.index('Link (Streaming - Imagen)') + 1
+    assert 'Empresa rel.' not in cab
+    d = {str(x['ID Noticia']): x for x in datos}
+    assert int(d['201']['Nro. Pagina']) == 7
+    assert d['201']['Menciones - Empresa'] == 'Marca S.A.'        # prensa: Empresa rel.
+    assert d['202']['Menciones - Empresa'] == 'Marca'             # radio: Menciones - Empresa
+    assert d['203']['Menciones - Empresa'] == 'Marca Colombia'    # internet: Empresa rel.
