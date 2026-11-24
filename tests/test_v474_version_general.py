@@ -274,3 +274,71 @@ def test_nro_pagina_y_menciones_empresa():
     assert d['201']['Menciones - Empresa'] == 'Marca S.A.'        # prensa: Empresa rel.
     assert d['202']['Menciones - Empresa'] == 'Marca'             # radio: Menciones - Empresa
     assert d['203']['Menciones - Empresa'] == 'Marca Colombia'    # internet: Empresa rel.
+
+
+def _correr_filas(encabezados, filas, **cfg):
+    wb = Workbook()
+    ws = wb.active
+    ws.append(encabezados)
+    for f in filas:
+        ws.append(f)
+    buf = io.BytesIO()
+    wb.save(buf)
+    global _dossier
+    original = _dossier
+    _dossier = lambda: buf.getvalue()  # noqa: E731
+    try:
+        return _correr(_cfg(formato_boletin=True, **cfg))
+    finally:
+        _dossier = original
+
+
+def _fila_marcas(idn, tipo, men, rel):
+    return [idn, 'La marca y Sanofi firman alianza %s' % idn,
+            'La marca y Sanofi firmaron una alianza en Bogotá.', 'Medio X', '01/09/2026', tipo, men, rel]
+
+
+def test_varias_marcas_duplican_la_fila_con_encabezados_variantes():
+    """v4.82: marcas separadas por «;» en «Menciones - Empresa» (radio/TV) o
+    «Empresa rel.» (internet, prensa, revistas) => una fila por marca, cada
+    una con una sola marca, aunque el encabezado venga escrito de otra forma
+    (mayúsculas, sin punto, sin espacios, espacio al final)."""
+    base = ['ID Noticia', 'Título', 'Resumen - Aclaracion', 'Medio', 'Fecha', 'Tipo de Medio']
+    for hm, hr in [('Menciones - Empresa', 'Empresa rel.'), ('Menciones - Empresa', 'Empresa Rel.'),
+                   ('Menciones-Empresa', 'Empresa rel'), ('MENCIONES - EMPRESA', 'EMPRESA REL.'),
+                   ('Menciones - Empresa ', 'Empresa rel. ')]:
+        res, cab, datos = _correr_filas(base + [hm, hr], [
+            _fila_marcas('1', 'Radio', 'Marca; Sanofi; GSK', ''),
+            _fila_marcas('2', 'Prensa', '', 'Marca; Sanofi'),
+            _fila_marcas('3', 'Internet', '', 'Marca;Sanofi;Marca')])
+        got = sorted((str(d['ID Noticia']), d['Menciones - Empresa']) for d in datos)
+        assert got == [('1', 'GSK'), ('1', 'Marca'), ('1', 'Sanofi'), ('2', 'Marca'), ('2', 'Sanofi'),
+                       ('3', 'Marca'), ('3', 'Sanofi')], (hm, hr, got)
+
+
+def test_menciones_columna_de_respaldo():
+    """Si la columna que corresponde al tipo de medio viene vacía, se usa la otra."""
+    base = ['ID Noticia', 'Título', 'Resumen - Aclaracion', 'Medio', 'Fecha', 'Tipo de Medio',
+            'Menciones - Empresa', 'Empresa rel.']
+    res, cab, datos = _correr_filas(base, [_fila_marcas('1', 'Web', '', 'Marca; Sanofi'),
+                                           _fila_marcas('2', 'Radio', '', 'Marca')])
+    got = sorted((str(d['ID Noticia']), d['Menciones - Empresa']) for d in datos)
+    assert got == [('1', 'Marca'), ('1', 'Sanofi'), ('2', 'Marca')]
+
+
+def test_columnas_personalizadas_marca_original_tambien_se_divide():
+    base = ['ID Noticia', 'Título', 'Resumen - Aclaracion', 'Medio', 'Fecha', 'Tipo de Medio',
+            'Menciones - Empresa', 'Empresa Rel.']
+    res, cab, datos = _correr_filas(base, [_fila_marcas('1', 'Prensa', '', 'Marca; Sanofi')],
+                                    preservar_columnas=True)
+    assert sorted(d['Empresa Rel.'] for d in datos) == ['Marca', 'Sanofi']
+
+
+def test_canonizar_columnas():
+    import pandas as pd
+    df = pd.DataFrame({'HORA ': ['08:00'], 'DimensionCm2': [12], 'Empresa Rel.': ['A;B'],
+                       'Hora': ['09:00']})
+    out = pipeline.canonizar_columnas(df)
+    assert list(out['Dimensioncm2']) == [12] and list(out['Empresa rel.']) == ['A;B']
+    assert list(out['Hora']) == ['09:00']          # la exacta manda
+    assert 'Empresa Rel.' in out.columns            # la original se conserva
