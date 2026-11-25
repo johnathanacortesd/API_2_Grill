@@ -256,13 +256,15 @@ class TestEnrichHonraPkl(unittest.TestCase):
         self.assertEqual(rows[0]["Tono_IA"], LOTE_TONO)
         self.assertNotEqual(ultimo_resumen().get("modo_taxonomia"), "pkl")
 
-    def test_tema_pkl_no_unifica_clases_distintas_del_mismo_subtema(self):
+    def test_tema_pkl_mismo_subtema_mismo_tema(self):
         rows = [
             _row("Soledad fortalece la nutrición escolar con el PAE", PAE_CUERPO),
-            # Comparte subtema legítimamente (PAE) pero el PKL la clasifica
-            # en otra clase: las clases no deben unificarse. v4.18: la
-            # reparación de etiquetas ajenas no debe tocarla (el subtema
-            # describe su propio contenido).
+            # Comparte subtema legítimamente (PAE) y el PKL la clasifica en
+            # otra clase. v4.89 (regla del usuario): con los subtemas ya
+            # definitivos, el mismo subtema lleva el mismo tema también con
+            # PKL; gana una clase del PKL (la más frecuente; en empate, la de
+            # la primera fila), nunca un tema inventado. v4.18: la reparación
+            # de etiquetas ajenas no debe tocarla.
             _row("Hospital municipal articula vacunación con el PAE escolar",
                  "El hospital municipal adelanta una jornada de vacunación infantil "
                  "y articula con el PAE la nutrición escolar."),
@@ -280,9 +282,9 @@ class TestEnrichHonraPkl(unittest.TestCase):
             )
             mock_asig.assert_not_called()
 
-        self.assertEqual(rows[0]["Tema_IA"], PKL_TEMA)
-        self.assertEqual(rows[1]["Tema_IA"], PKL_TEMA_B)
         self.assertEqual(rows[0]["Subtema_IA"], rows[1]["Subtema_IA"])
+        self.assertEqual(rows[0]["Tema_IA"], rows[1]["Tema_IA"])
+        self.assertIn(rows[0]["Tema_IA"], (PKL_TEMA, PKL_TEMA_B))
 
 
 class TestApplyPklClassifiersPath(unittest.TestCase):

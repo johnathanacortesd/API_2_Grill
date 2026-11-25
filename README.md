@@ -42,6 +42,37 @@ El acceso a la interfaz de producción está resguardado mediante autenticación
 
 ## 🚀 Funcionalidades
 
+### Pérdidas de v4.74 restauradas y un tema por subtema con PKL (v4.89)
+
+- **Misma noticia en un grupo antes de clasificar** (Secretaría v1.47,
+  `fusionar_grupos_por_noticia`): las notas con el CuerpoEs igual o muy
+  parecido (y con el veto de lugar/persona) se unen en un solo grupo antes de
+  llamar al modelo, también con agrupación estricta; así el modelo ve la
+  noticia completa una vez y le da un solo subtema. Se apaga con
+  `agrupar_por_cuerpo: false` en el perfil.
+- **Modo solo PKL:** agrupa con la misma evidencia del flujo con IA
+  (`agrupar_noticias_filas`); si falla, usa el agrupador anterior.
+- **Cachés de texto** limpias al inicio de cada corrida
+  (`limpiar_caches_texto`): la memoria no crece entre dossiers.
+- **Un tema por subtema, también con PKL de tema** (regla del usuario): con
+  los subtemas ya definitivos, todas las filas con el mismo Subtema_IA llevan
+  el mismo Tema_IA. Gana la clase del PKL más frecuente entre ellas (en
+  empate, la de la primera fila); nunca un tema inventado.
+- **Mismo molde en otra ciudad, del todo:**
+  - el rótulo sacado de un titular en MAYÚSCULAS recupera la mayúscula de
+    los nombres propios desde el cuerpo («…EN CHÍA» → «…en Chía»); en
+    minúscula, la guarda de lugar no lo veía y pasaba a la nota de otra
+    ciudad;
+  - `_subtemas_mismo_hecho` ya no une un rótulo con un lugar y otro sin él
+    o con otro lugar (los nombres de persona no cuentan: «…de Navarro
+    Wolff» = «…de Antonio Navarro Wolff»);
+  - guarda entre bloques también en títulos similares, subtema por título,
+    rótulos finales y subtemas de noticias similares.
+- Banco de pruebas, 10 semillas: **0 fusiones y 0 noticias partidas** en
+  los dos modos (antes 1 / 1 y 0 / 1); subtema correcto 97,9 % → 98,0 %
+  (normal) y 95,6 % → 96,7 % (estricta); con 30 % de rótulos malos del
+  modelo, 97,1 % → 97,7 % y 94,1 % → 96,4 %.
+
 ### Forma del subtema: vuelven las reglas de v4.71–v4.73 (v4.88)
 
 - Al portar el motor de Defensoría (v4.74) también se perdieron reglas de
